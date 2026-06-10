@@ -85,7 +85,7 @@ interface BrowserPanelProps {
   onRequestLive?: () => void;
 }
 
-const BROWSER_BOUNDS_SYNC_BURST_FRAMES = 30;
+const BROWSER_BOUNDS_SYNC_BURST_FRAMES = 18;
 const BROWSER_BOUNDS_SYNC_STABLE_FRAME_TARGET = 2;
 const BROWSER_WEBVIEW_PARTITION = "persist:synara-browser";
 const BROWSER_PERF_SAMPLE_INTERVAL_MS = 5_000;
@@ -833,12 +833,16 @@ export function BrowserPanel({
       return;
     }
 
-    const syncBounds = () => {
+    const syncBounds = (options?: { skipOverlayCheck?: boolean }) => {
       perfCountersRef.current.syncAttempts += 1;
       // While the local-servers home is up, force the browser surface hidden instead of
       // trusting the obscuring-overlay heuristic. The native/inline webview otherwise paints
       // about:blank white over our dark DOM home — the "always white" empty state.
-      const obscuredByOverlay = showLocalServersHome || hasNativeBrowserObscuringOverlay(element);
+      const obscuredByOverlay =
+        showLocalServersHome ||
+        (options?.skipOverlayCheck
+          ? lastOverlayObscuredRef.current
+          : hasNativeBrowserObscuringOverlay(element));
       lastOverlayObscuredRef.current = obscuredByOverlay;
       setBrowserWebviewOverlayOcclusion(browserWebviewRef.current, obscuredByOverlay);
       const rect = element.getBoundingClientRect();
@@ -886,7 +890,7 @@ export function BrowserPanel({
       const tick = () => {
         perfCountersRef.current.burstFrames += 1;
         const previousMeasuredKey = lastMeasuredBoundsKeyRef.current;
-        syncBounds();
+        syncBounds({ skipOverlayCheck: true });
         const measuredHidden = lastMeasuredBoundsKeyRef.current?.endsWith(":hidden") ?? false;
         if (!measuredHidden && lastMeasuredBoundsKeyRef.current === previousMeasuredKey) {
           burstStableFramesRef.current += 1;

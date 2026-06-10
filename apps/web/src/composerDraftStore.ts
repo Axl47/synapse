@@ -53,8 +53,8 @@ import { normalizeAssistantSelectionAttachment } from "./lib/assistantSelections
 import { cloneComposerImageAttachment } from "./lib/composerSend";
 import { buildModelSelection } from "./providerModelOptions";
 import { create } from "zustand";
-import { createJSONStorage, persist } from "zustand/middleware";
-import { createDebouncedStorage, createMemoryStorage } from "./lib/storage";
+import { persist } from "zustand/middleware";
+import { createDebouncedJsonPersistStorage, createMemoryStorage } from "./lib/storage";
 
 export const COMPOSER_DRAFT_STORAGE_KEY = "synara:composer-drafts:v1";
 const COMPOSER_DRAFT_STORAGE_VERSION = 4;
@@ -77,7 +77,7 @@ const GROK_REASONING_EFFORT_SET = new Set<string>(GROK_REASONING_EFFORT_OPTIONS)
 const COMPOSER_PERSIST_DEBOUNCE_MS = 300;
 const TERMINAL_DRAFT_THREAD_MAPPING_SUFFIX = "::terminal";
 
-const composerDebouncedStorage = createDebouncedStorage(
+const composerPersistStorage = createDebouncedJsonPersistStorage<PersistedComposerDraftStoreState>(
   typeof localStorage !== "undefined" ? localStorage : createMemoryStorage(),
   COMPOSER_PERSIST_DEBOUNCE_MS,
 );
@@ -85,7 +85,7 @@ const composerDebouncedStorage = createDebouncedStorage(
 // Flush pending composer draft writes before page unload to prevent data loss.
 if (typeof window !== "undefined") {
   window.addEventListener("beforeunload", () => {
-    composerDebouncedStorage.flush();
+    composerPersistStorage.flush();
   });
 }
 
@@ -2743,6 +2743,9 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
         }
         set((state) => {
           const existing = state.draftsByThreadId[threadId] ?? createEmptyThreadDraft();
+          if (existing.prompt === prompt) {
+            return state;
+          }
           const nextDraft: ComposerThreadDraftState = {
             ...existing,
             prompt,
@@ -3528,7 +3531,7 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
     {
       name: COMPOSER_DRAFT_STORAGE_KEY,
       version: COMPOSER_DRAFT_STORAGE_VERSION,
-      storage: createJSONStorage(() => composerDebouncedStorage),
+      storage: composerPersistStorage,
       migrate: migratePersistedComposerDraftStoreState,
       partialize: partializeComposerDraftStoreState,
       merge: (persistedState, currentState) => {

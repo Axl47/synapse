@@ -1684,14 +1684,6 @@ diffs-container {
   padding-left: var(--desktop-top-bar-traffic-light-gutter, 90px) !important;
 }
 
-/* Electron: continuous macOS-style corners (do not stack with corner-shape). */
-:root[data-runtime="electron"] .chat-composer-shell,
-:root[data-runtime="electron"] .chat-composer-surface,
-:root[data-runtime="electron"] .chat-composer-stacked-top,
-:root[data-runtime="electron"] .chat-composer-surface-banner {
-  -electron-corner-smoothing: system-ui;
-}
-
 /* Browser: squircle via corner-shape when supported. */
 @supports (corner-shape: round) {
   :root:not([data-runtime="electron"]) .chat-composer-shell,
@@ -1724,6 +1716,11 @@ diffs-container {
   background: var(--composer-surface);
   backdrop-filter: var(--app-composer-backdrop-filter, none);
   -webkit-backdrop-filter: var(--app-composer-backdrop-filter, none);
+}
+
+:root[data-runtime="electron"] .chat-composer-surface {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
 }
 
 .sidebar-segmented-picker {

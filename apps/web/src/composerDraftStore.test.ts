@@ -22,7 +22,7 @@ import {
   insertInlineTerminalContextPlaceholder,
   type TerminalContextDraft,
 } from "./lib/terminalContext";
-import { createDebouncedStorage } from "./lib/storage";
+import { createDebouncedJsonPersistStorage, createDebouncedStorage } from "./lib/storage";
 
 function makeImage(input: {
   id: string;
@@ -1830,5 +1830,46 @@ describe("createDebouncedStorage", () => {
     vi.advanceTimersByTime(300);
     expect(base.setItem).toHaveBeenCalledTimes(1);
     expect(base.setItem).toHaveBeenCalledWith("key", "v2");
+  });
+});
+
+describe("createDebouncedJsonPersistStorage", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("debounces JSON serialization until the storage write fires", () => {
+    const base = createMockStorage();
+    const storage = createDebouncedJsonPersistStorage<{ prompt: string }>(base);
+    const expectedSerialized = JSON.stringify({ state: { prompt: "v2" }, version: 1 });
+    const stringifySpy = vi.spyOn(JSON, "stringify");
+
+    storage.setItem("key", { state: { prompt: "v1" }, version: 1 });
+    storage.setItem("key", { state: { prompt: "v2" }, version: 1 });
+
+    expect(base.setItem).not.toHaveBeenCalled();
+    expect(stringifySpy).not.toHaveBeenCalled();
+
+    vi.advanceTimersByTime(300);
+
+    expect(stringifySpy).toHaveBeenCalledTimes(1);
+    expect(base.setItem).toHaveBeenCalledWith("key", expectedSerialized);
+
+    stringifySpy.mockRestore();
+  });
+
+  it("flush serializes and writes the pending value immediately", () => {
+    const base = createMockStorage();
+    const storage = createDebouncedJsonPersistStorage<{ prompt: string }>(base);
+
+    storage.setItem("key", { state: { prompt: "draft" }, version: 1 });
+    storage.flush();
+
+    expect(base.setItem).toHaveBeenCalledTimes(1);
+    expect(storage.getItem("key")).toEqual({ state: { prompt: "draft" }, version: 1 });
   });
 });

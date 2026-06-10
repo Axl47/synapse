@@ -60,6 +60,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Debouncer, useDebouncedValue } from "@tanstack/react-pacer";
 import { useNavigate } from "@tanstack/react-router";
 import { type LegendListRef } from "@legendapp/list/react";
+import { useShallow } from "zustand/react/shallow";
 import {
   GIT_WORKING_TREE_DIFF_LIVE_REFETCH_INTERVAL_MS,
   gitCreateWorktreeMutationOptions,
@@ -86,8 +87,6 @@ import {
   formatComposerMentionToken,
   filterPromptProviderMentionReferences,
   filterPromptSkillReferences,
-  providerMentionReferencesEqual,
-  providerSkillReferencesEqual,
   skillMentionPrefix,
 } from "~/lib/composerMentions";
 import { getLocalFolderBrowseRootPath, isLocalFolderMentionQuery } from "~/lib/localFolderMentions";
@@ -277,13 +276,13 @@ import { compareProvidersByOrder } from "../providerOrdering";
 import {
   type ComposerImageAttachment,
   type ComposerAssistantSelectionAttachment,
+  type ComposerThreadDraftState,
   type DraftThreadEnvMode,
   type PersistedComposerImageAttachment,
   type QueuedComposerChatTurn,
   type QueuedComposerPlanFollowUp,
   type QueuedComposerTurn,
   useComposerDraftStore,
-  useComposerThreadDraft,
   useEffectiveComposerModelState,
 } from "../composerDraftStore";
 import { useComposerFocusRequestStore } from "../composerFocusRequestStore";
@@ -292,9 +291,11 @@ import {
   appendOriginalTerminalContextBlock,
   appendTerminalContextsToPrompt,
   IMAGE_ONLY_BOOTSTRAP_PROMPT,
+  filterTerminalContextsWithText,
   formatTerminalContextLabel,
   insertInlineTerminalContextPlaceholder,
   removeInlineTerminalContextPlaceholder,
+  stripInlineTerminalContextPlaceholders,
   type TerminalContextDraft,
   type TerminalContextSelection,
 } from "../lib/terminalContext";
@@ -457,7 +458,6 @@ import {
   buildModelSelection,
   buildNextProviderOptions,
   mergeDynamicModelOptions,
-  type ProviderModelOption,
 } from "../providerModelOptions";
 import {
   isDuplicateProjectCreateError,
@@ -476,8 +476,21 @@ const EMPTY_PROVIDER_NATIVE_COMMANDS: ProviderNativeCommandDescriptor[] = [];
 const EMPTY_PROVIDER_SKILLS: ProviderSkillDescriptor[] = [];
 const EMPTY_COMPOSER_SUGGESTIONS: ComposerSuggestion[] = [];
 const EMPTY_SUGGESTION_SOURCE_THREADS: Thread[] = [];
+const EMPTY_COMPOSER_IMAGES: ComposerImageAttachment[] = [];
+const EMPTY_COMPOSER_ASSISTANT_SELECTIONS: ComposerAssistantSelectionAttachment[] = [];
+const EMPTY_COMPOSER_TERMINAL_CONTEXTS: TerminalContextDraft[] = [];
+const EMPTY_COMPOSER_SKILLS: ProviderSkillReference[] = [];
+const EMPTY_COMPOSER_MENTIONS: ProviderMentionReference[] = [];
+const EMPTY_QUEUED_COMPOSER_TURNS: QueuedComposerTurn[] = [];
+const EMPTY_NON_PERSISTED_COMPOSER_IMAGE_IDS: string[] = [];
+const EMPTY_COMPOSER_MODEL_SELECTION_BY_PROVIDER: ComposerThreadDraftState["modelSelectionByProvider"] =
+  {};
 const selectEmptyComposerSuggestionThreads: ReturnType<typeof createAllThreadsSelector> = () =>
   EMPTY_SUGGESTION_SOURCE_THREADS;
+
+function readComposerPromptFromStore(threadId: ThreadId): string {
+  return useComposerDraftStore.getState().draftsByThreadId[threadId]?.prompt ?? "";
+}
 
 function revokeBlobPreviewUrlsAfterPaint(previewUrls: readonly string[]): void {
   if (previewUrls.length === 0 || typeof window === "undefined") {
@@ -622,6 +635,7 @@ function buildQueuedComposerPreviewText(input: {
 }
 
 const COMPOSER_PATH_QUERY_DEBOUNCE_MS = 120;
+const COMPOSER_PROMPT_DRAFT_COMMIT_DELAY_MS = 250;
 const VOICE_RECORDER_ACTION_ARM_DELAY_MS = 250;
 
 function warnVoiceGuard(event: string, details?: Record<string, unknown>) {
@@ -745,8 +759,34 @@ export default function ChatView({
   const createWorktreeMutation = useMutation(gitCreateWorktreeMutationOptions({ queryClient }));
   const isEditorRail = presentationMode === "editor";
   const isInactiveSplitPane = surfaceMode === "split" && !isFocusedPane;
-  const composerDraft = useComposerThreadDraft(threadId);
-  const prompt = composerDraft.prompt;
+  const composerDraft = useComposerDraftStore(
+    useShallow((state) => {
+      const draft = state.draftsByThreadId[threadId];
+      return {
+        images: draft?.images ?? EMPTY_COMPOSER_IMAGES,
+        assistantSelections: draft?.assistantSelections ?? EMPTY_COMPOSER_ASSISTANT_SELECTIONS,
+        terminalContexts: draft?.terminalContexts ?? EMPTY_COMPOSER_TERMINAL_CONTEXTS,
+        skills: draft?.skills ?? EMPTY_COMPOSER_SKILLS,
+        mentions: draft?.mentions ?? EMPTY_COMPOSER_MENTIONS,
+        queuedTurns: draft?.queuedTurns ?? EMPTY_QUEUED_COMPOSER_TURNS,
+        nonPersistedImageIds:
+          draft?.nonPersistedImageIds ?? EMPTY_NON_PERSISTED_COMPOSER_IMAGE_IDS,
+        runtimeMode: draft?.runtimeMode ?? null,
+        interactionMode: draft?.interactionMode ?? null,
+        activeProvider: draft?.activeProvider ?? null,
+        modelSelectionByProvider:
+          draft?.modelSelectionByProvider ?? EMPTY_COMPOSER_MODEL_SELECTION_BY_PROVIDER,
+      };
+    }),
+  );
+  const initialPrompt = readComposerPromptFromStore(threadId);
+  const promptRef = useRef(initialPrompt);
+  const promptThreadIdRef = useRef(threadId);
+  if (promptThreadIdRef.current !== threadId) {
+    promptThreadIdRef.current = threadId;
+    promptRef.current = initialPrompt;
+  }
+  const prompt = promptRef.current;
   const composerImages = composerDraft.images;
   const composerAssistantSelections = composerDraft.assistantSelections;
   const composerTerminalContexts = composerDraft.terminalContexts;
@@ -762,15 +802,36 @@ export default function ChatView({
     cancelRecording: cancelVoiceRecording,
   } = useVoiceRecorder();
   const [isVoiceTranscribing, setIsVoiceTranscribing] = useState(false);
+  const [composerPromptHasSendableText, setComposerPromptHasSendableTextState] = useState(
+    () => stripInlineTerminalContextPlaceholders(prompt).trim().length > 0,
+  );
+  const composerPromptHasSendableTextRef = useRef(composerPromptHasSendableText);
+  const syncComposerPromptHasSendableText = useCallback((nextPrompt: string) => {
+    const nextHasSendableText =
+      stripInlineTerminalContextPlaceholders(nextPrompt).trim().length > 0;
+    if (composerPromptHasSendableTextRef.current === nextHasSendableText) {
+      return;
+    }
+    composerPromptHasSendableTextRef.current = nextHasSendableText;
+    setComposerPromptHasSendableTextState(nextHasSendableText);
+  }, []);
   const composerSendState = useMemo(
-    () =>
-      deriveComposerSendState({
-        prompt,
-        imageCount: composerImages.length,
-        assistantSelectionCount: composerAssistantSelections.length,
-        terminalContexts: composerTerminalContexts,
-      }),
-    [composerAssistantSelections.length, composerImages.length, composerTerminalContexts, prompt],
+    () => {
+      const sendableTerminalContexts = filterTerminalContextsWithText(composerTerminalContexts);
+      return {
+        hasSendableContent:
+          composerPromptHasSendableText ||
+          composerImages.length > 0 ||
+          composerAssistantSelections.length > 0 ||
+          sendableTerminalContexts.length > 0,
+      };
+    },
+    [
+      composerAssistantSelections.length,
+      composerImages.length,
+      composerPromptHasSendableText,
+      composerTerminalContexts,
+    ],
   );
   const nonPersistedComposerImageIds = composerDraft.nonPersistedImageIds;
   const setComposerDraftPrompt = useComposerDraftStore((store) => store.setPrompt);
@@ -834,7 +895,6 @@ export default function ChatView({
   const fallbackDraftProject = useStore(
     useMemo(() => createProjectSelector(fallbackDraftProjectId), [fallbackDraftProjectId]),
   );
-  const promptRef = useRef(prompt);
   const [isDragOverComposer, setIsDragOverComposer] = useState(false);
   const [expandedImage, setExpandedImage] = useState<ExpandedImagePreview | null>(null);
   const [optimisticUserMessages, setOptimisticUserMessages] = useState<ChatMessage[]>([]);
@@ -893,12 +953,29 @@ export default function ChatView({
   const [attachmentPreviewHandoffByMessageId, setAttachmentPreviewHandoffByMessageId] = useState<
     Record<string, string[]>
   >({});
-  const [composerCursor, setComposerCursor] = useState(() =>
+  const [composerCursor, setComposerCursorState] = useState(() =>
     collapseExpandedComposerCursor(prompt, prompt.length),
   );
-  const [composerTrigger, setComposerTrigger] = useState<ComposerTrigger | null>(() =>
+  const composerCursorRef = useRef(composerCursor);
+  const setComposerCursor = useCallback(
+    (next: number | ((existing: number) => number)) => {
+      const resolved =
+        typeof next === "function"
+          ? (next as (existing: number) => number)(composerCursorRef.current)
+          : next;
+      composerCursorRef.current = resolved;
+      setComposerCursorState(resolved);
+    },
+    [],
+  );
+  const [composerTrigger, setComposerTriggerState] = useState<ComposerTrigger | null>(() =>
     detectComposerTrigger(prompt, prompt.length),
   );
+  const composerTriggerRef = useRef<ComposerTrigger | null>(composerTrigger);
+  const setComposerTrigger = useCallback((next: ComposerTrigger | null) => {
+    composerTriggerRef.current = next;
+    setComposerTriggerState(next);
+  }, []);
   const [selectedComposerSkills, setSelectedComposerSkills] = useState<ProviderSkillReference[]>(
     () => composerSkills,
   );
@@ -1034,9 +1111,11 @@ export default function ChatView({
 
   const setPrompt = useCallback(
     (nextPrompt: string) => {
+      promptRef.current = nextPrompt;
+      syncComposerPromptHasSendableText(nextPrompt);
       setComposerDraftPrompt(threadId, nextPrompt);
     },
-    [setComposerDraftPrompt, threadId],
+    [setComposerDraftPrompt, syncComposerPromptHasSendableText, threadId],
   );
   const addComposerImage = useCallback(
     (image: ComposerImageAttachment) => {
@@ -3238,8 +3317,8 @@ export default function ChatView({
       }
       const snapshot = composerEditorRef.current?.readSnapshot() ?? {
         value: promptRef.current,
-        cursor: composerCursor,
-        expandedCursor: expandCollapsedComposerCursor(promptRef.current, composerCursor),
+        cursor: composerCursorRef.current,
+        expandedCursor: expandCollapsedComposerCursor(promptRef.current, composerCursorRef.current),
         terminalContextIds: composerTerminalContexts.map((context) => context.id),
       };
       const insertion = insertInlineTerminalContextPlaceholder(
@@ -3271,7 +3350,7 @@ export default function ChatView({
         composerEditorRef.current?.focusAt(nextCollapsedCursor);
       });
     },
-    [activeThread, composerCursor, composerTerminalContexts, insertComposerDraftTerminalContext],
+    [activeThread, composerTerminalContexts, insertComposerDraftTerminalContext],
   );
   const setTerminalOpen = useCallback(
     (open: boolean) => {
@@ -4545,9 +4624,11 @@ export default function ChatView({
   }, [activeThread?.id, activeThread?.messages, handoffAttachmentPreviews, optimisticUserMessages]);
 
   useEffect(() => {
-    promptRef.current = prompt;
-    setComposerCursor((existing) => clampCollapsedComposerCursor(prompt, existing));
-  }, [prompt]);
+    const nextPrompt = readComposerPromptFromStore(threadId);
+    promptRef.current = nextPrompt;
+    syncComposerPromptHasSendableText(nextPrompt);
+    setComposerCursor((existing) => clampCollapsedComposerCursor(nextPrompt, existing));
+  }, [setComposerCursor, syncComposerPromptHasSendableText, threadId]);
 
   useLayoutEffect(() => {
     updateSelectedComposerSkills(composerSkills);
@@ -4559,20 +4640,6 @@ export default function ChatView({
     updateSelectedComposerMentions,
     updateSelectedComposerSkills,
   ]);
-
-  useEffect(() => {
-    updateSelectedComposerSkills((existing) => {
-      const nextSkills = filterPromptSkillReferences(prompt, existing, selectedProvider);
-      return providerSkillReferencesEqual(existing, nextSkills) ? existing : nextSkills;
-    });
-  }, [prompt, selectedProvider, updateSelectedComposerSkills]);
-
-  useEffect(() => {
-    updateSelectedComposerMentions((existing) => {
-      const nextMentions = filterPromptProviderMentionReferences(prompt, existing);
-      return providerMentionReferencesEqual(existing, nextMentions) ? existing : nextMentions;
-    });
-  }, [prompt, updateSelectedComposerMentions]);
 
   // Provider references are provider-specific; keep draft restores from looking like manual switches.
   useEffect(() => {
@@ -5571,11 +5638,17 @@ export default function ChatView({
       queuedChatTurn?.assistantSelections ?? composerAssistantSelections;
     const composerTerminalContextsForSend =
       queuedChatTurn?.terminalContexts ?? composerTerminalContexts;
-    const selectedComposerSkillsForSend =
-      queuedChatTurn?.skills ?? selectedComposerSkillsRef.current;
-    const selectedComposerMentionsForSend =
-      queuedChatTurn?.mentions ?? selectedComposerMentionsRef.current;
     const selectedProviderForSend = queuedChatTurn?.selectedProvider ?? selectedProvider;
+    const selectedComposerSkillsForSend =
+      queuedChatTurn?.skills ??
+      filterPromptSkillReferences(
+        promptForSend,
+        selectedComposerSkillsRef.current,
+        selectedProviderForSend,
+      );
+    const selectedComposerMentionsForSend =
+      queuedChatTurn?.mentions ??
+      filterPromptProviderMentionReferences(promptForSend, selectedComposerMentionsRef.current);
     const selectedModelForSend = queuedChatTurn?.selectedModel ?? selectedModel;
     const selectedPromptEffortForSend =
       queuedChatTurn?.selectedPromptEffort ?? selectedPromptEffort;
@@ -7259,11 +7332,11 @@ export default function ChatView({
     }
     return {
       value: promptRef.current,
-      cursor: composerCursor,
-      expandedCursor: expandCollapsedComposerCursor(promptRef.current, composerCursor),
+      cursor: composerCursorRef.current,
+      expandedCursor: expandCollapsedComposerCursor(promptRef.current, composerCursorRef.current),
       terminalContextIds: composerTerminalContexts.map((context) => context.id),
     };
-  }, [composerCursor, composerTerminalContexts]);
+  }, [composerTerminalContexts]);
 
   const resolveActiveComposerTrigger = useCallback((): {
     snapshot: { value: string; cursor: number; expandedCursor: number };
@@ -7633,7 +7706,12 @@ export default function ChatView({
         );
         return;
       }
-      promptRef.current = nextPrompt;
+      const previousTrigger = composerTriggerRef.current;
+      const nextTrigger = cursorAdjacentToMention
+        ? null
+        : detectComposerTrigger(nextPrompt, expandedCursor);
+      composerCursorRef.current = nextCursor;
+      composerTriggerRef.current = nextTrigger;
       setPrompt(nextPrompt);
       if (composerCommandPicker !== null && nextPrompt.trim().length > 0) {
         setComposerCommandPicker(null);
@@ -7644,10 +7722,10 @@ export default function ChatView({
           syncTerminalContextsByIds(composerTerminalContexts, terminalContextIds),
         );
       }
-      setComposerCursor(nextCursor);
-      setComposerTrigger(
-        cursorAdjacentToMention ? null : detectComposerTrigger(nextPrompt, expandedCursor),
-      );
+      if (previousTrigger || nextTrigger || composerCommandPicker !== null) {
+        setComposerCursor(nextCursor);
+        setComposerTrigger(nextTrigger);
+      }
     },
     [
       activePendingProgress?.activeQuestion,
@@ -8224,7 +8302,7 @@ export default function ChatView({
                           ? activePendingProgress.customAnswer
                           : prompt
                     }
-                    cursor={composerCursor}
+                    cursor={composerCursorRef.current}
                     terminalContexts={
                       !isComposerApprovalState && pendingUserInputs.length === 0
                         ? composerTerminalContexts
@@ -8428,7 +8506,7 @@ export default function ChatView({
                         !isVoiceRecording &&
                         !isVoiceTranscribing ? (
                         showPlanFollowUpPrompt ? (
-                          prompt.trim().length > 0 ? (
+                          composerPromptHasSendableText ? (
                             <Button
                               type="submit"
                               size="sm"
