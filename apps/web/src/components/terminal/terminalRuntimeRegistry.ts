@@ -28,12 +28,29 @@ export { buildTerminalRuntimeKey, type TerminalRuntimeCallbacks } from "./termin
 
 class TerminalRuntimeRegistry {
   private entries = new Map<string, TerminalRuntimeEntry>();
+  private scheduledDisposals = new Map<
+    string,
+    { frameId: number | null; timeoutId: number | null }
+  >();
+
+  private cancelScheduledDispose(runtimeKey: string): void {
+    const scheduled = this.scheduledDisposals.get(runtimeKey);
+    if (!scheduled) return;
+    if (scheduled.frameId !== null) {
+      window.cancelAnimationFrame(scheduled.frameId);
+    }
+    if (scheduled.timeoutId !== null) {
+      window.clearTimeout(scheduled.timeoutId);
+    }
+    this.scheduledDisposals.delete(runtimeKey);
+  }
 
   attach(
     config: TerminalRuntimeConfig,
     viewState: TerminalRuntimeViewState,
     container: HTMLDivElement,
   ): { terminal: Terminal; searchAddon: SearchAddon; runtimeStatus: TerminalRuntimeStatus } {
+    this.cancelScheduledDispose(config.runtimeKey);
     let entry = this.entries.get(config.runtimeKey);
     if (!entry) {
       entry = createRuntimeEntry(config);
@@ -63,20 +80,40 @@ class TerminalRuntimeRegistry {
   }
 
   detach(runtimeKey: string): void {
+    if (this.scheduledDisposals.has(runtimeKey)) return;
     const entry = this.entries.get(runtimeKey);
     if (!entry) return;
     detachRuntimeFromContainer(entry);
   }
 
   dispose(runtimeKey: string): void {
+    this.cancelScheduledDispose(runtimeKey);
     const entry = this.entries.get(runtimeKey);
     if (!entry) return;
     disposeRuntimeEntry(entry);
     this.entries.delete(runtimeKey);
   }
 
+  scheduleDispose(runtimeKey: string): void {
+    if (this.scheduledDisposals.has(runtimeKey)) return;
+    const scheduled = { frameId: null as number | null, timeoutId: null as number | null };
+    scheduled.frameId = window.requestAnimationFrame(() => {
+      scheduled.frameId = null;
+      scheduled.timeoutId = window.setTimeout(() => {
+        scheduled.timeoutId = null;
+        this.scheduledDisposals.delete(runtimeKey);
+        this.dispose(runtimeKey);
+      }, 0);
+    });
+    this.scheduledDisposals.set(runtimeKey, scheduled);
+  }
+
   disposeTerminal(threadId: string, terminalId: string): void {
     this.dispose(buildTerminalRuntimeKey(threadId, terminalId));
+  }
+
+  scheduleDisposeTerminal(threadId: string, terminalId: string): void {
+    this.scheduleDispose(buildTerminalRuntimeKey(threadId, terminalId));
   }
 
   disposeThread(threadId: string): void {

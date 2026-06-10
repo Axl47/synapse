@@ -835,6 +835,68 @@ export default function ChatView({
   );
   const nonPersistedComposerImageIds = composerDraft.nonPersistedImageIds;
   const setComposerDraftPrompt = useComposerDraftStore((store) => store.setPrompt);
+  const pendingPromptDraftCommitRef = useRef<{ threadId: ThreadId; prompt: string } | null>(null);
+  const promptDraftCommitTimerRef = useRef<number | null>(null);
+  const clearPromptDraftCommitTimer = useCallback(() => {
+    if (promptDraftCommitTimerRef.current === null) {
+      return;
+    }
+    window.clearTimeout(promptDraftCommitTimerRef.current);
+    promptDraftCommitTimerRef.current = null;
+  }, []);
+  const cancelPendingPromptDraftCommit = useCallback(
+    (targetThreadId?: ThreadId) => {
+      const pending = pendingPromptDraftCommitRef.current;
+      if (targetThreadId && pending && pending.threadId !== targetThreadId) {
+        return;
+      }
+      clearPromptDraftCommitTimer();
+      if (!targetThreadId || pending?.threadId === targetThreadId) {
+        pendingPromptDraftCommitRef.current = null;
+      }
+    },
+    [clearPromptDraftCommitTimer],
+  );
+  const commitPendingPromptDraft = useCallback(() => {
+    const pending = pendingPromptDraftCommitRef.current;
+    if (!pending) {
+      clearPromptDraftCommitTimer();
+      return;
+    }
+    pendingPromptDraftCommitRef.current = null;
+    clearPromptDraftCommitTimer();
+    setComposerDraftPrompt(pending.threadId, pending.prompt);
+  }, [clearPromptDraftCommitTimer, setComposerDraftPrompt]);
+  const commitPromptDraftNow = useCallback(
+    (targetThreadId: ThreadId, nextPrompt: string) => {
+      const pending = pendingPromptDraftCommitRef.current;
+      if (pending && pending.threadId !== targetThreadId) {
+        setComposerDraftPrompt(pending.threadId, pending.prompt);
+      }
+      clearPromptDraftCommitTimer();
+      pendingPromptDraftCommitRef.current = null;
+      setComposerDraftPrompt(targetThreadId, nextPrompt);
+    },
+    [clearPromptDraftCommitTimer, setComposerDraftPrompt],
+  );
+  const schedulePromptDraftCommit = useCallback(
+    (targetThreadId: ThreadId, nextPrompt: string) => {
+      const pending = pendingPromptDraftCommitRef.current;
+      if (pending && pending.threadId !== targetThreadId) {
+        setComposerDraftPrompt(pending.threadId, pending.prompt);
+      }
+      pendingPromptDraftCommitRef.current = {
+        threadId: targetThreadId,
+        prompt: nextPrompt,
+      };
+      clearPromptDraftCommitTimer();
+      promptDraftCommitTimerRef.current = window.setTimeout(
+        commitPendingPromptDraft,
+        COMPOSER_PROMPT_DRAFT_COMMIT_DELAY_MS,
+      );
+    },
+    [clearPromptDraftCommitTimer, commitPendingPromptDraft, setComposerDraftPrompt],
+  );
   const setComposerDraftModelSelection = useComposerDraftStore((store) => store.setModelSelection);
   const setComposerDraftProviderModelOptions = useComposerDraftStore(
     (store) => store.setProviderModelOptions,
@@ -1113,10 +1175,21 @@ export default function ChatView({
     (nextPrompt: string) => {
       promptRef.current = nextPrompt;
       syncComposerPromptHasSendableText(nextPrompt);
-      setComposerDraftPrompt(threadId, nextPrompt);
+      schedulePromptDraftCommit(threadId, nextPrompt);
     },
-    [setComposerDraftPrompt, syncComposerPromptHasSendableText, threadId],
+    [schedulePromptDraftCommit, syncComposerPromptHasSendableText, threadId],
   );
+  useEffect(() => {
+    return () => {
+      commitPendingPromptDraft();
+    };
+  }, [commitPendingPromptDraft, threadId]);
+  useEffect(() => {
+    window.addEventListener("beforeunload", commitPendingPromptDraft);
+    return () => {
+      window.removeEventListener("beforeunload", commitPendingPromptDraft);
+    };
+  }, [commitPendingPromptDraft]);
   const addComposerImage = useCallback(
     (image: ComposerImageAttachment) => {
       addComposerDraftImage(threadId, image);
@@ -3709,6 +3782,21 @@ export default function ChatView({
       onCloseTerminal: closeTerminal,
       onCloseTerminalGroup: (groupId: string) => {
         if (!activeThreadId) return;
+        const api = readNativeApi();
+        const groupToClose = terminalState.terminalGroups.find((group) => group.id === groupId);
+        const terminalIdsToClose = groupToClose
+          ? collectTerminalIdsFromLayout(groupToClose.layout)
+          : [];
+        const isClosingAllTerminals =
+          terminalIdsToClose.length >= terminalState.terminalIds.length;
+        for (const terminalId of terminalIdsToClose) {
+          disposeAndCloseTerminalSession({
+            api,
+            threadId: activeThreadId,
+            terminalId,
+            clearHistoryBeforeClose: isClosingAllTerminals,
+          });
+        }
         storeCloseTerminalGroup(activeThreadId, groupId);
       },
       onHeightChange: setTerminalHeight,
@@ -5500,6 +5588,8 @@ export default function ChatView({
   const clearComposerInput = useCallback(
     (threadId: ThreadId) => {
       promptRef.current = "";
+      syncComposerPromptHasSendableText("");
+      cancelPendingPromptDraftCommit(threadId);
       clearComposerDraftContent(threadId);
       updateSelectedComposerSkills([]);
       updateSelectedComposerMentions([]);
@@ -5507,7 +5597,13 @@ export default function ChatView({
       setComposerCursor(0);
       setComposerTrigger(null);
     },
-    [clearComposerDraftContent, updateSelectedComposerMentions, updateSelectedComposerSkills],
+    [
+      cancelPendingPromptDraftCommit,
+      clearComposerDraftContent,
+      syncComposerPromptHasSendableText,
+      updateSelectedComposerMentions,
+      updateSelectedComposerSkills,
+    ],
   );
 
   const restoreQueuedTurnToComposer = useCallback(
@@ -5521,8 +5617,10 @@ export default function ChatView({
       const restoredAssistantSelections =
         queuedTurn.kind === "chat" ? queuedTurn.assistantSelections : [];
       promptRef.current = nextPrompt;
+      syncComposerPromptHasSendableText(nextPrompt);
+      cancelPendingPromptDraftCommit(activeThread.id);
       clearComposerDraftContent(activeThread.id);
-      setComposerDraftPrompt(activeThread.id, nextPrompt);
+      commitPromptDraftNow(activeThread.id, nextPrompt);
       // Editing a queued turn should recreate the same draft state the user queued.
       setDraftThreadContext(activeThread.id, {
         runtimeMode: queuedTurn.runtimeMode,
@@ -5557,13 +5655,15 @@ export default function ChatView({
       addComposerAssistantSelectionToDraft,
       addComposerImagesToDraft,
       addComposerTerminalContextsToDraft,
+      cancelPendingPromptDraftCommit,
       clearComposerDraftContent,
+      commitPromptDraftNow,
       scheduleComposerFocus,
       setDraftThreadContext,
       setComposerDraftInteractionMode,
       setComposerDraftModelSelection,
-      setComposerDraftPrompt,
       setComposerDraftRuntimeMode,
+      syncComposerPromptHasSendableText,
       updateSelectedComposerMentions,
       updateSelectedComposerSkills,
     ],
@@ -6036,6 +6136,8 @@ export default function ChatView({
       });
     }
     promptRef.current = "";
+    syncComposerPromptHasSendableText("");
+    cancelPendingPromptDraftCommit(threadIdForSend);
     clearComposerDraftContent(threadIdForSend);
     setComposerHighlightedItemId(null);
     setComposerCursor(0);
@@ -6214,7 +6316,8 @@ export default function ChatView({
           return next.length === existing.length ? existing : next;
         });
         promptRef.current = promptForSend;
-        setPrompt(promptForSend);
+        syncComposerPromptHasSendableText(promptForSend);
+        commitPromptDraftNow(threadIdForSend, promptForSend);
         setComposerCursor(collapseExpandedComposerCursor(promptForSend, promptForSend.length));
         addComposerImagesToDraft(composerImagesSnapshot.map(cloneComposerImageAttachment));
         for (const selection of composerAssistantSelectionsSnapshot) {
@@ -6356,11 +6459,12 @@ export default function ChatView({
         [activePendingUserInput.requestId]: nextRequestAnswers,
       }));
       promptRef.current = "";
+      syncComposerPromptHasSendableText("");
       setComposerCursor(0);
       setComposerTrigger(null);
       return nextDraftAnswer;
     },
-    [activePendingUserInput],
+    [activePendingUserInput, syncComposerPromptHasSendableText],
   );
 
   const onChangeActivePendingUserInputCustomAnswer = useCallback(
@@ -6375,6 +6479,7 @@ export default function ChatView({
         return;
       }
       promptRef.current = value;
+      syncComposerPromptHasSendableText(value);
       const nextDraftAnswer = setPendingUserInputCustomAnswer(
         pendingUserInputAnswersByRequestIdRef.current[activePendingUserInput.requestId]?.[
           questionId
@@ -6398,7 +6503,7 @@ export default function ChatView({
         cursorAdjacentToMention ? null : detectComposerTrigger(value, expandedCursor),
       );
     },
-    [activePendingUserInput],
+    [activePendingUserInput, syncComposerPromptHasSendableText],
   );
 
   const onAdvanceActivePendingUserInput = useCallback(
@@ -7285,6 +7390,7 @@ export default function ChatView({
         nextCursor = Math.max(0, nextCursor + options.cursorOffset);
       }
       promptRef.current = next.text;
+      syncComposerPromptHasSendableText(next.text);
       const activePendingQuestion = activePendingProgress?.activeQuestion;
       if (activePendingQuestion && activePendingUserInput) {
         const nextDraftAnswer = setPendingUserInputCustomAnswer(
@@ -7317,7 +7423,12 @@ export default function ChatView({
       });
       return nextCursor;
     },
-    [activePendingProgress?.activeQuestion, activePendingUserInput, setPrompt],
+    [
+      activePendingProgress?.activeQuestion,
+      activePendingUserInput,
+      setPrompt,
+      syncComposerPromptHasSendableText,
+    ],
   );
 
   const readComposerSnapshot = useCallback((): {
@@ -7444,12 +7555,20 @@ export default function ChatView({
 
   const clearComposerSlashDraft = useCallback(() => {
     promptRef.current = "";
+    syncComposerPromptHasSendableText("");
+    cancelPendingPromptDraftCommit(threadId);
     clearComposerDraftContent(threadId);
     setComposerHighlightedItemId(null);
     setComposerCursor(0);
     setComposerTrigger(null);
     scheduleComposerFocus();
-  }, [clearComposerDraftContent, scheduleComposerFocus, threadId]);
+  }, [
+    cancelPendingPromptDraftCommit,
+    clearComposerDraftContent,
+    scheduleComposerFocus,
+    syncComposerPromptHasSendableText,
+    threadId,
+  ]);
 
   const slashEditorActions = useMemo(
     () => ({

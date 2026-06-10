@@ -34,6 +34,7 @@ import {
   createWorkspaceTerminalGroupFromPreset,
   type WorkspaceLayoutPresetId,
 } from "./workspaceTerminalLayoutPresets";
+import { createMemoryStorage, type StateStorage } from "./lib/storage";
 
 export interface ThreadTerminalState {
   entryPoint: ThreadPrimarySurface;
@@ -54,6 +55,19 @@ export interface ThreadTerminalState {
 }
 
 const TERMINAL_STATE_STORAGE_KEY = "synara:terminal-state:v1";
+
+function resolveTerminalStateStorage(): StateStorage {
+  const storage = globalThis.localStorage;
+  if (
+    storage &&
+    typeof storage.getItem === "function" &&
+    typeof storage.setItem === "function" &&
+    typeof storage.removeItem === "function"
+  ) {
+    return storage;
+  }
+  return createMemoryStorage();
+}
 
 function normalizeTerminalIds(terminalIds: string[]): string[] {
   const ids = [...new Set(terminalIds.map((id) => id.trim()).filter((id) => id.length > 0))];
@@ -1392,7 +1406,7 @@ export const useTerminalStateStore = create<TerminalStateStoreState>()(
     {
       name: TERMINAL_STATE_STORAGE_KEY,
       version: 1,
-      storage: createJSONStorage(() => localStorage),
+      storage: createJSONStorage(resolveTerminalStateStorage),
       partialize: (state) => ({
         terminalStateByThreadId: sanitizePersistedTerminalStateByThreadId(
           state.terminalStateByThreadId,

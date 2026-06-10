@@ -583,7 +583,7 @@ export default function ThreadTerminalDrawer({
       if (nextRuntimeKeySet.has(previousRuntimeKey)) {
         continue;
       }
-      terminalRuntimeRegistry.dispose(previousRuntimeKey);
+      terminalRuntimeRegistry.scheduleDispose(previousRuntimeKey);
     }
     previousRuntimeKeysRef.current = nextRuntimeKeySet;
   }, [normalizedTerminalIds, threadId]);

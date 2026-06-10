@@ -26,7 +26,7 @@ export function disposeAndCloseTerminalSession(input: {
   clearHistoryBeforeClose?: boolean;
 }): void {
   const { api, threadId, terminalId } = input;
-  terminalRuntimeRegistry.disposeTerminal(threadId, terminalId);
+  terminalRuntimeRegistry.scheduleDisposeTerminal(threadId, terminalId);
 
   const fallbackExitWrite = () =>
     api?.terminal.write({ threadId, terminalId, data: "exit\n" }).catch(() => undefined);

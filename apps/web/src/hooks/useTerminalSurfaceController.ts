@@ -19,6 +19,7 @@ import {
   shouldPromptForTerminalClose,
 } from "~/lib/terminalCloseConfirmation";
 import { readNativeApi } from "~/nativeApi";
+import { collectTerminalIdsFromLayout } from "~/terminalPaneLayout";
 import { selectThreadTerminalState, useTerminalStateStore } from "~/terminalStateStore";
 import {
   disposeAndCloseTerminalSession,
@@ -129,8 +130,29 @@ export function useTerminalSurfaceController(threadId: ThreadId) {
   );
 
   const closeTerminalGroup = useCallback(
-    (groupId: string) => closeTerminalGroupStore(threadId, groupId),
-    [closeTerminalGroupStore, threadId],
+    (groupId: string) => {
+      const api = readNativeApi();
+      const groupToClose = terminalState.terminalGroups.find((group) => group.id === groupId);
+      const terminalIdsToClose = groupToClose
+        ? collectTerminalIdsFromLayout(groupToClose.layout)
+        : [];
+      const isClosingAllTerminals = terminalIdsToClose.length >= terminalState.terminalIds.length;
+      for (const terminalId of terminalIdsToClose) {
+        disposeAndCloseTerminalSession({
+          api,
+          threadId,
+          terminalId,
+          clearHistoryBeforeClose: isClosingAllTerminals,
+        });
+      }
+      closeTerminalGroupStore(threadId, groupId);
+    },
+    [
+      closeTerminalGroupStore,
+      terminalState.terminalGroups,
+      terminalState.terminalIds.length,
+      threadId,
+    ],
   );
 
   const setTerminalHeight = useCallback(
