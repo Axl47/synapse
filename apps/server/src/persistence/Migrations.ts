@@ -133,6 +133,15 @@ export const makeMigrationLoader = (throughId?: number) =>
  */
 const LAST_SHARED_LINEAGE_MIGRATION_ID = 16;
 
+const legacyT3ShiftedSynaraLineage = [
+  [14, "ProjectionThreadContextWindow"],
+  [15, "ProjectionThreadsAutorenameCache"],
+  [16, "ClearLegacyCodexContextWindow"],
+  [17, "ProjectionThreadProposedPlanImplementation"],
+  [18, "ProjectionTurnsSourceProposedPlan"],
+  [19, "CanonicalizeModelSelections"],
+] as const;
+
 /**
  * Repairs the migration tracker of an imported legacy database before the
  * migrator runs.
@@ -174,6 +183,26 @@ export const reconcileMigrationLineage = Effect.gen(function* () {
   }
 
   const recordedNamesById = new Map(recorded.map((row) => [row.migration_id, row.name]));
+  const hasLegacyT3ShiftedSynaraLineage =
+    highWaterMark >= 19 &&
+    legacyT3ShiftedSynaraLineage.every(
+      ([id, name]) => recordedNamesById.get(id) === name,
+    );
+  if (hasLegacyT3ShiftedSynaraLineage) {
+    yield* Effect.logWarning(
+      "Migration tracker matches legacy T3 shifted lineage; normalizing Synara-equivalent rows before replaying current migrations",
+    ).pipe(Effect.annotateLogs({ highWaterMark }));
+
+    yield* sql`DELETE FROM effect_sql_migrations WHERE migration_id >= 14`;
+    for (const [id, name] of migrationEntries.filter(([id]) => id >= 14 && id <= 16)) {
+      yield* sql`
+        INSERT INTO effect_sql_migrations (migration_id, name)
+        VALUES (${id}, ${name})
+      `;
+    }
+    return;
+  }
+
   const diverged = migrationEntries.find(
     ([id, name]) => id <= highWaterMark && recordedNamesById.get(id) !== name,
   );

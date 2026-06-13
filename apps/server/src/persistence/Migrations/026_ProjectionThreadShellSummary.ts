@@ -5,26 +5,33 @@
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as Effect from "effect/Effect";
 
+import { columnExists } from "./schemaHelpers.ts";
+
 export default Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
 
-  yield* sql`
-    ALTER TABLE projection_threads
-    ADD COLUMN latest_user_message_at TEXT
-  `.pipe(Effect.catch(() => Effect.void));
+  const ensureColumn = (columnName: string, definition: string) =>
+    Effect.gen(function* () {
+      if (yield* columnExists(sql, "projection_threads", columnName)) {
+        return;
+      }
+      yield* sql.unsafe(`
+        ALTER TABLE projection_threads
+        ADD COLUMN ${definition}
+      `);
+    });
 
-  yield* sql`
-    ALTER TABLE projection_threads
-    ADD COLUMN pending_approval_count INTEGER NOT NULL DEFAULT 0
-  `.pipe(Effect.catch(() => Effect.void));
-
-  yield* sql`
-    ALTER TABLE projection_threads
-    ADD COLUMN pending_user_input_count INTEGER NOT NULL DEFAULT 0
-  `.pipe(Effect.catch(() => Effect.void));
-
-  yield* sql`
-    ALTER TABLE projection_threads
-    ADD COLUMN has_actionable_proposed_plan INTEGER NOT NULL DEFAULT 0
-  `.pipe(Effect.catch(() => Effect.void));
+  yield* ensureColumn("latest_user_message_at", "latest_user_message_at TEXT");
+  yield* ensureColumn(
+    "pending_approval_count",
+    "pending_approval_count INTEGER NOT NULL DEFAULT 0",
+  );
+  yield* ensureColumn(
+    "pending_user_input_count",
+    "pending_user_input_count INTEGER NOT NULL DEFAULT 0",
+  );
+  yield* ensureColumn(
+    "has_actionable_proposed_plan",
+    "has_actionable_proposed_plan INTEGER NOT NULL DEFAULT 0",
+  );
 });

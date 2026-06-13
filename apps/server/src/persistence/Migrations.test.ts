@@ -102,6 +102,51 @@ layer("reconcileMigrationLineage", (it) => {
     }),
   );
 
+  it.effect("normalizes legacy T3 shifted Synara rows before replaying current migrations", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+
+      // This suite shares one in-memory database, so prior tests have already
+      // applied the current schema. Rewrite only the tracker into the legacy
+      // ~/.t3 ID layout observed in user stores.
+      yield* sql`DELETE FROM effect_sql_migrations WHERE migration_id >= 14`;
+      for (const [id, name] of [
+        [14, "ProjectionThreadContextWindow"],
+        [15, "ProjectionThreadsAutorenameCache"],
+        [16, "ClearLegacyCodexContextWindow"],
+        [17, "ProjectionThreadProposedPlanImplementation"],
+        [18, "ProjectionTurnsSourceProposedPlan"],
+        [19, "CanonicalizeModelSelections"],
+        [20, "ProjectionThreadsArchivedAt"],
+        [21, "ProjectionThreadsArchivedAtIndex"],
+        [22, "ProjectionSnapshotLookupIndexes"],
+        [23, "AuthAccessManagement"],
+        [24, "AuthSessionClientMetadata"],
+        [25, "AuthSessionLastConnectedAt"],
+        [26, "ProjectionThreadShellSummary"],
+        [27, "BackfillProjectionThreadShellSummary"],
+        [28, "CleanupInvalidProjectionPendingApprovals"],
+      ] as const) {
+        yield* sql`
+          INSERT INTO effect_sql_migrations (migration_id, name)
+          VALUES (${id}, ${name})
+        `;
+      }
+
+      const executed = yield* runMigrations();
+      assert.deepStrictEqual(
+        executed.map(([id]) => id),
+        migrationEntries.map(([id]) => id).filter((id) => id >= 17),
+      );
+
+      const rows = yield* trackerRows(sql);
+      assert.deepStrictEqual(
+        rows.map((row) => [row.migration_id, row.name]),
+        migrationEntries.map(([id, name]) => [id, name]),
+      );
+    }),
+  );
+
   it.effect("refuses to run when the divergence is inside the shared lineage prefix", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
