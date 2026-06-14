@@ -127,6 +127,7 @@ import {
   buildThreadBreadcrumbs,
   enrichSubagentWorkEntries,
   resolveActiveThreadTitle,
+  resolveActiveTurnLiveDiffState,
   resolveCommittedProviderModel,
   resolveDefaultEnvironmentPanelOpen,
   resolveEnvironmentPanelVisible,
@@ -177,7 +178,6 @@ import {
   buildSourceProposedPlanReference,
   hasActionableProposedPlan,
   hasLiveTurnTailWork,
-  isProviderFileEditWorkLogEntry,
   isLatestTurnSettled,
   type ActiveTaskListState,
 } from "../session-logic";
@@ -304,6 +304,12 @@ import {
   formatAssistantSelectionQueuePreview,
   formatAssistantSelectionTitleSeed,
 } from "../lib/assistantSelections";
+import {
+  appendFileCommentsToPrompt,
+  formatFileCommentLabel,
+  formatFileCommentTitleSeed,
+  type FileCommentDraft,
+} from "../lib/fileComments";
 import {
   deriveContextWindowSelectionStatus,
   deriveCumulativeCostUsd,
@@ -479,6 +485,7 @@ const EMPTY_SUGGESTION_SOURCE_THREADS: Thread[] = [];
 const EMPTY_COMPOSER_IMAGES: ComposerImageAttachment[] = [];
 const EMPTY_COMPOSER_ASSISTANT_SELECTIONS: ComposerAssistantSelectionAttachment[] = [];
 const EMPTY_COMPOSER_TERMINAL_CONTEXTS: TerminalContextDraft[] = [];
+const EMPTY_COMPOSER_FILE_COMMENTS: FileCommentDraft[] = [];
 const EMPTY_COMPOSER_SKILLS: ProviderSkillReference[] = [];
 const EMPTY_COMPOSER_MENTIONS: ProviderMentionReference[] = [];
 const EMPTY_QUEUED_COMPOSER_TURNS: QueuedComposerTurn[] = [];
@@ -616,6 +623,7 @@ function buildQueuedComposerPreviewText(input: {
   images: ReadonlyArray<ComposerImageAttachment>;
   assistantSelections: ReadonlyArray<{ id: string }>;
   terminalContexts: ReadonlyArray<TerminalContextDraft>;
+  fileComments: ReadonlyArray<FileCommentDraft>;
 }): string {
   if (input.trimmedPrompt.length > 0) {
     return input.trimmedPrompt;
@@ -630,6 +638,10 @@ function buildQueuedComposerPreviewText(input: {
   const firstTerminalContext = input.terminalContexts[0];
   if (firstTerminalContext) {
     return formatTerminalContextLabel(firstTerminalContext);
+  }
+  const firstFileComment = input.fileComments[0];
+  if (firstFileComment) {
+    return formatFileCommentLabel(firstFileComment);
   }
   return "Queued follow-up";
 }
@@ -703,6 +715,7 @@ interface ChatViewProps {
   isFocusedPane?: boolean;
   panelState?: SplitViewPanePanelState;
   onToggleDiffPanel?: () => void;
+  onOpenDiffPanel?: () => void;
   onToggleBrowserPanel?: () => void;
   onOpenBrowserUrl?: (url: string) => void;
   onOpenTurnDiffPanel?: (turnId: TurnId, filePath?: string) => void;
@@ -725,6 +738,7 @@ export default function ChatView({
   isFocusedPane = true,
   panelState,
   onToggleDiffPanel,
+  onOpenDiffPanel,
   onToggleBrowserPanel,
   onOpenBrowserUrl,
   onOpenTurnDiffPanel,
@@ -766,6 +780,7 @@ export default function ChatView({
         images: draft?.images ?? EMPTY_COMPOSER_IMAGES,
         assistantSelections: draft?.assistantSelections ?? EMPTY_COMPOSER_ASSISTANT_SELECTIONS,
         terminalContexts: draft?.terminalContexts ?? EMPTY_COMPOSER_TERMINAL_CONTEXTS,
+        fileComments: draft?.fileComments ?? EMPTY_COMPOSER_FILE_COMMENTS,
         skills: draft?.skills ?? EMPTY_COMPOSER_SKILLS,
         mentions: draft?.mentions ?? EMPTY_COMPOSER_MENTIONS,
         queuedTurns: draft?.queuedTurns ?? EMPTY_QUEUED_COMPOSER_TURNS,
@@ -789,6 +804,7 @@ export default function ChatView({
   const prompt = promptRef.current;
   const composerImages = composerDraft.images;
   const composerAssistantSelections = composerDraft.assistantSelections;
+  const composerFileComments = composerDraft.fileComments;
   const composerTerminalContexts = composerDraft.terminalContexts;
   const composerSkills = composerDraft.skills;
   const composerMentions = composerDraft.mentions;
@@ -823,11 +839,13 @@ export default function ChatView({
           composerPromptHasSendableText ||
           composerImages.length > 0 ||
           composerAssistantSelections.length > 0 ||
+          composerFileComments.length > 0 ||
           sendableTerminalContexts.length > 0,
       };
     },
     [
       composerAssistantSelections.length,
+      composerFileComments.length,
       composerImages.length,
       composerPromptHasSendableText,
       composerTerminalContexts,
@@ -919,6 +937,8 @@ export default function ChatView({
   const clearComposerDraftAssistantSelections = useComposerDraftStore(
     (store) => store.clearAssistantSelections,
   );
+  const addComposerDraftFileComment = useComposerDraftStore((store) => store.addFileComment);
+  const clearComposerDraftFileComments = useComposerDraftStore((store) => store.clearFileComments);
   const insertComposerDraftTerminalContext = useComposerDraftStore(
     (store) => store.insertTerminalContext,
   );
@@ -966,6 +986,7 @@ export default function ChatView({
     composerAssistantSelections,
   );
   const composerTerminalContextsRef = useRef<TerminalContextDraft[]>(composerTerminalContexts);
+  const composerFileCommentsRef = useRef<FileCommentDraft[]>(composerFileComments);
   const [localDraftErrorsByThreadId, setLocalDraftErrorsByThreadId] = useState<
     Record<ThreadId, string | null>
   >({});
@@ -1213,6 +1234,12 @@ export default function ChatView({
     },
     [addComposerDraftTerminalContexts, threadId],
   );
+  const addComposerFileCommentToDraft = useCallback(
+    (comment: FileCommentDraft) => {
+      addComposerDraftFileComment(threadId, comment);
+    },
+    [addComposerDraftFileComment, threadId],
+  );
   const removeComposerImageFromDraft = useCallback(
     (imageId: string) => {
       removeComposerDraftImage(threadId, imageId);
@@ -1222,6 +1249,9 @@ export default function ChatView({
   const clearComposerAssistantSelectionsFromDraft = useCallback(() => {
     clearComposerDraftAssistantSelections(threadId);
   }, [clearComposerDraftAssistantSelections, threadId]);
+  const clearComposerFileCommentsFromDraft = useCallback(() => {
+    clearComposerDraftFileComments(threadId);
+  }, [clearComposerDraftFileComments, threadId]);
   const removeComposerTerminalContextFromDraft = useCallback(
     (contextId: string) => {
       const contextIndex = composerTerminalContexts.findIndex(
@@ -1308,8 +1338,8 @@ export default function ChatView({
   const latestTurnSettled = latestTurnSettledByProvider && !hasLiveTurnTail;
   // `latestTurnSettled` is also false when there is NO started turn (a brand-new
   // chat), because `isLatestTurnSettled` treats a non-existent turn as unsettled.
-  // Gate "live turn" UI on an actually-started turn so the working-tree diff strip
-  // doesn't leak onto a fresh chat just because the repo happens to be dirty.
+  // Gate live-turn UI on an actually-started turn so composer chrome cannot
+  // appear on a fresh chat just because the repo already has local edits.
   const latestTurnLive = Boolean(activeLatestTurn?.startedAt) && !latestTurnSettled;
   const activeProjectId = activeThread?.projectId ?? draftThread?.projectId ?? null;
   const activeProject = useStore(
@@ -1932,14 +1962,6 @@ export default function ChatView({
         visibleTurnIds: workLogVisibleTurnIds,
       }),
     [activeLatestTurn?.turnId, threadActivities, workLogVisibleTurnIds],
-  );
-  const activeTurnHasFileChangeWork = useMemo(
-    () =>
-      rawWorkLogEntries.some(
-        (entry) =>
-          entry.turnId === activeLatestTurn?.turnId && isProviderFileEditWorkLogEntry(entry),
-      ),
-    [activeLatestTurn?.turnId, rawWorkLogEntries],
   );
   const hasWorkLogSubagents = useMemo(
     () => rawWorkLogEntries.some((entry) => (entry.subagents?.length ?? 0) > 0),
@@ -3024,6 +3046,16 @@ export default function ChatView({
     isGitRepo,
     refetchInterval: repoDiffBadgeRefreshIntervalMs,
   });
+  // The composer live strip is turn-scoped; repoDiffTotals can include unrelated
+  // local edits that existed before the active agent turn started.
+  const activeTurnLiveDiffState = useMemo(
+    () =>
+      resolveActiveTurnLiveDiffState({
+        latestTurnId: activeLatestTurn?.turnId ?? null,
+        turnDiffSummaries,
+      }),
+    [activeLatestTurn?.turnId, turnDiffSummaries],
+  );
   const splitTerminalShortcutLabel = useMemo(
     () =>
       shortcutLabelForCommand(keybindings, "terminal.splitRight") ??
@@ -3094,7 +3126,14 @@ export default function ChatView({
   // Open-only diff action (no toggle): used by affordances like the live-changes
   // "Review" strip where a second click should never close an already-open panel.
   const onOpenDiff = useCallback(() => {
-    if (diffEnvironmentPending || resolvedDiffOpen) {
+    if (diffEnvironmentPending) {
+      return;
+    }
+    if (onOpenDiffPanel) {
+      onOpenDiffPanel();
+      return;
+    }
+    if (resolvedDiffOpen && !diffOpen) {
       return;
     }
     if (onToggleDiffPanel) {
@@ -3111,7 +3150,15 @@ export default function ChatView({
         diff: "1",
       }),
     });
-  }, [diffEnvironmentPending, navigate, onToggleDiffPanel, resolvedDiffOpen, threadId]);
+  }, [
+    diffEnvironmentPending,
+    diffOpen,
+    navigate,
+    onOpenDiffPanel,
+    onToggleDiffPanel,
+    resolvedDiffOpen,
+    threadId,
+  ]);
   const onToggleBrowser = useCallback(() => {
     if (onToggleBrowserPanel) {
       onToggleBrowserPanel();
@@ -4676,6 +4723,10 @@ export default function ChatView({
   }, [composerTerminalContexts]);
 
   useEffect(() => {
+    composerFileCommentsRef.current = composerFileComments;
+  }, [composerFileComments]);
+
+  useEffect(() => {
     queuedComposerTurnsRef.current = queuedComposerTurns;
   }, [queuedComposerTurns]);
 
@@ -5616,6 +5667,7 @@ export default function ChatView({
         queuedTurn.kind === "chat" ? queuedTurn.images.map(cloneComposerImageAttachment) : [];
       const restoredAssistantSelections =
         queuedTurn.kind === "chat" ? queuedTurn.assistantSelections : [];
+      const restoredFileComments = queuedTurn.kind === "chat" ? queuedTurn.fileComments : [];
       promptRef.current = nextPrompt;
       syncComposerPromptHasSendableText(nextPrompt);
       cancelPendingPromptDraftCommit(activeThread.id);
@@ -5633,6 +5685,9 @@ export default function ChatView({
         }
         for (const selection of restoredAssistantSelections) {
           addComposerAssistantSelectionToDraft(selection);
+        }
+        for (const comment of restoredFileComments) {
+          addComposerFileCommentToDraft(comment);
         }
         if (queuedTurn.terminalContexts.length > 0) {
           addComposerTerminalContextsToDraft(queuedTurn.terminalContexts);
@@ -5653,6 +5708,7 @@ export default function ChatView({
     [
       activeThread,
       addComposerAssistantSelectionToDraft,
+      addComposerFileCommentToDraft,
       addComposerImagesToDraft,
       addComposerTerminalContextsToDraft,
       cancelPendingPromptDraftCommit,
@@ -5736,6 +5792,7 @@ export default function ChatView({
     let composerImagesForSend = queuedChatTurn?.images ?? composerImages;
     const composerAssistantSelectionsForSend =
       queuedChatTurn?.assistantSelections ?? composerAssistantSelections;
+    const composerFileCommentsForSend = queuedChatTurn?.fileComments ?? composerFileComments;
     const composerTerminalContextsForSend =
       queuedChatTurn?.terminalContexts ?? composerTerminalContexts;
     const selectedProviderForSend = queuedChatTurn?.selectedProvider ?? selectedProvider;
@@ -5767,6 +5824,7 @@ export default function ChatView({
       prompt: promptForSend,
       imageCount: composerImagesForSend.length,
       assistantSelectionCount: composerAssistantSelectionsForSend.length,
+      fileCommentCount: composerFileCommentsForSend.length,
       terminalContexts: composerTerminalContextsForSend,
     });
     // Queued chat turns already captured their intended mode; only live composer
@@ -5804,6 +5862,7 @@ export default function ChatView({
     if (
       composerImagesForSend.length === 0 &&
       composerAssistantSelectionsForSend.length === 0 &&
+      composerFileCommentsForSend.length === 0 &&
       sendableComposerTerminalContexts.length === 0
     ) {
       const handledSlashCommand = await handleStandaloneSlashCommand(trimmed);
@@ -5903,10 +5962,12 @@ export default function ChatView({
           images: queuedImagesForPersistence,
           assistantSelections: composerAssistantSelectionsForSend,
           terminalContexts: sendableComposerTerminalContexts,
+          fileComments: composerFileCommentsForSend,
         }),
         prompt: promptForSend,
         images: queuedImagesForPersistence,
         assistantSelections: composerAssistantSelectionsForSend,
+        fileComments: composerFileCommentsForSend,
         terminalContexts: sendableComposerTerminalContexts,
         skills: selectedComposerSkillsForSend,
         mentions: selectedComposerMentionsForSend,
@@ -5938,6 +5999,8 @@ export default function ChatView({
         titleSeed = formatAssistantSelectionTitleSeed(composerAssistantSelectionsForSend.length);
       } else if (sendableComposerTerminalContexts.length > 0) {
         titleSeed = formatTerminalContextLabel(sendableComposerTerminalContexts[0]!);
+      } else if (composerFileCommentsForSend.length > 0) {
+        titleSeed = formatFileCommentTitleSeed(composerFileCommentsForSend.length);
       } else {
         titleSeed = GENERIC_CHAT_THREAD_TITLE;
       }
@@ -6063,12 +6126,18 @@ export default function ChatView({
 
     const composerImagesSnapshot = [...composerImagesForSend];
     const composerAssistantSelectionsSnapshot = [...composerAssistantSelectionsForSend];
+    const composerFileCommentsSnapshot = [...composerFileCommentsForSend];
     const composerTerminalContextsSnapshot = [...sendableComposerTerminalContexts];
     const composerSkillsSnapshot = [...selectedComposerSkillsForSend];
     const composerMentionsSnapshot = [...selectedComposerMentionsForSend];
-    const messageTextForSend = appendTerminalContextsToPrompt(
-      appendAssistantSelectionsToPrompt(promptForSend, composerAssistantSelectionsSnapshot),
-      composerTerminalContextsSnapshot,
+    // File comments are serialized outermost (after assistant selections and
+    // terminal contexts) so the trailing-block extractors unwrap them first.
+    const messageTextForSend = appendFileCommentsToPrompt(
+      appendTerminalContextsToPrompt(
+        appendAssistantSelectionsToPrompt(promptForSend, composerAssistantSelectionsSnapshot),
+        composerTerminalContextsSnapshot,
+      ),
+      composerFileCommentsSnapshot,
     );
     const messageIdForSend = newMessageId();
     const messageCreatedAt = new Date().toISOString();
@@ -6305,6 +6374,7 @@ export default function ChatView({
         promptRef.current.length === 0 &&
         composerImagesRef.current.length === 0 &&
         composerAssistantSelectionsRef.current.length === 0 &&
+        composerFileCommentsRef.current.length === 0 &&
         composerTerminalContextsRef.current.length === 0
       ) {
         setOptimisticUserMessages((existing) => {
@@ -6322,6 +6392,9 @@ export default function ChatView({
         addComposerImagesToDraft(composerImagesSnapshot.map(cloneComposerImageAttachment));
         for (const selection of composerAssistantSelectionsSnapshot) {
           addComposerAssistantSelectionToDraft(selection);
+        }
+        for (const comment of composerFileCommentsSnapshot) {
+          addComposerFileCommentToDraft(comment);
         }
         addComposerTerminalContextsToDraft(composerTerminalContextsSnapshot);
         updateSelectedComposerSkills(composerSkillsSnapshot);
@@ -7969,6 +8042,9 @@ export default function ChatView({
     },
     [diffEnvironmentPending, navigate, onOpenTurnDiffPanel, threadId],
   );
+  const onReviewComposerLiveChanges = useCallback(() => {
+    onOpenDiff();
+  }, [onOpenDiff]);
   const onNavigateToThread = useCallback(
     (nextThreadId: ThreadId) => {
       void navigate({
@@ -8279,8 +8355,7 @@ export default function ChatView({
       }
     : null;
 
-  const showComposerLiveChangesHeader =
-    latestTurnLive && activeTurnHasFileChangeWork && repoDiffTotals.fileCount > 0;
+  const showComposerLiveChangesHeader = latestTurnLive && activeTurnLiveDiffState.fileCount > 0;
   const showComposerActiveTaskListCard = Boolean(activeTaskList && !planSidebarOpen);
 
   // Composer layout keeps the task list and footer actions in one render path so
@@ -8311,10 +8386,10 @@ export default function ChatView({
           <ComposerColumnFrame>
             {showComposerLiveChangesHeader ? (
               <ComposerLiveChangesHeader
-                fileCount={repoDiffTotals.fileCount}
-                additions={repoDiffTotals.additions}
-                deletions={repoDiffTotals.deletions}
-                onReview={onOpenDiff}
+                fileCount={activeTurnLiveDiffState.fileCount}
+                additions={activeTurnLiveDiffState.additions}
+                deletions={activeTurnLiveDiffState.deletions}
+                onReview={onReviewComposerLiveChanges}
               />
             ) : null}
             {renderActiveTaskListCard(showComposerLiveChangesHeader)}
@@ -8402,13 +8477,17 @@ export default function ChatView({
                   ) : null}
                   {!isComposerApprovalState &&
                     pendingUserInputs.length === 0 &&
-                    (composerAssistantSelections.length > 0 || composerImages.length > 0) && (
+                    (composerAssistantSelections.length > 0 ||
+                      composerFileComments.length > 0 ||
+                      composerImages.length > 0) && (
                       <ComposerReferenceAttachments
                         assistantSelections={composerAssistantSelections}
+                        fileComments={composerFileComments}
                         images={composerImages}
                         nonPersistedImageIdSet={nonPersistedComposerImageIdSet}
                         onExpandImage={setExpandedImage}
                         onRemoveAssistantSelections={clearComposerAssistantSelectionsFromDraft}
+                        onRemoveFileComments={clearComposerFileCommentsFromDraft}
                         onRemoveImage={removeComposerImage}
                       />
                     )}

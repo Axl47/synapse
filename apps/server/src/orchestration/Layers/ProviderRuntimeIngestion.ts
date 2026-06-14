@@ -12,6 +12,7 @@ import {
   TurnId,
   type OrchestrationThreadActivity,
   type OrchestrationThread,
+  type OrchestrationThreadShell,
   type ProviderRuntimeEvent,
   type RuntimeMode,
 } from "@t3tools/contracts";
@@ -29,6 +30,7 @@ import {
   generatedImagePathFromRuntimeEvent,
   isGeneratedImageOnlyMarkdown,
 } from "../../codexGeneratedImages.ts";
+import { parseCheckpointFilesFromUnifiedDiff } from "../../checkpointing/Diffs.ts";
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
 import { ProjectionTurnRepository } from "../../persistence/Services/ProjectionTurns.ts";
 import { ProjectionTurnRepositoryLive } from "../../persistence/Layers/ProjectionTurns.ts";
@@ -84,6 +86,73 @@ type RuntimeIngestionInput =
     };
 
 type ActivityPayload = OrchestrationThreadActivity["payload"];
+type ProviderDiffPlaceholder = {
+  readonly checkpointRef: CheckpointRef;
+  readonly checkpointTurnCount: number;
+  // Immutable snapshot of the turn's diff files. Stored values are only ever read
+  // (forwarded to dispatch / re-stored), never mutated in place, so this is a
+  // ReadonlyArray — which also lets it accept the readonly `checkpoint.files` from
+  // an OrchestrationThread without a defensive copy.
+  readonly files: ReadonlyArray<ReturnType<typeof parseCheckpointFilesFromUnifiedDiff>[number]>;
+};
+
+/**
+ * Promote a cheap thread *shell* into a full {@link OrchestrationThread} by
+ * filling the heavy arrays with empties. Only valid for events that do not read
+ * those arrays (see {@link eventNeedsHeavyThreadDetail}); the empties are never
+ * observed on those code paths.
+ */
+function threadDetailFromShell(shell: OrchestrationThreadShell): OrchestrationThread {
+  return {
+    ...shell,
+    deletedAt: null,
+    messages: [],
+    proposedPlans: [],
+    activities: [],
+    checkpoints: [],
+  };
+}
+
+/**
+ * PERF: ingesting one runtime event used to load the full thread detail, which
+ * decodes every message's text. For a long turn that streams a large output
+ * (tens of thousands of deltas over a growing transcript) this is quadratic, so
+ * the live transcript — and crucially the `turn.completed` event — fall minutes
+ * behind the provider even though the turn already finished.
+ *
+ * The overwhelming majority of events (assistant deltas, tool-call lifecycle,
+ * message parts) only ever read thread *shell* fields. Only the handlers for the
+ * event types below read the heavy arrays (`thread.messages` /
+ * `thread.proposedPlans` / `thread.checkpoints`), so only those pay for the full
+ * detail; everything else uses the cheap shell.
+ */
+function eventNeedsHeavyThreadDetail(event: ProviderRuntimeEvent): boolean {
+  switch (event.type) {
+    case "turn.proposed.completed":
+    case "turn.completed":
+    case "turn.aborted":
+    case "turn.diff.updated":
+      return true;
+    case "item.completed":
+      // assistant_message completion reads thread.messages to decide whether to
+      // apply fallback completion text; image_generation completion scans
+      // thread.messages to attach the generated-image reference.
+      return (
+        event.payload.itemType === "assistant_message" ||
+        generatedImagePathFromRuntimeEvent(event) !== undefined
+      );
+    default:
+      return false;
+  }
+}
+
+function parseProviderTurnDiffFiles(unifiedDiff: string) {
+  try {
+    return parseCheckpointFilesFromUnifiedDiff(unifiedDiff);
+  } catch {
+    return null;
+  }
+}
 
 function toActivityPayload(payload: unknown): ActivityPayload {
   return payload as ActivityPayload;
@@ -1146,6 +1215,7 @@ const make = Effect.gen(function* () {
     timeToLive: BUFFERED_PROPOSED_PLAN_BY_ID_TTL,
     lookup: () => Effect.succeed({ text: "", createdAt: "" }),
   });
+  const providerDiffPlaceholdersRef = yield* Ref.make(new Map<string, ProviderDiffPlaceholder>());
 
   const getThreadDetail = Effect.fnUntraced(function* (
     threadId: ThreadId,
@@ -1155,6 +1225,20 @@ const make = Effect.gen(function* () {
         .getThreadDetailById(threadId)
         .pipe(Effect.catch(() => Effect.succeed(Option.none()))),
     );
+  });
+
+  // PERF: cheap counterpart to getThreadDetail for events that never read the
+  // heavy thread arrays. Loads only the shell projection and promotes it with
+  // empty arrays. See eventNeedsHeavyThreadDetail.
+  const getThreadShellDetail = Effect.fnUntraced(function* (
+    threadId: ThreadId,
+  ): Effect.fn.Return<OrchestrationThread | undefined> {
+    const shell = Option.getOrUndefined(
+      yield* projectionSnapshotQuery
+        .getThreadShellById(threadId)
+        .pipe(Effect.catch(() => Effect.succeed(Option.none()))),
+    );
+    return shell ? threadDetailFromShell(shell) : undefined;
   });
 
   const getProjectShell = Effect.fnUntraced(function* (
@@ -1185,6 +1269,22 @@ const make = Effect.gen(function* () {
     }
     return isGitRepository(workspaceCwd);
   });
+
+  const supportsLiveTurnDiffPatch = Effect.fnUntraced(function* (
+    provider: ProviderRuntimeEvent["provider"],
+  ) {
+    const capabilities = yield* providerService
+      .getCapabilities(provider)
+      .pipe(Effect.catch(() => Effect.succeed(null)));
+    return capabilities?.supportsLiveTurnDiffPatch === true;
+  });
+
+  const clearProviderDiffPlaceholder = (threadId: ThreadId, turnId: TurnId) =>
+    Ref.update(providerDiffPlaceholdersRef, (placeholders) => {
+      const next = new Map(placeholders);
+      next.delete(providerTurnKey(threadId, turnId));
+      return next;
+    });
 
   const rememberAssistantMessageId = (threadId: ThreadId, turnId: TurnId, messageId: MessageId) =>
     Cache.getOption(turnMessageIdsByTurnKey, providerTurnKey(threadId, turnId)).pipe(
@@ -1742,7 +1842,14 @@ const make = Effect.gen(function* () {
   const processRuntimeEvent = (event: ProviderRuntimeEvent) =>
     Effect.gen(function* () {
       const now = event.createdAt;
-      const parentThread = yield* getThreadDetail(event.threadId);
+      // Load the full (heavy) detail only when this event's handlers actually read
+      // thread.messages / proposedPlans / checkpoints; otherwise use the cheap
+      // shell so high-frequency streaming events don't re-decode the whole
+      // transcript. See eventNeedsHeavyThreadDetail for the safety rationale.
+      const needsHeavyThreadDetail = eventNeedsHeavyThreadDetail(event);
+      const parentThread = needsHeavyThreadDetail
+        ? yield* getThreadDetail(event.threadId)
+        : yield* getThreadShellDetail(event.threadId);
       if (!parentThread) return;
 
       const ensureSubagentThread = (
@@ -1756,7 +1863,14 @@ const make = Effect.gen(function* () {
           const childThreadId = subagentThreadId(parentThread.id, providerThreadId);
           // A single provider event can describe the child both as a collab receiver and
           // as the event's provider thread, so re-read after any earlier dispatch in this handler.
-          const existingThread = yield* projectionSnapshotQuery.getThreadDetailById(childThreadId);
+          // Mirror the parent load: only this event's heavy-detail handlers read the
+          // child's message/plan/checkpoint arrays, so otherwise use the cheap shell.
+          const existingThread = needsHeavyThreadDetail
+            ? yield* projectionSnapshotQuery.getThreadDetailById(childThreadId)
+            : Option.map(
+                yield* projectionSnapshotQuery.getThreadShellById(childThreadId),
+                threadDetailFromShell,
+              );
           const resolvedModelSelection =
             identity?.model && identity.modelIsRequestedHint !== true
               ? {
@@ -2188,6 +2302,7 @@ const make = Effect.gen(function* () {
             turnId: finalizedTurnId,
             updatedAt: now,
           });
+          yield* clearProviderDiffPlaceholder(thread.id, finalizedTurnId);
         }
       }
 
@@ -2202,6 +2317,7 @@ const make = Effect.gen(function* () {
             commandTag: "assistant-complete-session-exit",
             finalDeltaCommandTag: "assistant-delta-session-exit",
           });
+          yield* clearProviderDiffPlaceholder(thread.id, exitedTurnId);
         }
         yield* clearTurnStateForSession(thread.id);
       }
@@ -2219,6 +2335,7 @@ const make = Effect.gen(function* () {
             commandTag: "assistant-complete-runtime-error",
             finalDeltaCommandTag: "assistant-delta-runtime-error",
           });
+          yield* clearProviderDiffPlaceholder(thread.id, erroredTurnId);
         }
 
         const shouldApplyRuntimeError = !STRICT_PROVIDER_LIFECYCLE_GUARD
@@ -2256,17 +2373,41 @@ const make = Effect.gen(function* () {
       if (event.type === "turn.diff.updated") {
         const turnId = toTurnId(event.turnId);
         if (turnId && (yield* isGitRepoForThread(thread.id))) {
-          // Skip if a checkpoint already exists for this turn. A real
-          // (non-placeholder) capture from CheckpointReactor should not
-          // be clobbered, and dispatching a duplicate placeholder for the
-          // same turnId would produce an unstable checkpointTurnCount.
-          if (thread.checkpoints.some((c) => c.turnId === turnId)) {
-            // Already tracked; no-op.
+          const existingCheckpoint = thread.checkpoints.find((c) => c.turnId === turnId);
+          const placeholderKey = providerTurnKey(thread.id, turnId);
+          const trackedPlaceholder = (yield* Ref.get(providerDiffPlaceholdersRef)).get(
+            placeholderKey,
+          );
+          const existingProviderPlaceholder =
+            existingCheckpoint?.checkpointRef.startsWith("provider-diff:") === true
+              ? {
+                  checkpointRef: existingCheckpoint.checkpointRef,
+                  checkpointTurnCount: existingCheckpoint.checkpointTurnCount,
+                  files: existingCheckpoint.files,
+                }
+              : null;
+          // Only provider-diff placeholders are live-updated. A real checkpoint from
+          // CheckpointReactor is the terminal turn diff and must stay authoritative.
+          if (existingCheckpoint && !existingProviderPlaceholder) {
+            yield* clearProviderDiffPlaceholder(thread.id, turnId);
           } else {
+            const canParseLiveDiffPatch = yield* supportsLiveTurnDiffPatch(event.provider);
+            const livePlaceholder = trackedPlaceholder ?? existingProviderPlaceholder;
             const maxTurnCount = thread.checkpoints.reduce(
               (max, c) => Math.max(max, c.checkpointTurnCount),
               0,
             );
+            const files =
+              (canParseLiveDiffPatch
+                ? parseProviderTurnDiffFiles(event.payload.unifiedDiff)
+                : null) ??
+              trackedPlaceholder?.files ??
+              existingCheckpoint?.files ??
+              [];
+            const checkpointRef =
+              livePlaceholder?.checkpointRef ??
+              CheckpointRef.makeUnsafe(`provider-diff:${event.eventId}`);
+            const checkpointTurnCount = livePlaceholder?.checkpointTurnCount ?? maxTurnCount + 1;
             // Leave assistantMessageId undefined on the placeholder: the real
             // capture performed by CheckpointReactor will resolve the actual
             // assistant MessageId once the message is finalized. Emitting a
@@ -2278,13 +2419,24 @@ const make = Effect.gen(function* () {
               threadId: thread.id,
               turnId,
               completedAt: now,
-              checkpointRef: CheckpointRef.makeUnsafe(`provider-diff:${event.eventId}`),
+              checkpointRef,
               status: "missing",
-              files: [],
+              files,
               assistantMessageId: undefined,
-              checkpointTurnCount: maxTurnCount + 1,
+              checkpointTurnCount,
               createdAt: now,
             });
+            if (canParseLiveDiffPatch) {
+              yield* Ref.update(providerDiffPlaceholdersRef, (placeholders) => {
+                const next = new Map(placeholders);
+                next.set(placeholderKey, {
+                  checkpointRef,
+                  checkpointTurnCount,
+                  files,
+                });
+                return next;
+              });
+            }
           }
         }
       }

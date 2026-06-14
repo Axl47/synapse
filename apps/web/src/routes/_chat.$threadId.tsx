@@ -87,11 +87,13 @@ import { DockFilePane } from "../components/chat/DockFilePane";
 import { readEditorViewState, storeEditorViewState } from "../editorViewState";
 import { basenameOfPath } from "../file-icons";
 import {
+  addChatFileComment,
   appendChatFileReference,
   appendComposerPromptText,
   buildWhyLinesPrompt,
   type ChatFileReference,
 } from "../lib/chatReferences";
+import type { FileCommentSelection } from "../lib/fileComments";
 import { type DockPaneRuntimeMode } from "../lib/dockPaneActivation";
 import { projectListDirectoriesQueryOptions } from "../lib/projectReactQuery";
 import {
@@ -655,6 +657,7 @@ function DeferredChatView(props: {
   isFocusedPane: boolean;
   panelState: SplitViewPanePanelState;
   onToggleDiff: () => void;
+  onOpenDiff: () => void;
   onToggleBrowser: () => void;
   onOpenBrowserUrl: (url: string) => void;
   onOpenTurnDiff: (turnId: TurnId, filePath?: string) => void;
@@ -712,6 +715,7 @@ function DeferredChatView(props: {
       isFocusedPane={props.isFocusedPane}
       panelState={props.panelState}
       onToggleDiffPanel={props.onToggleDiff}
+      onOpenDiffPanel={props.onOpenDiff}
       onToggleBrowserPanel={props.onToggleBrowser}
       onOpenBrowserUrl={props.onOpenBrowserUrl}
       onOpenTurnDiffPanel={props.onOpenTurnDiff}
@@ -742,6 +746,7 @@ function SplitPaneSurface(props: {
   projects: readonly { id: ProjectId; name: string }[];
   onFocus: () => void;
   onToggleDiff: () => void;
+  onOpenDiff: () => void;
   onToggleBrowser: () => void;
   onOpenBrowserUrl: (url: string) => void;
   onOpenTurnDiff: (turnId: TurnId, filePath?: string) => void;
@@ -807,6 +812,7 @@ function SplitPaneSurface(props: {
               isFocusedPane={props.isFocused}
               panelState={props.panelState}
               onToggleDiff={props.onToggleDiff}
+              onOpenDiff={props.onOpenDiff}
               onToggleBrowser={props.onToggleBrowser}
               onOpenBrowserUrl={props.onOpenBrowserUrl}
               onOpenTurnDiff={props.onOpenTurnDiff}
@@ -1266,6 +1272,13 @@ function SplitChatSurface(props: { splitViewId: SplitViewId; routeThreadId: Thre
         projects={projects}
         onFocus={() => setPaneFocus(leaf.id)}
         onToggleDiff={() => togglePanePanel(leaf.id, "diff")}
+        onOpenDiff={() =>
+          updatePanePanelState(leaf.id, {
+            panel: "diff",
+            diffTurnId: null,
+            diffFilePath: null,
+          })
+        }
         onToggleBrowser={() => togglePanePanel(leaf.id, "browser")}
         onOpenBrowserUrl={() => updatePanePanelState(leaf.id, { panel: "browser" })}
         onOpenTurnDiff={(turnId, filePath) => openPaneTurnDiff(leaf.id, turnId, filePath)}
@@ -1489,6 +1502,14 @@ function SingleChatSurface(props: {
     requestImmediateDockHydration("diff");
     toggleSingletonPane(props.threadId, { kind: "diff" });
   }, [props.threadId, requestImmediateDockHydration, toggleSingletonPane]);
+  const handleOpenDiff = useCallback(() => {
+    requestImmediateDockHydration("diff");
+    openPane(props.threadId, {
+      kind: "diff",
+      diffTurnId: null,
+      diffFilePath: null,
+    });
+  }, [openPane, props.threadId, requestImmediateDockHydration]);
   const handleToggleBrowser = useCallback(() => {
     requestImmediateDockHydration("browser");
     toggleSingletonPane(props.threadId, { kind: "browser" });
@@ -1564,6 +1585,15 @@ function SingleChatSurface(props: {
     );
   }, [props.search.editorFilePath]);
 
+  const handleEditorOpenDiff = useCallback(() => {
+    setEditorCenterMode("diff");
+    setEditorDiffPanelState({
+      panel: "diff",
+      diffTurnId: null,
+      diffFilePath: null,
+    });
+  }, []);
+
   const handleEditorOpenTurnDiff = useCallback((turnId: TurnId, filePath?: string) => {
     setEditorCenterMode("diff");
     setEditorDiffPanelState({
@@ -1611,6 +1641,12 @@ function SingleChatSurface(props: {
   const handleAskWhyInChat = useCallback(
     (reference: ChatFileReference) => {
       appendComposerPromptText(props.threadId, buildWhyLinesPrompt(reference));
+    },
+    [props.threadId],
+  );
+  const handleCommentInChat = useCallback(
+    (comment: FileCommentSelection) => {
+      addChatFileComment(props.threadId, comment);
     },
     [props.threadId],
   );
@@ -1992,6 +2028,7 @@ function SingleChatSurface(props: {
               filePath={pane.filePath}
               onReferenceInChat={handleReferenceInChat}
               onAskWhyInChat={handleAskWhyInChat}
+              onCommentInChat={handleCommentInChat}
             />
           );
         case "sidechat":
@@ -2010,6 +2047,7 @@ function SingleChatSurface(props: {
               isFocusedPane={false}
               panelState={DOCK_EMBEDDED_PANEL_STATE}
               onToggleDiff={noop}
+              onOpenDiff={noop}
               onToggleBrowser={noop}
               onOpenBrowserUrl={noop}
               onOpenTurnDiff={noop}
@@ -2024,6 +2062,7 @@ function SingleChatSurface(props: {
       closePane,
       dockState.open,
       handleAskWhyInChat,
+      handleCommentInChat,
       handleReferenceInChat,
       props.projectId,
       props.threadId,
@@ -2123,6 +2162,7 @@ function SingleChatSurface(props: {
             onExitEditorView={handleCloseEditorView}
             onReferenceInChat={handleReferenceInChat}
             onAskWhyInChat={handleAskWhyInChat}
+            onCommentInChat={handleCommentInChat}
             onSelectProject={handleSelectEditorProject}
             diffPanel={
               <LazyDiffPanel
@@ -2153,6 +2193,7 @@ function SingleChatSurface(props: {
                   isFocusedPane
                   panelState={editorChatPanelState}
                   onToggleDiff={handleEditorToggleDiff}
+                  onOpenDiff={handleEditorOpenDiff}
                   onToggleBrowser={noop}
                   onOpenBrowserUrl={noop}
                   onOpenTurnDiff={handleEditorOpenTurnDiff}
@@ -2188,6 +2229,7 @@ function SingleChatSurface(props: {
               isFocusedPane
               panelState={chatPanelState}
               onToggleDiff={handleToggleDiff}
+              onOpenDiff={handleOpenDiff}
               onToggleBrowser={handleToggleBrowser}
               onOpenBrowserUrl={handleOpenBrowserUrl}
               onOpenTurnDiff={handleOpenTurnDiff}
