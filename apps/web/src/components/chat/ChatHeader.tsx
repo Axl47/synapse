@@ -781,15 +781,14 @@ export const ChatHeader = memo(function ChatHeader({
             </ComposerPickerMenuPopup>
           </Menu>
         ) : null}
-        {/* Keep the project-actions controller mounted (hidden) so the Open-in
-            editor menu's "Add action" entry can open the shared script dialog.
-            The inline run/▾ pill is intentionally not surfaced in the header. */}
+        {/* Project actions provide the visible header run split-button when a
+            primary script exists, and also host the shared add/edit script dialog
+            opened from compact header menus. */}
         {!isDisposableThread && activeProjectScripts ? (
           <ProjectScriptsControl
             scripts={activeProjectScripts}
             keybindings={keybindings}
             preferredScriptId={preferredScriptId}
-            showInlineControls={false}
             openAddActionNonce={openAddActionNonce}
             onRunScript={onRunProjectScript}
             onAddScript={onAddProjectScript}
