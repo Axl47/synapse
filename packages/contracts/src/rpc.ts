@@ -96,6 +96,7 @@ import {
 import {
   ServerConfig,
   ServerConfigStreamEvent,
+  ServerDesktopContext,
   ServerDiagnosticsResult,
   ServerGenerateThreadRecapInput,
   ServerGenerateThreadRecapResult,
@@ -112,6 +113,7 @@ import {
   ServerProviderUpdateInput,
   ServerProviderUpdateResult,
   ServerRefreshProvidersResult,
+  ServerSetDesktopContextInput,
   ServerStopLocalServerInput,
   ServerStopLocalServerResult,
   ServerUpdateSettingsInput,
@@ -510,6 +512,18 @@ export const WsServerGetConfigRpc = Rpc.make(WS_METHODS.serverGetConfig, {
   error: WsRpcError,
 });
 
+export const WsServerGetDesktopContextRpc = Rpc.make(WS_METHODS.serverGetDesktopContext, {
+  payload: Schema.Struct({}),
+  success: ServerDesktopContext,
+  error: WsRpcError,
+});
+
+export const WsServerSetDesktopContextRpc = Rpc.make(WS_METHODS.serverSetDesktopContext, {
+  payload: ServerSetDesktopContextInput,
+  success: ServerDesktopContext,
+  error: WsRpcError,
+});
+
 export const WsServerGetEnvironmentRpc = Rpc.make(WS_METHODS.serverGetEnvironment, {
   payload: Schema.Struct({}),
   success: ServerGetEnvironmentResult,
@@ -623,6 +637,16 @@ export const WsSubscribeServerConfigRpc = Rpc.make(WS_METHODS.subscribeServerCon
   stream: true,
 });
 
+export const WsSubscribeServerDesktopContextRpc = Rpc.make(
+  WS_METHODS.subscribeServerDesktopContext,
+  {
+    payload: Schema.Struct({}),
+    success: ServerDesktopContext,
+    error: WsRpcError,
+    stream: true,
+  },
+);
+
 export const WsSubscribeServerProviderStatusesRpc = Rpc.make(
   WS_METHODS.subscribeServerProviderStatuses,
   {
@@ -723,6 +747,8 @@ export const WsRpcGroup = RpcGroup.make(
   WsSubscribeProjectDevServerEventsRpc,
   WsFilesystemBrowseRpc,
   WsShellOpenInEditorRpc,
+  WsServerGetDesktopContextRpc,
+  WsServerSetDesktopContextRpc,
   WsGitGithubRepositoryRpc,
   WsGitStatusRpc,
   WsGitReadWorkingTreeDiffRpc,
@@ -772,6 +798,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerUpsertKeybindingRpc,
   WsSubscribeServerLifecycleRpc,
   WsSubscribeServerConfigRpc,
+  WsSubscribeServerDesktopContextRpc,
   WsSubscribeServerProviderStatusesRpc,
   WsSubscribeServerSettingsRpc,
   WsProviderGetComposerCapabilitiesRpc,

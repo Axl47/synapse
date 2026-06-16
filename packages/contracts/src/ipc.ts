@@ -74,6 +74,7 @@ import type {
 import type { FilesystemBrowseInput, FilesystemBrowseResult } from "./filesystem";
 import type {
   ServerConfig,
+  ServerDesktopContext,
   ServerDiagnosticsResult,
   ServerGenerateThreadRecapInput,
   ServerGenerateThreadRecapResult,
@@ -88,6 +89,7 @@ import type {
   ServerProviderUpdateInput,
   ServerProviderUpdateResult,
   ServerRefreshProvidersResult,
+  ServerSetDesktopContextInput,
   ServerStopLocalServerInput,
   ServerStopLocalServerResult,
   ServerUpdateSettingsInput,
@@ -458,6 +460,8 @@ export interface NativeApi {
   };
   server: {
     getConfig: () => Promise<ServerConfig>;
+    getDesktopContext: () => Promise<ServerDesktopContext>;
+    setDesktopContext: (input: ServerSetDesktopContextInput) => Promise<ServerDesktopContext>;
     getEnvironment: () => Promise<ServerGetEnvironmentResult>;
     getSettings: () => Promise<ServerGetSettingsResult>;
     updateSettings: (input: ServerUpdateSettingsInput) => Promise<ServerUpdateSettingsResult>;

@@ -108,6 +108,12 @@ import {
   resolveDesktopWsUrlFromEnv,
 } from "./desktopWsBridge";
 import {
+  createDesktopInstanceDescriptor,
+  DESKTOP_INSTANCE_DESCRIPTOR_REFRESH_MS,
+  removeDesktopInstanceDescriptor,
+  writeDesktopInstanceDescriptor,
+} from "./desktopInstanceDescriptor";
+import {
   resolveDesktopAppDataBase,
   resolveDesktopUserDataPath,
   resolveLegacyDesktopUserDataPaths,
@@ -155,6 +161,7 @@ const LOG_DIR = Path.join(STATE_DIR, "logs");
 const LOG_FILE_MAX_BYTES = 10 * 1024 * 1024;
 const LOG_FILE_MAX_FILES = 10;
 const APP_RUN_ID = Crypto.randomBytes(6).toString("hex");
+const DESKTOP_INSTANCE_STARTED_AT = new Date().toISOString();
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
 const AUTO_UPDATE_STARTUP_DELAY_MS = 15_000;
 const AUTO_UPDATE_POLL_INTERVAL_MS = 4 * 60 * 60 * 1000;
@@ -197,6 +204,7 @@ let backendPort = 0;
 let backendAuthToken = "";
 let backendHttpUrl = "";
 let backendWsUrl = "";
+let desktopInstanceDescriptorTimer: NodeJS.Timeout | null = null;
 let backendReadinessAbortController: AbortController | null = null;
 let backendInitialWindowOpenInFlight: Promise<void> | null = null;
 let backendListeningDetector: ServerListeningDetector | null = null;
@@ -409,6 +417,52 @@ function cancelBackendReadinessWait(): void {
   backendReadinessAbortController = null;
 }
 
+function writeCurrentDesktopInstanceDescriptor(): void {
+  if (!backendWsUrl || backendPort <= 0) {
+    return;
+  }
+
+  try {
+    writeDesktopInstanceDescriptor(
+      BASE_DIR,
+      createDesktopInstanceDescriptor({
+        instanceId: APP_RUN_ID,
+        pid: process.pid,
+        cwd: process.cwd(),
+        stateDir: STATE_DIR,
+        port: backendPort,
+        wsUrl: backendWsUrl,
+        startedAt: DESKTOP_INSTANCE_STARTED_AT,
+      }),
+    );
+  } catch (error: unknown) {
+    const message = formatErrorMessage(error);
+    writeDesktopLogHeader(`desktop instance descriptor write failed message=${message}`);
+    console.warn(`[desktop] Failed to write desktop instance descriptor: ${message}`);
+  }
+}
+
+function startDesktopInstanceDescriptorHeartbeat(): void {
+  writeCurrentDesktopInstanceDescriptor();
+  if (desktopInstanceDescriptorTimer) {
+    return;
+  }
+
+  desktopInstanceDescriptorTimer = setInterval(
+    writeCurrentDesktopInstanceDescriptor,
+    DESKTOP_INSTANCE_DESCRIPTOR_REFRESH_MS,
+  );
+  desktopInstanceDescriptorTimer.unref();
+}
+
+function stopDesktopInstanceDescriptorHeartbeat(): void {
+  if (desktopInstanceDescriptorTimer) {
+    clearInterval(desktopInstanceDescriptorTimer);
+    desktopInstanceDescriptorTimer = null;
+  }
+  removeDesktopInstanceDescriptor(BASE_DIR, APP_RUN_ID);
+}
+
 async function reserveBackendEndpoint(reason: string): Promise<void> {
   backendPort = await Effect.service(NetService).pipe(
     Effect.flatMap((net) => net.reserveLoopbackPort()),
@@ -416,11 +470,12 @@ async function reserveBackendEndpoint(reason: string): Promise<void> {
     Effect.runPromise,
   );
   backendHttpUrl = `http://127.0.0.1:${backendPort}`;
-  backendWsUrl = `ws://127.0.0.1:${backendPort}/?token=${encodeURIComponent(backendAuthToken)}`;
+  backendWsUrl = `ws://127.0.0.1:${backendPort}/ws?token=${encodeURIComponent(backendAuthToken)}`;
   process.env.SYNARA_DESKTOP_WS_URL = backendWsUrl;
   process.env.DPCODE_DESKTOP_WS_URL = backendWsUrl;
   process.env.T3CODE_DESKTOP_WS_URL = backendWsUrl;
   writeDesktopLogHeader(`${reason} resolved backend endpoint port=${backendPort}`);
+  startDesktopInstanceDescriptorHeartbeat();
 }
 
 async function waitForBackendWindowReady(baseUrl: string): Promise<"listening" | "http"> {
@@ -2080,6 +2135,7 @@ async function shutdownDesktopRuntime(reason: string): Promise<void> {
       clearUpdateCheckTimeoutTimer();
       clearUpdatePollTimer();
       cancelBackendReadinessWait();
+      stopDesktopInstanceDescriptorHeartbeat();
       await disposeBrowserUsePipeServerForShutdown(reason);
       await stopBackendAndWaitForExit();
       browserManager.dispose();

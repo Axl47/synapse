@@ -28,6 +28,7 @@ import { ServerAuth } from "./auth/Services/ServerAuth";
 import { SessionCredentialService } from "./auth/Services/SessionCredentialService";
 import { CheckpointDiffQuery } from "./checkpointing/Services/CheckpointDiffQuery";
 import { ServerConfig } from "./config";
+import { DesktopContext } from "./desktopContext";
 import { DevServerManager, findProjectDevServerForLocalServer } from "./devServerManager";
 import { GitCore, type GitCoreShape } from "./git/Services/GitCore";
 import { GitManager } from "./git/Services/GitManager";
@@ -326,6 +327,7 @@ export const makeWsRpcLayer = () =>
     Effect.gen(function* () {
       const checkpointDiffQuery = yield* CheckpointDiffQuery;
       const config = yield* ServerConfig;
+      const desktopContext = yield* DesktopContext;
       const devServerManager = yield* DevServerManager;
       const fileSystem = yield* FileSystem.FileSystem;
       const git = yield* GitCore;
@@ -892,6 +894,10 @@ export const makeWsRpcLayer = () =>
 
         [WS_METHODS.serverGetConfig]: () =>
           rpcEffect(loadServerConfig, "Failed to load server config"),
+        [WS_METHODS.serverGetDesktopContext]: () =>
+          rpcEffect(desktopContext.get, "Failed to load desktop context"),
+        [WS_METHODS.serverSetDesktopContext]: (input) =>
+          rpcEffect(desktopContext.set(input), "Failed to update desktop context"),
         [WS_METHODS.serverGetEnvironment]: () =>
           rpcEffect(serverEnvironment.getDescriptor, "Failed to load server environment"),
         [WS_METHODS.serverGetSettings]: () =>
@@ -1068,6 +1074,16 @@ export const makeWsRpcLayer = () =>
               ),
             ),
           ).pipe(Stream.mapError((cause) => toWsRpcError(cause, "Server config stream failed"))),
+        [WS_METHODS.subscribeServerDesktopContext]: () =>
+          Stream.concat(
+            Stream.fromEffect(desktopContext.get),
+            bufferLiveUiStream(desktopContext.stream, {
+              label: "server.desktop-context",
+              onDroppedEvents: failLiveUiStreamForSnapshotResync,
+            }),
+          ).pipe(
+            Stream.mapError((cause) => toWsRpcError(cause, "Server desktop context stream failed")),
+          ),
         [WS_METHODS.subscribeServerProviderStatuses]: () =>
           Stream.concat(
             Stream.fromEffect(

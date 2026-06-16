@@ -96,6 +96,26 @@ export const ServerConfig = Schema.Struct({
 });
 export type ServerConfig = typeof ServerConfig.Type;
 
+export const ServerDesktopContext = Schema.Struct({
+  projectId: Schema.NullOr(ProjectId),
+  projectTitle: Schema.NullOr(TrimmedNonEmptyString),
+  workspaceRoot: Schema.NullOr(TrimmedNonEmptyString),
+  threadId: Schema.NullOr(ThreadId),
+  threadTitle: Schema.NullOr(TrimmedNonEmptyString),
+  updatedAt: Schema.NullOr(IsoDateTime),
+});
+export type ServerDesktopContext = typeof ServerDesktopContext.Type;
+
+export const ServerSetDesktopContextInput = Schema.Struct({
+  projectId: Schema.optional(Schema.NullOr(ProjectId)),
+  projectTitle: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
+  workspaceRoot: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
+  threadId: Schema.optional(Schema.NullOr(ThreadId)),
+  threadTitle: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
+  updatedAt: Schema.optional(Schema.NullOr(IsoDateTime)),
+});
+export type ServerSetDesktopContextInput = typeof ServerSetDesktopContextInput.Type;
+
 export const ServerManagedWorktree = Schema.Struct({
   path: TrimmedNonEmptyString,
   workspaceRoot: TrimmedNonEmptyString,
