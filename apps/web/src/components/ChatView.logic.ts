@@ -489,7 +489,7 @@ export function deriveComposerSendState(options: {
   assistantSelectionCount: number;
   fileCommentCount: number;
   terminalContexts: ReadonlyArray<TerminalContextDraft>;
-  pastedTexts: ReadonlyArray<PastedTextDraft>;
+  pastedTexts?: ReadonlyArray<PastedTextDraft>;
 }): {
   trimmedPrompt: string;
   sendableTerminalContexts: TerminalContextDraft[];

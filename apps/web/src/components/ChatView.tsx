@@ -498,6 +498,7 @@ const EMPTY_COMPOSER_IMAGES: ComposerImageAttachment[] = [];
 const EMPTY_COMPOSER_ASSISTANT_SELECTIONS: ComposerAssistantSelectionAttachment[] = [];
 const EMPTY_COMPOSER_TERMINAL_CONTEXTS: TerminalContextDraft[] = [];
 const EMPTY_COMPOSER_FILE_COMMENTS: FileCommentDraft[] = [];
+const EMPTY_COMPOSER_PASTED_TEXTS: PastedTextDraft[] = [];
 const EMPTY_COMPOSER_SKILLS: ProviderSkillReference[] = [];
 const EMPTY_COMPOSER_MENTIONS: ProviderMentionReference[] = [];
 const EMPTY_QUEUED_COMPOSER_TURNS: QueuedComposerTurn[] = [];
@@ -808,6 +809,7 @@ export default function ChatView({
         assistantSelections: draft?.assistantSelections ?? EMPTY_COMPOSER_ASSISTANT_SELECTIONS,
         terminalContexts: draft?.terminalContexts ?? EMPTY_COMPOSER_TERMINAL_CONTEXTS,
         fileComments: draft?.fileComments ?? EMPTY_COMPOSER_FILE_COMMENTS,
+        pastedTexts: draft?.pastedTexts ?? EMPTY_COMPOSER_PASTED_TEXTS,
         skills: draft?.skills ?? EMPTY_COMPOSER_SKILLS,
         mentions: draft?.mentions ?? EMPTY_COMPOSER_MENTIONS,
         queuedTurns: draft?.queuedTurns ?? EMPTY_QUEUED_COMPOSER_TURNS,
@@ -5810,8 +5812,9 @@ export default function ChatView({
         if (queuedTurn.terminalContexts.length > 0) {
           addComposerTerminalContextsToDraft(queuedTurn.terminalContexts);
         }
-        if (queuedTurn.pastedTexts.length > 0) {
-          addComposerPastedTextsToDraft(queuedTurn.pastedTexts);
+        const queuedPastedTexts = queuedTurn.pastedTexts ?? EMPTY_COMPOSER_PASTED_TEXTS;
+        if (queuedPastedTexts.length > 0) {
+          addComposerPastedTextsToDraft(queuedPastedTexts);
         }
         updateSelectedComposerSkills(queuedTurn.skills);
         updateSelectedComposerMentions(queuedTurn.mentions);

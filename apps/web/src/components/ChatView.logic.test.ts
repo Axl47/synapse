@@ -574,6 +574,19 @@ describe("deriveComposerSendState", () => {
 
     expect(state.hasSendableContent).toBe(true);
   });
+
+  it("treats omitted pasted-text drafts as empty for older persisted drafts", () => {
+    const state = deriveComposerSendState({
+      prompt: "",
+      imageCount: 0,
+      assistantSelectionCount: 0,
+      fileCommentCount: 0,
+      terminalContexts: [],
+    });
+
+    expect(state.sendablePastedTexts).toEqual([]);
+    expect(state.hasSendableContent).toBe(false);
+  });
 });
 
 describe("buildExpiredTerminalContextToastCopy", () => {

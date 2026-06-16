@@ -86,9 +86,9 @@ export function hasPastedText(pasted: { text: string }): boolean {
 }
 
 export function filterPastedTextsWithText<T extends { text: string }>(
-  pastedTexts: ReadonlyArray<T>,
+  pastedTexts: ReadonlyArray<T> | undefined,
 ): T[] {
-  return pastedTexts.filter((pasted) => hasPastedText(pasted));
+  return (pastedTexts ?? []).filter((pasted) => hasPastedText(pasted));
 }
 
 export function formatPastedTextCountLabel(metrics: {
