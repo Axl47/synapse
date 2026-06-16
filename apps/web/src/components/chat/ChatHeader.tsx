@@ -781,9 +781,8 @@ export const ChatHeader = memo(function ChatHeader({
             </ComposerPickerMenuPopup>
           </Menu>
         ) : null}
-        {/* Project actions provide the visible header run split-button when a
-            primary script exists, and also host the shared add/edit script dialog
-            opened from compact header menus. */}
+        {/* Project actions stay mounted in the header so scripts without
+            keybindings remain runnable, while also hosting the shared dialog. */}
         {!isDisposableThread && activeProjectScripts ? (
           <ProjectScriptsControl
             scripts={activeProjectScripts}

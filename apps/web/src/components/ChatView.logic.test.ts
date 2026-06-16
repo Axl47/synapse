@@ -22,6 +22,7 @@ import {
   buildExpiredTerminalContextToastCopy,
   shouldAutoDeleteTerminalThreadOnLastClose,
   shouldConsumePendingCustomBinaryConfirmation,
+  shouldEnableComposerPastedTextCollapse,
   shouldRenderProviderHealthBanner,
   shouldShowComposerModelBootstrapSkeleton,
   shouldStartActiveTurnLayoutGrace,
@@ -79,6 +80,39 @@ describe("composer menu selection", () => {
         items,
       }),
     ).toBeNull();
+  });
+});
+
+describe("composer pasted text collapse", () => {
+  it("is enabled only for regular chat sends", () => {
+    expect(
+      shouldEnableComposerPastedTextCollapse({
+        isComposerApprovalState: false,
+        hasPendingUserInput: false,
+        showPlanFollowUpPrompt: false,
+      }),
+    ).toBe(true);
+    expect(
+      shouldEnableComposerPastedTextCollapse({
+        isComposerApprovalState: false,
+        hasPendingUserInput: true,
+        showPlanFollowUpPrompt: false,
+      }),
+    ).toBe(false);
+    expect(
+      shouldEnableComposerPastedTextCollapse({
+        isComposerApprovalState: false,
+        hasPendingUserInput: false,
+        showPlanFollowUpPrompt: true,
+      }),
+    ).toBe(false);
+    expect(
+      shouldEnableComposerPastedTextCollapse({
+        isComposerApprovalState: true,
+        hasPendingUserInput: false,
+        showPlanFollowUpPrompt: false,
+      }),
+    ).toBe(false);
   });
 });
 
@@ -297,6 +331,7 @@ describe("resolveActiveTurnLiveDiffState", () => {
       fileCount: 2,
       additions: 5,
       deletions: 1,
+      hasChanges: true,
     });
   });
 
@@ -317,6 +352,7 @@ describe("resolveActiveTurnLiveDiffState", () => {
       fileCount: 0,
       additions: 0,
       deletions: 0,
+      hasChanges: false,
     });
   });
 });
@@ -478,6 +514,7 @@ describe("deriveComposerSendState", () => {
           createdAt: "2026-03-17T12:52:29.000Z",
         },
       ],
+      pastedTexts: [],
     });
 
     expect(state.trimmedPrompt).toBe("");
@@ -504,6 +541,7 @@ describe("deriveComposerSendState", () => {
           createdAt: "2026-03-17T12:52:29.000Z",
         },
       ],
+      pastedTexts: [],
     });
 
     expect(state.trimmedPrompt).toBe("yoo  waddup");
@@ -518,6 +556,7 @@ describe("deriveComposerSendState", () => {
       assistantSelectionCount: 1,
       fileCommentCount: 0,
       terminalContexts: [],
+      pastedTexts: [],
     });
 
     expect(state.hasSendableContent).toBe(true);
@@ -530,6 +569,7 @@ describe("deriveComposerSendState", () => {
       assistantSelectionCount: 0,
       fileCommentCount: 1,
       terminalContexts: [],
+      pastedTexts: [],
     });
 
     expect(state.hasSendableContent).toBe(true);

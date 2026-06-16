@@ -8,7 +8,7 @@ import { describe, expect, it } from "vitest";
 import { COMPOSER_STACKED_HEADER_FRAME_CLASS_NAME } from "./composerPickerStyles";
 
 describe("COMPOSER_STACKED_HEADER_FRAME_CLASS_NAME", () => {
-  it("keeps the stacked rail narrower than the composer column", () => {
+  it("keeps the stacked rail aligned to the composer column", () => {
     const classes = COMPOSER_STACKED_HEADER_FRAME_CLASS_NAME.split(/\s+/);
 
     expect(classes).toContain("mx-auto");

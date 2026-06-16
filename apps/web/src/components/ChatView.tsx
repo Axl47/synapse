@@ -132,6 +132,7 @@ import {
   resolveDefaultEnvironmentPanelOpen,
   resolveEnvironmentPanelVisible,
   resolveProjectScriptTerminalTarget,
+  shouldEnableComposerPastedTextCollapse,
   shouldConsumePendingCustomBinaryConfirmation,
   shouldShowComposerModelBootstrapSkeleton,
 } from "./ChatView.logic";
@@ -288,7 +289,7 @@ import {
 import { useComposerFocusRequestStore } from "../composerFocusRequestStore";
 import { appendComposerPromptText } from "../lib/chatReferences";
 import {
-  appendOriginalTerminalContextBlock,
+  appendOriginalComposerPromptBlocks,
   appendTerminalContextsToPrompt,
   IMAGE_ONLY_BOOTSTRAP_PROMPT,
   filterTerminalContextsWithText,
@@ -299,6 +300,12 @@ import {
   type TerminalContextDraft,
   type TerminalContextSelection,
 } from "../lib/terminalContext";
+import {
+  appendPastedTextsToPrompt,
+  createPastedTextDraft,
+  pastedTextTitle,
+  type PastedTextDraft,
+} from "../lib/composerPastedText";
 import {
   appendAssistantSelectionsToPrompt,
   formatAssistantSelectionQueuePreview,
@@ -333,6 +340,11 @@ import {
 import { ComposerPromptEditor, type ComposerPromptEditorHandle } from "./ComposerPromptEditor";
 import { PullRequestThreadDialog } from "./PullRequestThreadDialog";
 import { ChatHeader } from "./chat/ChatHeader";
+import { dispatchThreadNotes } from "~/pinnedMessages";
+import {
+  mergeProjectInstructionsIntoThreadNotes,
+  useProjectInstructionsStore,
+} from "~/projectInstructionsStore";
 import {
   ENVIRONMENT_DOCKED_CONTENT_INSET_PX,
   EnvironmentPanel,
@@ -624,6 +636,7 @@ function buildQueuedComposerPreviewText(input: {
   assistantSelections: ReadonlyArray<{ id: string }>;
   terminalContexts: ReadonlyArray<TerminalContextDraft>;
   fileComments: ReadonlyArray<FileCommentDraft>;
+  pastedTexts: ReadonlyArray<PastedTextDraft>;
 }): string {
   if (input.trimmedPrompt.length > 0) {
     return input.trimmedPrompt;
@@ -643,7 +656,21 @@ function buildQueuedComposerPreviewText(input: {
   if (firstFileComment) {
     return formatFileCommentLabel(firstFileComment);
   }
+  const pastedTitle = formatPastedTextTitleSeed(input.pastedTexts);
+  if (pastedTitle) {
+    return pastedTitle;
+  }
   return "Queued follow-up";
+}
+
+function formatPastedTextTitleSeed(pastedTexts: ReadonlyArray<PastedTextDraft>): string | null {
+  const firstPastedText = pastedTexts[0];
+  if (!firstPastedText) {
+    return null;
+  }
+  return pastedTexts.length === 1
+    ? pastedTextTitle(firstPastedText.text)
+    : `${pastedTexts.length} pasted texts`;
 }
 
 const COMPOSER_PATH_QUERY_DEBOUNCE_MS = 120;
@@ -806,6 +833,7 @@ export default function ChatView({
   const composerAssistantSelections = composerDraft.assistantSelections;
   const composerFileComments = composerDraft.fileComments;
   const composerTerminalContexts = composerDraft.terminalContexts;
+  const composerPastedTexts = composerDraft.pastedTexts;
   const composerSkills = composerDraft.skills;
   const composerMentions = composerDraft.mentions;
   const queuedComposerTurns = composerDraft.queuedTurns;
@@ -832,23 +860,23 @@ export default function ChatView({
     setComposerPromptHasSendableTextState(nextHasSendableText);
   }, []);
   const composerSendState = useMemo(
-    () => {
-      const sendableTerminalContexts = filterTerminalContextsWithText(composerTerminalContexts);
-      return {
-        hasSendableContent:
-          composerPromptHasSendableText ||
-          composerImages.length > 0 ||
-          composerAssistantSelections.length > 0 ||
-          composerFileComments.length > 0 ||
-          sendableTerminalContexts.length > 0,
-      };
-    },
+    () =>
+      deriveComposerSendState({
+        prompt,
+        imageCount: composerImages.length,
+        assistantSelectionCount: composerAssistantSelections.length,
+        fileCommentCount: composerFileComments.length,
+        terminalContexts: composerTerminalContexts,
+        pastedTexts: composerPastedTexts,
+      }),
     [
       composerAssistantSelections.length,
       composerFileComments.length,
       composerImages.length,
       composerPromptHasSendableText,
       composerTerminalContexts,
+      composerPastedTexts,
+      prompt,
     ],
   );
   const nonPersistedComposerImageIds = composerDraft.nonPersistedImageIds;
@@ -948,6 +976,8 @@ export default function ChatView({
   const removeComposerDraftTerminalContext = useComposerDraftStore(
     (store) => store.removeTerminalContext,
   );
+  const addComposerDraftPastedTexts = useComposerDraftStore((store) => store.addPastedTexts);
+  const removeComposerDraftPastedText = useComposerDraftStore((store) => store.removePastedText);
   const setComposerDraftTerminalContexts = useComposerDraftStore(
     (store) => store.setTerminalContexts,
   );
@@ -987,6 +1017,7 @@ export default function ChatView({
   );
   const composerTerminalContextsRef = useRef<TerminalContextDraft[]>(composerTerminalContexts);
   const composerFileCommentsRef = useRef<FileCommentDraft[]>(composerFileComments);
+  const composerPastedTextsRef = useRef<PastedTextDraft[]>(composerPastedTexts);
   const [localDraftErrorsByThreadId, setLocalDraftErrorsByThreadId] = useState<
     Record<ThreadId, string | null>
   >({});
@@ -1234,6 +1265,12 @@ export default function ChatView({
     },
     [addComposerDraftTerminalContexts, threadId],
   );
+  const addComposerPastedTextsToDraft = useCallback(
+    (pastedTexts: PastedTextDraft[]) => {
+      addComposerDraftPastedTexts(threadId, pastedTexts);
+    },
+    [addComposerDraftPastedTexts, threadId],
+  );
   const addComposerFileCommentToDraft = useCallback(
     (comment: FileCommentDraft) => {
       addComposerDraftFileComment(threadId, comment);
@@ -1273,6 +1310,34 @@ export default function ChatView({
       );
     },
     [composerTerminalContexts, removeComposerDraftTerminalContext, setPrompt, threadId],
+  );
+  const removeComposerPastedTextFromDraft = useCallback(
+    (pastedTextId: string) => {
+      removeComposerDraftPastedText(threadId, pastedTextId);
+    },
+    [removeComposerDraftPastedText, threadId],
+  );
+  // "Show in text field": drop the full pasted text back into the editor (appended
+  // to the current prompt) and discard the card so it can be edited as normal text.
+  const showComposerPastedTextInField = useCallback(
+    (pastedTextId: string) => {
+      const pasted = composerPastedTexts.find((entry) => entry.id === pastedTextId);
+      if (!pasted) {
+        return;
+      }
+      const current = promptRef.current;
+      const separator = current.length > 0 && !current.endsWith("\n") ? "\n" : "";
+      const nextPrompt = `${current}${separator}${pasted.text}`;
+      promptRef.current = nextPrompt;
+      setPrompt(nextPrompt);
+      removeComposerDraftPastedText(threadId, pastedTextId);
+      setComposerCursor(collapseExpandedComposerCursor(nextPrompt, nextPrompt.length));
+      setComposerTrigger(detectComposerTrigger(nextPrompt, nextPrompt.length));
+      window.requestAnimationFrame(() => {
+        composerEditorRef.current?.focusAtEnd();
+      });
+    },
+    [composerPastedTexts, removeComposerDraftPastedText, setPrompt, threadId],
   );
 
   const localDraftError = serverThread ? null : (localDraftErrorsByThreadId[threadId] ?? null);
@@ -1345,6 +1410,10 @@ export default function ChatView({
   const activeProject = useStore(
     useMemo(() => createProjectSelector(activeProjectId), [activeProjectId]),
   );
+  const projectInstructions = useProjectInstructionsStore((state) =>
+    activeProjectId ? (state.instructionsByProjectId[activeProjectId] ?? "") : "",
+  );
+  const setProjectInstructions = useProjectInstructionsStore((state) => state.setInstructions);
   const homeDir = useWorkspaceStore((state) => state.homeDir);
   const chatWorkspaceRoot = useWorkspaceStore((state) => state.chatWorkspaceRoot);
   const [renameDialogOpen, setRenameDialogOpen] = useState(false);
@@ -2213,6 +2282,11 @@ export default function ChatView({
     activeThreadId === null ? null : `${activeThreadId}:${activeLatestTurn?.turnId ?? "idle"}`;
   const activeTurnInProgress = activeTurnLayoutLive || keepSettledActiveTurnLayout;
   const isComposerApprovalState = activePendingApproval !== null;
+  const canCollapsePastedTextToDraft = shouldEnableComposerPastedTextCollapse({
+    isComposerApprovalState,
+    hasPendingUserInput: pendingUserInputs.length > 0,
+    showPlanFollowUpPrompt,
+  });
   const composerFooterHasWideActions = showPlanFollowUpPrompt || activePendingProgress !== null;
   const handoffDisabled = !(
     activeThread &&
@@ -2476,6 +2550,28 @@ export default function ChatView({
     handleRenamePinnedMessage,
     handleNotesChange,
   } = usePinnedMessageActions({ activeThreadId, pinnedMessages });
+  const handleCopyProjectInstructionsToNotes = useCallback(() => {
+    if (!activeThreadId) {
+      return;
+    }
+    const nextNotes = mergeProjectInstructionsIntoThreadNotes({
+      threadNotes,
+      projectInstructions,
+    });
+    if (nextNotes === threadNotes) {
+      return;
+    }
+    void handleNotesChange(activeThreadId, nextNotes)
+      .then(() => {
+        toastManager.add({
+          type: "success",
+          title: "Project instructions added to notepad.",
+        });
+      })
+      .catch(() => {
+        // `handleNotesChange` already surfaces the save failure through the shared notes toast.
+      });
+  }, [activeThreadId, handleNotesChange, projectInstructions, threadNotes]);
   const handleJumpToPinnedMessage = useCallback((messageId: MessageId) => {
     timelineControllerRef.current?.scrollToMessage(messageId);
   }, []);
@@ -3471,6 +3567,24 @@ export default function ChatView({
       });
     },
     [activeThread, composerTerminalContexts, insertComposerDraftTerminalContext],
+  );
+  // Collapse an oversized paste into an attachment card above the composer instead
+  // of flooding the editor with raw text. The card holds the full content until the
+  // user sends or clicks "Show in text field".
+  const addPastedTextToDraft = useCallback(
+    (text: string) => {
+      if (!activeThread) {
+        return;
+      }
+      addComposerDraftPastedTexts(activeThread.id, [
+        createPastedTextDraft({
+          id: randomUUID(),
+          createdAt: new Date().toISOString(),
+          text,
+        }),
+      ]);
+    },
+    [activeThread, addComposerDraftPastedTexts],
   );
   const setTerminalOpen = useCallback(
     (open: boolean) => {
@@ -4727,6 +4841,10 @@ export default function ChatView({
   }, [composerFileComments]);
 
   useEffect(() => {
+    composerPastedTextsRef.current = composerPastedTexts;
+  }, [composerPastedTexts]);
+
+  useEffect(() => {
     queuedComposerTurnsRef.current = queuedComposerTurns;
   }, [queuedComposerTurns]);
 
@@ -5692,6 +5810,9 @@ export default function ChatView({
         if (queuedTurn.terminalContexts.length > 0) {
           addComposerTerminalContextsToDraft(queuedTurn.terminalContexts);
         }
+        if (queuedTurn.pastedTexts.length > 0) {
+          addComposerPastedTextsToDraft(queuedTurn.pastedTexts);
+        }
         updateSelectedComposerSkills(queuedTurn.skills);
         updateSelectedComposerMentions(queuedTurn.mentions);
       } else {
@@ -5712,6 +5833,7 @@ export default function ChatView({
       addComposerImagesToDraft,
       addComposerTerminalContextsToDraft,
       cancelPendingPromptDraftCommit,
+      addComposerPastedTextsToDraft,
       clearComposerDraftContent,
       commitPromptDraftNow,
       scheduleComposerFocus,
@@ -5795,6 +5917,7 @@ export default function ChatView({
     const composerFileCommentsForSend = queuedChatTurn?.fileComments ?? composerFileComments;
     const composerTerminalContextsForSend =
       queuedChatTurn?.terminalContexts ?? composerTerminalContexts;
+    const composerPastedTextsForSend = queuedChatTurn?.pastedTexts ?? composerPastedTexts;
     const selectedProviderForSend = queuedChatTurn?.selectedProvider ?? selectedProvider;
     const selectedComposerSkillsForSend =
       queuedChatTurn?.skills ??
@@ -5819,6 +5942,7 @@ export default function ChatView({
       trimmedPrompt: trimmed,
       sendableTerminalContexts: sendableComposerTerminalContexts,
       expiredTerminalContextCount,
+      sendablePastedTexts: sendableComposerPastedTexts,
       hasSendableContent,
     } = deriveComposerSendState({
       prompt: promptForSend,
@@ -5826,6 +5950,7 @@ export default function ChatView({
       assistantSelectionCount: composerAssistantSelectionsForSend.length,
       fileCommentCount: composerFileCommentsForSend.length,
       terminalContexts: composerTerminalContextsForSend,
+      pastedTexts: composerPastedTextsForSend,
     });
     // Queued chat turns already captured their intended mode; only live composer
     // submissions should be interpreted as plan refinement/implementation.
@@ -5863,7 +5988,8 @@ export default function ChatView({
       composerImagesForSend.length === 0 &&
       composerAssistantSelectionsForSend.length === 0 &&
       composerFileCommentsForSend.length === 0 &&
-      sendableComposerTerminalContexts.length === 0
+      sendableComposerTerminalContexts.length === 0 &&
+      sendableComposerPastedTexts.length === 0
     ) {
       const handledSlashCommand = await handleStandaloneSlashCommand(trimmed);
       if (handledSlashCommand) {
@@ -5963,12 +6089,14 @@ export default function ChatView({
           assistantSelections: composerAssistantSelectionsForSend,
           terminalContexts: sendableComposerTerminalContexts,
           fileComments: composerFileCommentsForSend,
+          pastedTexts: sendableComposerPastedTexts,
         }),
         prompt: promptForSend,
         images: queuedImagesForPersistence,
         assistantSelections: composerAssistantSelectionsForSend,
         fileComments: composerFileCommentsForSend,
         terminalContexts: sendableComposerTerminalContexts,
+        pastedTexts: sendableComposerPastedTexts,
         skills: selectedComposerSkillsForSend,
         mentions: selectedComposerMentionsForSend,
         selectedProvider: selectedProviderForSend,
@@ -6001,6 +6129,9 @@ export default function ChatView({
         titleSeed = formatTerminalContextLabel(sendableComposerTerminalContexts[0]!);
       } else if (composerFileCommentsForSend.length > 0) {
         titleSeed = formatFileCommentTitleSeed(composerFileCommentsForSend.length);
+      } else if (sendableComposerPastedTexts.length > 0) {
+        titleSeed =
+          formatPastedTextTitleSeed(sendableComposerPastedTexts) ?? GENERIC_CHAT_THREAD_TITLE;
       } else {
         titleSeed = GENERIC_CHAT_THREAD_TITLE;
       }
@@ -6128,16 +6259,21 @@ export default function ChatView({
     const composerAssistantSelectionsSnapshot = [...composerAssistantSelectionsForSend];
     const composerFileCommentsSnapshot = [...composerFileCommentsForSend];
     const composerTerminalContextsSnapshot = [...sendableComposerTerminalContexts];
+    const composerPastedTextsSnapshot = [...sendableComposerPastedTexts];
     const composerSkillsSnapshot = [...selectedComposerSkillsForSend];
     const composerMentionsSnapshot = [...selectedComposerMentionsForSend];
-    // File comments are serialized outermost (after assistant selections and
-    // terminal contexts) so the trailing-block extractors unwrap them first.
-    const messageTextForSend = appendFileCommentsToPrompt(
-      appendTerminalContextsToPrompt(
-        appendAssistantSelectionsToPrompt(promptForSend, composerAssistantSelectionsSnapshot),
-        composerTerminalContextsSnapshot,
+    // Trailing blocks are appended innermost-to-outermost: assistant selections,
+    // terminal contexts, file comments, then pasted text (outermost). The display
+    // extractors unwrap them in the reverse order.
+    const messageTextForSend = appendPastedTextsToPrompt(
+      appendFileCommentsToPrompt(
+        appendTerminalContextsToPrompt(
+          appendAssistantSelectionsToPrompt(promptForSend, composerAssistantSelectionsSnapshot),
+          composerTerminalContextsSnapshot,
+        ),
+        composerFileCommentsSnapshot,
       ),
-      composerFileCommentsSnapshot,
+      composerPastedTextsSnapshot,
     );
     const messageIdForSend = newMessageId();
     const messageCreatedAt = new Date().toISOString();
@@ -6204,13 +6340,17 @@ export default function ChatView({
         description: toastCopy.description,
       });
     }
-    promptRef.current = "";
-    syncComposerPromptHasSendableText("");
-    cancelPendingPromptDraftCommit(threadIdForSend);
-    clearComposerDraftContent(threadIdForSend);
-    setComposerHighlightedItemId(null);
-    setComposerCursor(0);
-    setComposerTrigger(null);
+    // Queued turns are dispatched from their captured snapshot, so this send path
+    // must not clear a separate live draft the user may already be editing.
+    if (queuedChatTurn === null) {
+      promptRef.current = "";
+      syncComposerPromptHasSendableText("");
+      cancelPendingPromptDraftCommit(threadIdForSend);
+      clearComposerDraftContent(threadIdForSend);
+      setComposerHighlightedItemId(null);
+      setComposerCursor(0);
+      setComposerTrigger(null);
+    }
 
     let createdServerThreadForLocalDraft = false;
     let turnStartSucceeded = false;
@@ -6262,6 +6402,13 @@ export default function ChatView({
       );
 
       if (isLocalDraftThread) {
+        const inheritedProjectInstructions =
+          useProjectInstructionsStore.getState().instructionsByProjectId[targetProjectIdForSend] ??
+          "";
+        const inheritedThreadNotes = mergeProjectInstructionsIntoThreadNotes({
+          threadNotes,
+          projectInstructions: inheritedProjectInstructions,
+        });
         await promoteThreadCreate(
           {
             type: "thread.create",
@@ -6280,6 +6427,17 @@ export default function ChatView({
           },
           api,
         );
+        // `thread.create` does not carry notes, so seed the freshly created
+        // server thread's notepad with the inherited project instructions via a
+        // dedicated meta update. Best-effort: a failure here must not abort the turn.
+        if (inheritedThreadNotes !== threadNotes && inheritedThreadNotes.trim().length > 0) {
+          try {
+            await dispatchThreadNotes(threadIdForSend, inheritedThreadNotes);
+          } catch {
+            // Seeding is non-critical; project instructions can still be copied
+            // into the notepad manually from the Environment panel.
+          }
+        }
         if (targetProjectKindForSend === "chat") {
           await api.orchestration.dispatchCommand({
             type: "project.meta.update",
@@ -6375,7 +6533,8 @@ export default function ChatView({
         composerImagesRef.current.length === 0 &&
         composerAssistantSelectionsRef.current.length === 0 &&
         composerFileCommentsRef.current.length === 0 &&
-        composerTerminalContextsRef.current.length === 0
+        composerTerminalContextsRef.current.length === 0 &&
+        composerPastedTextsRef.current.length === 0
       ) {
         setOptimisticUserMessages((existing) => {
           const removed = existing.filter((message) => message.id === messageIdForSend);
@@ -6397,6 +6556,7 @@ export default function ChatView({
           addComposerFileCommentToDraft(comment);
         }
         addComposerTerminalContextsToDraft(composerTerminalContextsSnapshot);
+        addComposerPastedTextsToDraft(composerPastedTextsSnapshot);
         updateSelectedComposerSkills(composerSkillsSnapshot);
         updateSelectedComposerMentions(composerMentionsSnapshot);
         setComposerTrigger(detectComposerTrigger(promptForSend, promptForSend.length));
@@ -6799,7 +6959,7 @@ export default function ChatView({
       setIsRevertingCheckpoint(true);
       setThreadError(activeThread.id, null);
       const messageCreatedAt = new Date().toISOString();
-      const editedTextWithOriginalContext = appendOriginalTerminalContextBlock({
+      const editedTextWithOriginalContext = appendOriginalComposerPromptBlocks({
         editedPrompt: text,
         originalPrompt: originalMessage.text,
       });
@@ -8327,6 +8487,11 @@ export default function ChatView({
     pinnedMessageTextById,
     markerMessageTextById,
     notes: threadNotes,
+    activeProjectId,
+    projectInstructions,
+    canCopyProjectInstructionsToNotes: !isLocalDraftThread,
+    onProjectInstructionsChange: setProjectInstructions,
+    onCopyProjectInstructionsToNotes: handleCopyProjectInstructionsToNotes,
     onToggleDiff,
     onOpenGithubRepository: openBrowserUrl,
     onJumpToPinnedMessage: handleJumpToPinnedMessage,
@@ -8355,7 +8520,7 @@ export default function ChatView({
       }
     : null;
 
-  const showComposerLiveChangesHeader = latestTurnLive && activeTurnLiveDiffState.fileCount > 0;
+  const showComposerLiveChangesHeader = latestTurnLive && activeTurnLiveDiffState.hasChanges;
   const showComposerActiveTaskListCard = Boolean(activeTaskList && !planSidebarOpen);
 
   // Composer layout keeps the task list and footer actions in one render path so
@@ -8479,15 +8644,19 @@ export default function ChatView({
                     pendingUserInputs.length === 0 &&
                     (composerAssistantSelections.length > 0 ||
                       composerFileComments.length > 0 ||
+                      composerPastedTexts.length > 0 ||
                       composerImages.length > 0) && (
                       <ComposerReferenceAttachments
                         assistantSelections={composerAssistantSelections}
                         fileComments={composerFileComments}
+                        pastedTexts={composerPastedTexts}
                         images={composerImages}
                         nonPersistedImageIdSet={nonPersistedComposerImageIdSet}
                         onExpandImage={setExpandedImage}
                         onRemoveAssistantSelections={clearComposerAssistantSelectionsFromDraft}
                         onRemoveFileComments={clearComposerFileCommentsFromDraft}
+                        onRemovePastedText={removeComposerPastedTextFromDraft}
+                        onShowPastedTextInField={showComposerPastedTextInField}
                         onRemoveImage={removeComposerImage}
                       />
                     )}
@@ -8511,6 +8680,9 @@ export default function ChatView({
                     onChange={onPromptChange}
                     onCommandKeyDown={onComposerCommandKey}
                     onPaste={onComposerPaste}
+                    {...(canCollapsePastedTextToDraft
+                      ? { onCollapsePastedText: addPastedTextToDraft }
+                      : {})}
                     placeholder={
                       isComposerApprovalState
                         ? "Resolve this approval request to continue"

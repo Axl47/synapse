@@ -108,8 +108,8 @@ export const COMPOSER_COLUMN_FRAME_CLASS_NAME = CHAT_COLUMN_FRAME_CLASS_NAME;
 
 /**
  * Frame for rows stacked above the composer (queued steer/queue rows, active task
- * list). Keeps stacked activity on the same 11/12-width rail as queued rows so
- * the composer input can remain a distinct, fully rounded surface underneath.
+ * list). Keeps stacked activity on the same width as the composer input so wide
+ * screens do not make plan/task rows drift wider than the field they belong to.
  *
  * Prefer ComposerStackedPanel inside ComposerColumnFrame instead of using this
  * token directly so chrome and attached-radius behavior stay centralized.

@@ -28,6 +28,7 @@ import {
   stripInlineTerminalContextPlaceholders,
   type TerminalContextDraft,
 } from "../lib/terminalContext";
+import { filterPastedTextsWithText, type PastedTextDraft } from "../lib/composerPastedText";
 import {
   humanizeSubagentStatus,
   resolveSubagentPresentationForThread,
@@ -68,6 +69,18 @@ export function shouldRenderProviderHealthBanner(input: {
   return input.threadEntryPoint === "chat" && !input.terminalWorkspaceTerminalTabActive;
 }
 
+// Big-paste cards are sent only by the normal chat path; non-chat composer flows
+// read plain editor text, so they must let Lexical insert pasted text normally.
+export function shouldEnableComposerPastedTextCollapse(input: {
+  isComposerApprovalState: boolean;
+  hasPendingUserInput: boolean;
+  showPlanFollowUpPrompt: boolean;
+}): boolean {
+  return (
+    !input.isComposerApprovalState && !input.hasPendingUserInput && !input.showPlanFollowUpPrompt
+  );
+}
+
 export function buildComposerMenuSelectionKey(input: {
   menuOpen: boolean;
   picker: string | null;
@@ -102,14 +115,19 @@ export function resolveEnvironmentPanelVisible(input: {
   return input.environmentEnabled && input.environmentPanelOpen;
 }
 
+// The composer live strip only surfaces once the turn's diff has been computed
+// (the `thread.turn-diff-completed` event), so it always carries real per-file
+// +/- stats. Mid-turn work-log activity has file paths but no diff totals, so we
+// intentionally wait rather than render a stat-less "N files changed" strip.
 export function resolveActiveTurnLiveDiffState(input: {
-  latestTurnId: string | null | undefined;
+  latestTurnId: TurnDiffSummary["turnId"] | null | undefined;
   turnDiffSummaries: ReadonlyArray<TurnDiffSummary>;
 }): {
   turnId: TurnDiffSummary["turnId"] | null;
   fileCount: number;
   additions: number;
   deletions: number;
+  hasChanges: boolean;
 } {
   const summary = input.latestTurnId
     ? (input.turnDiffSummaries.find((entry) => entry.turnId === input.latestTurnId) ?? null)
@@ -120,6 +138,7 @@ export function resolveActiveTurnLiveDiffState(input: {
     fileCount: files.length,
     additions: files.reduce((total, file) => total + (file.additions ?? 0), 0),
     deletions: files.reduce((total, file) => total + (file.deletions ?? 0), 0),
+    hasChanges: files.length > 0,
   };
 }
 
@@ -470,26 +489,31 @@ export function deriveComposerSendState(options: {
   assistantSelectionCount: number;
   fileCommentCount: number;
   terminalContexts: ReadonlyArray<TerminalContextDraft>;
+  pastedTexts: ReadonlyArray<PastedTextDraft>;
 }): {
   trimmedPrompt: string;
   sendableTerminalContexts: TerminalContextDraft[];
   expiredTerminalContextCount: number;
+  sendablePastedTexts: PastedTextDraft[];
   hasSendableContent: boolean;
 } {
   const trimmedPrompt = stripInlineTerminalContextPlaceholders(options.prompt).trim();
   const sendableTerminalContexts = filterTerminalContextsWithText(options.terminalContexts);
   const expiredTerminalContextCount =
     options.terminalContexts.length - sendableTerminalContexts.length;
+  const sendablePastedTexts = filterPastedTextsWithText(options.pastedTexts);
   return {
     trimmedPrompt,
     sendableTerminalContexts,
     expiredTerminalContextCount,
+    sendablePastedTexts,
     hasSendableContent:
       trimmedPrompt.length > 0 ||
       options.imageCount > 0 ||
       options.assistantSelectionCount > 0 ||
       options.fileCommentCount > 0 ||
-      sendableTerminalContexts.length > 0,
+      sendableTerminalContexts.length > 0 ||
+      sendablePastedTexts.length > 0,
   };
 }
 
