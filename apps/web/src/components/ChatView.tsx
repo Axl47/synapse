@@ -92,7 +92,6 @@ import {
 import { getLocalFolderBrowseRootPath, isLocalFolderMentionQuery } from "~/lib/localFolderMentions";
 import {
   findProviderStatus,
-  isProviderUsable,
   normalizeCustomBinaryPath,
   normalizeProviderStatusForLocalConfig,
   resolveProviderSendAvailability,
@@ -214,7 +213,6 @@ import {
 import { useTheme } from "../hooks/useTheme";
 import { useThreadWorkspaceHandoff } from "../hooks/useThreadWorkspaceHandoff";
 import { useComposerCommandMenuItems } from "../hooks/useComposerCommandMenuItems";
-import { useThreadHandoff } from "../hooks/useThreadHandoff";
 import { useTurnDiffSummaries } from "../hooks/useTurnDiffSummaries";
 import BranchToolbar, { RuntimeUsageControls } from "./BranchToolbar";
 import { SynaraLogo } from "./SynaraLogo";
@@ -463,11 +461,7 @@ import { useComposerSlashCommands } from "../hooks/useComposerSlashCommands";
 import { useFeatureFlags } from "../featureFlags";
 import { mergeCursorModelVariantsWithBaseControls } from "../cursorModelVariants";
 import { useHandleNewThread } from "../hooks/useHandleNewThread";
-import {
-  canCreateThreadHandoff,
-  resolveAvailableHandoffTargetProviders,
-  resolveThreadHandoffBadgeLabel,
-} from "../lib/threadHandoff";
+import { resolveThreadHandoffBadgeLabel } from "../lib/threadHandoff";
 import {
   resolveDiffEnvironmentState,
   resolveThreadEnvironmentMode,
@@ -792,7 +786,6 @@ export default function ChatView({
   const navigate = useNavigate();
   const { handleNewThread } = useHandleNewThread();
   const { handleNewChat } = useHandleNewChat();
-  const { createThreadHandoff } = useThreadHandoff();
   const rawSearch = useDiffRouteSearch();
   const activeSplitView = useSplitViewStore(selectSplitView(rawSearch.splitViewId ?? null));
   const removeThreadFromSplitViews = useSplitViewStore((store) => store.removeThreadFromSplitViews);
@@ -2290,17 +2283,6 @@ export default function ChatView({
     showPlanFollowUpPrompt,
   });
   const composerFooterHasWideActions = showPlanFollowUpPrompt || activePendingProgress !== null;
-  const handoffDisabled = !(
-    activeThread &&
-    activeProject &&
-    isServerThread &&
-    canCreateThreadHandoff({
-      thread: activeThread,
-      isBusy: isWorking,
-      hasPendingApprovals: pendingApprovals.length > 0,
-      hasPendingUserInput: pendingUserInputs.length > 0,
-    })
-  );
   const lastSyncedPendingInputRef = useRef<{
     requestId: string | null;
     questionId: string | null;
@@ -3082,16 +3064,6 @@ export default function ChatView({
   const handoffBadgeTargetProvider = activeThread?.handoff
     ? activeThread.modelSelection.provider
     : null;
-  const handoffTargetProviders = useMemo(
-    () =>
-      activeThread
-        ? resolveAvailableHandoffTargetProviders(activeThread.modelSelection.provider).filter(
-            (provider) => isProviderUsable(findProviderStatus(providerStatuses, provider)),
-          )
-        : [],
-    [activeThread, providerStatuses],
-  );
-  const handoffActionLabel = activeThread ? "Hand off thread" : "Create handoff thread";
   const activeProviderStatus = useMemo(
     () => findProviderStatus(providerStatuses, selectedProvider),
     [selectedProvider, providerStatuses],
@@ -5721,39 +5693,6 @@ export default function ChatView({
       setIsRevertingCheckpoint(false);
     },
     [activeThread, hasLiveTurn, isConnecting, isRevertingCheckpoint, isSendBusy, setThreadError],
-  );
-
-  const onCreateHandoffThread = useCallback(
-    async (targetProvider: ProviderKind) => {
-      if (!activeThread || handoffDisabled) {
-        return;
-      }
-
-      try {
-        const targetAvailability = resolveProviderSendAvailability({
-          provider: targetProvider,
-          statuses: providerStatuses,
-        });
-        if (!targetAvailability.usable) {
-          toastManager.add({
-            type: "error",
-            title: targetAvailability.unavailableReason,
-          });
-          return;
-        }
-        await createThreadHandoff(activeThread, targetProvider);
-      } catch (error) {
-        toastManager.add({
-          type: "error",
-          title: "Could not create handoff thread",
-          description:
-            error instanceof Error
-              ? error.message
-              : "An error occurred while creating the handoff thread.",
-        });
-      }
-    },
-    [activeThread, createThreadHandoff, handoffDisabled, providerStatuses],
   );
 
   const clearComposerInput = useCallback(
@@ -9054,9 +8993,6 @@ export default function ChatView({
           availableEditors={availableEditors}
           diffToggleShortcutLabel={diffPanelShortcutLabel}
           handoffBadgeLabel={handoffBadgeLabel}
-          handoffActionLabel={handoffActionLabel}
-          handoffDisabled={handoffDisabled}
-          handoffActionTargetProviders={handoffTargetProviders}
           handoffBadgeSourceProvider={handoffBadgeSourceProvider}
           handoffBadgeTargetProvider={handoffBadgeTargetProvider}
           gitCwd={threadWorkspaceCwd}
@@ -9112,7 +9048,6 @@ export default function ChatView({
           onUpdateProjectScript={updateProjectScript}
           onDeleteProjectScript={deleteProjectScript}
           onToggleDiff={onToggleDiff}
-          onCreateHandoff={onCreateHandoffThread}
           onNavigateToThread={onNavigateToThread}
           onRenameThread={() => setRenameDialogOpen(true)}
           {...(onCloseThreadPane ? { onCloseThreadPane } : {})}
