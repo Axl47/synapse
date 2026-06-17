@@ -355,6 +355,7 @@ type ProjectContextMenuId =
   | "stop-dev"
   | "open-dev-server"
   | "rename"
+  | "relocate"
   | "toggle-pin"
   | "archive-threads"
   | "delete-threads"
@@ -365,7 +366,7 @@ type ProjectContextMenuState = {
   position: { x: number; y: number };
 };
 
-const PROJECT_CONTEXT_MENU_PANEL_CLASS_NAME = "w-48 min-w-48";
+const PROJECT_CONTEXT_MENU_PANEL_CLASS_NAME = "w-56 min-w-56";
 const PROJECT_CONTEXT_MENU_ITEM_CLASS_NAME =
   "text-[var(--color-text-foreground)] data-highlighted:text-[var(--color-text-foreground)]";
 const PROJECT_CONTEXT_MENU_ICON_CLASS_NAME =
@@ -3544,6 +3545,70 @@ export default function Sidebar() {
     }
   }, []);
 
+  const handleRelocateProjectFolder = useCallback(
+    async (projectId: ProjectId) => {
+      const api = readNativeApi();
+      if (!api) return;
+      const project = projectById.get(projectId);
+      if (!project) return;
+
+      let pickedPath: string | null = null;
+      try {
+        pickedPath = await api.dialogs.pickFolder();
+      } catch (error) {
+        toastManager.add({
+          type: "error",
+          title: "Unable to open folder picker",
+          description:
+            error instanceof Error ? error.message : "Unable to choose a project folder.",
+        });
+        return;
+      }
+
+      if (!pickedPath) {
+        return;
+      }
+
+      const existing = findWorkspaceRootMatch(projects, pickedPath, (candidate) => candidate.cwd);
+      if (existing?.id === projectId) {
+        toastManager.add({
+          type: "info",
+          title: "Project already uses this folder",
+          description: pickedPath,
+        });
+        return;
+      }
+
+      const nextTitle =
+        project.localName === null
+          ? (pickedPath.split(/[/\\]/).findLast(isNonEmptyString) ?? project.remoteName)
+          : undefined;
+
+      try {
+        await api.orchestration.dispatchCommand({
+          type: "project.meta.update",
+          commandId: newCommandId(),
+          projectId,
+          workspaceRoot: pickedPath,
+          ...(nextTitle !== undefined ? { title: nextTitle } : {}),
+        });
+        toastManager.add({
+          type: "success",
+          title: `Relocated "${project.name}"`,
+          description: pickedPath,
+        });
+      } catch (error) {
+        toastManager.add({
+          type: "error",
+          title: `Failed to relocate "${project.name}"`,
+          description:
+            error instanceof Error ? error.message : "Unable to update the project folder.",
+        });
+      }
+    },
+    [projectById, projects],
+  );
+
   const handleProjectContextMenuAction = useCallback(
     async (projectId: ProjectId, clicked: ProjectContextMenuId) => {
       setProjectContextMenuState(null);
@@ -3589,6 +3654,10 @@ export default function Sidebar() {
       }
       if (clicked === "rename") {
         setRenameProjectDialogId(projectId);
+        return;
+      }
+      if (clicked === "relocate") {
+        await handleRelocateProjectFolder(projectId);
         return;
       }
       if (clicked === "toggle-pin") {
@@ -3667,6 +3736,7 @@ export default function Sidebar() {
       deleteProjectThreads,
       deleteAllThreadsInProject,
       handleOpenProjectRunServer,
+      handleRelocateProjectFolder,
       handleStopProjectRun,
       navigate,
       projectById,
@@ -6632,6 +6702,18 @@ export default function Sidebar() {
               >
                 <ProjectContextMenuIcon icon={PencilIcon} />
                 <span>Edit name</span>
+              </MenuItem>
+              <MenuItem
+                className={PROJECT_CONTEXT_MENU_ITEM_CLASS_NAME}
+                onClick={() =>
+                  void handleProjectContextMenuAction(
+                    projectContextMenuState.projectId,
+                    "relocate",
+                  )
+                }
+              >
+                <ProjectContextMenuIcon icon={FolderIcon} />
+                <span>Relocate project folder</span>
               </MenuItem>
               <MenuItem
                 className={PROJECT_CONTEXT_MENU_ITEM_CLASS_NAME}
