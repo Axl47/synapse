@@ -740,7 +740,8 @@ export const ChatHeader = memo(function ChatHeader({
           <ProviderUsageMenuControl provider={activeProvider} />
         ) : null}
         {/* Project actions stay mounted in the header so scripts without
-            keybindings remain runnable, while also hosting the shared dialog. */}
+            keybindings remain runnable, empty projects can add their first
+            action, and the shared add/edit dialog has one owner. */}
         {!isDisposableThread && activeProjectScripts ? (
           <ProjectScriptsControl
             scripts={activeProjectScripts}

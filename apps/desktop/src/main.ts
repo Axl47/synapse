@@ -95,6 +95,7 @@ import {
   sendBrowserCopyLink,
   sendBrowserState,
 } from "./browserIpc";
+import { safeSendToWebContents } from "./safeWebContentsSend";
 import {
   BrowserUsePipeServer,
   DPCODE_BROWSER_USE_PIPE_ENV,
@@ -191,6 +192,9 @@ const DESKTOP_MENU_ZOOM_FACTOR_STEP = 1.1;
 const DESKTOP_MENU_MIN_ZOOM_FACTOR = 0.25;
 const DESKTOP_MENU_MAX_ZOOM_FACTOR = 5;
 const SYNARA_BROWSER_LABEL = "Synara browser";
+const MAIN_RENDERER_RECOVERY_DELAY_MS = 250;
+const MAIN_RENDERER_RECOVERY_ATTEMPT_WINDOW_MS = 30_000;
+const MAIN_RENDERER_RECOVERY_MAX_ATTEMPTS = 3;
 const browserPerfLoggingEnabled =
   process.env.SYNARA_BROWSER_PERF === "1" ||
   process.env.DPCODE_BROWSER_PERF === "1" ||
@@ -270,7 +274,7 @@ async function ensureBrowserUsePipeServer(): Promise<void> {
   }
   const server = new BrowserUsePipeServer(browserManager, {
     requestOpenPanel: () => {
-      mainWindow?.webContents.send(BROWSER_IPC_CHANNELS.requestOpenPanel);
+      safeSendToWebContents(mainWindow?.webContents, BROWSER_IPC_CHANNELS.requestOpenPanel);
     },
   });
   await server.start();
@@ -357,7 +361,74 @@ function getDesktopWindowState(window: BrowserWindow): {
 
 function emitDesktopWindowState(window: BrowserWindow | null = mainWindow): void {
   if (!window || window.isDestroyed()) return;
-  window.webContents.send(WINDOW_STATE_CHANNEL, getDesktopWindowState(window));
+  safeSendToWebContents(window.webContents, WINDOW_STATE_CHANNEL, getDesktopWindowState(window));
+}
+
+function getDesktopWindowUrl(): string {
+  const devServerUrl = process.env.VITE_DEV_SERVER_URL;
+  return isDevelopment && devServerUrl ? devServerUrl : `${DESKTOP_SCHEME}://app/index.html`;
+}
+
+function loadDesktopWindow(window: BrowserWindow): void {
+  const url = getDesktopWindowUrl();
+  void window.loadURL(url).catch((error) => {
+    writeDesktopLogHeader(`main renderer load failed message=${formatErrorMessage(error)}`);
+    console.warn("[desktop] failed to load main renderer", error);
+  });
+}
+
+function shouldRecoverMainRenderer(): boolean {
+  return !desktopShutdownPromise && !desktopShutdownComplete && !isQuitting;
+}
+
+function attachMainWindowRendererRecovery(window: BrowserWindow): void {
+  let recoveryTimer: ReturnType<typeof setTimeout> | null = null;
+  let recoveryAttemptedAt: number[] = [];
+
+  const clearRecoveryTimer = () => {
+    if (!recoveryTimer) return;
+    clearTimeout(recoveryTimer);
+    recoveryTimer = null;
+  };
+
+  window.on("closed", clearRecoveryTimer);
+  window.webContents.on("render-process-gone", (_event, details) => {
+    const detail = `reason=${details.reason} exitCode=${details.exitCode}`;
+    writeDesktopLogHeader(`main renderer gone ${detail}`);
+    console.warn(`[desktop] main renderer process gone (${detail})`);
+
+    if (!shouldRecoverMainRenderer() || window.isDestroyed()) {
+      return;
+    }
+
+    const now = Date.now();
+    recoveryAttemptedAt = recoveryAttemptedAt.filter(
+      (timestamp) => now - timestamp < MAIN_RENDERER_RECOVERY_ATTEMPT_WINDOW_MS,
+    );
+    if (recoveryAttemptedAt.length >= MAIN_RENDERER_RECOVERY_MAX_ATTEMPTS) {
+      console.error(
+        `[desktop] main renderer recovery paused after ${recoveryAttemptedAt.length} attempts in ${MAIN_RENDERER_RECOVERY_ATTEMPT_WINDOW_MS}ms`,
+      );
+      return;
+    }
+    recoveryAttemptedAt.push(now);
+
+    if (recoveryTimer) {
+      return;
+    }
+
+    recoveryTimer = setTimeout(() => {
+      recoveryTimer = null;
+      if (!shouldRecoverMainRenderer() || window.isDestroyed()) {
+        return;
+      }
+      loadDesktopWindow(window);
+      if (!window.isVisible()) {
+        window.show();
+      }
+    }, MAIN_RENDERER_RECOVERY_DELAY_MS);
+    recoveryTimer.unref();
+  });
 }
 
 function isSaveFileInput(input: unknown): input is {
@@ -936,7 +1007,7 @@ function dispatchMenuAction(action: string): void {
 
   const send = () => {
     if (targetWindow.isDestroyed()) return;
-    targetWindow.webContents.send(MENU_ACTION_CHANNEL, action);
+    safeSendToWebContents(targetWindow.webContents, MENU_ACTION_CHANNEL, action);
     if (!targetWindow.isVisible()) {
       targetWindow.show();
     }
@@ -957,7 +1028,7 @@ function resolveMenuTargetWindow(): BrowserWindow | null {
 
 function sendDesktopZoomFactor(webContents: Electron.WebContents): void {
   if (webContents.isDestroyed()) return;
-  webContents.send(ZOOM_FACTOR_CHANGED_CHANNEL, webContents.getZoomFactor());
+  safeSendToWebContents(webContents, ZOOM_FACTOR_CHANGED_CHANNEL, webContents.getZoomFactor());
 }
 
 function attachDesktopZoomFactorSync(window: BrowserWindow): void {
@@ -1279,7 +1350,11 @@ function showDesktopNotification(input: {
       return;
     }
     if (threadId.length > 0) {
-      mainWindow.webContents.send(MENU_ACTION_CHANNEL, `notification-open-thread:${threadId}`);
+      safeSendToWebContents(
+        mainWindow.webContents,
+        MENU_ACTION_CHANNEL,
+        `notification-open-thread:${threadId}`,
+      );
     }
   });
 
@@ -1383,7 +1458,7 @@ function scheduleUpdatePoll(): void {
 function emitUpdateState(): void {
   for (const window of BrowserWindow.getAllWindows()) {
     if (window.isDestroyed()) continue;
-    window.webContents.send(UPDATE_STATE_CHANNEL, updateState);
+    safeSendToWebContents(window.webContents, UPDATE_STATE_CHANNEL, updateState);
   }
 }
 
@@ -2362,7 +2437,7 @@ function registerIpcHandlers(): void {
       window.maximize();
     }
     const state = getDesktopWindowState(window);
-    window.webContents.send(WINDOW_STATE_CHANNEL, state);
+    safeSendToWebContents(window.webContents, WINDOW_STATE_CHANNEL, state);
     return state;
   });
 
@@ -2519,6 +2594,7 @@ function createWindow(): BrowserWindow {
   });
   browserManager.setWindow(window);
   attachDesktopZoomFactorSync(window);
+  attachMainWindowRendererRecovery(window);
 
   window.webContents.on("context-menu", (event, params) => {
     event.preventDefault();
@@ -2586,10 +2662,10 @@ function createWindow(): BrowserWindow {
   window.on("leave-full-screen", () => emitDesktopWindowState(window));
 
   if (isDevelopment) {
-    void window.loadURL(process.env.VITE_DEV_SERVER_URL as string);
+    loadDesktopWindow(window);
     window.webContents.openDevTools({ mode: "detach" });
   } else {
-    void window.loadURL(`${DESKTOP_SCHEME}://app/index.html`);
+    loadDesktopWindow(window);
   }
 
   window.on("closed", () => {

@@ -21,6 +21,7 @@ import type {
 } from "@t3tools/contracts";
 
 import type { DesktopBrowserManager } from "./browserManager";
+import { safeSendToWebContents } from "./safeWebContentsSend";
 
 export const BROWSER_IPC_CHANNELS = {
   state: "desktop:browser-state",
@@ -52,7 +53,7 @@ export function sendBrowserState(
   webContents: WebContents | null | undefined,
   state: ThreadBrowserState,
 ): void {
-  webContents?.send(BROWSER_IPC_CHANNELS.state, state);
+  safeSendToWebContents(webContents, BROWSER_IPC_CHANNELS.state, state);
 }
 
 // Notifies the renderer that the native browser page handled the copy-link chord so the
@@ -61,7 +62,7 @@ export function sendBrowserCopyLink(
   webContents: WebContents | null | undefined,
   event: BrowserCopyLinkEvent,
 ): void {
-  webContents?.send(BROWSER_IPC_CHANNELS.copyLink, event);
+  safeSendToWebContents(webContents, BROWSER_IPC_CHANNELS.copyLink, event);
 }
 
 // Registers the desktop browser bridge in one place so main.ts stays focused on app boot.

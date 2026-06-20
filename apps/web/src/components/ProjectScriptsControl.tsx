@@ -299,6 +299,26 @@ export default function ProjectScriptsControl({
 
   return (
     <>
+      {showInlineControls && !primaryScript ? (
+        <Button
+          size="xs"
+          variant="outline"
+          className={cn(
+            headerButtonDarkBorderClassName,
+            CHAT_HEADER_CONTROL_CLASS_NAME,
+            CHAT_HEADER_ICON_STRENGTH_CLASS_NAME,
+          )}
+          onClick={openAddDialog}
+          title="Add action"
+          aria-label="Add action"
+        >
+          <PlusIcon className="size-3.5" />
+          <span className="sr-only @sm/header-actions:not-sr-only @sm/header-actions:ml-0.5">
+            Add action
+          </span>
+        </Button>
+      ) : null}
+
       {showInlineControls && primaryScript ? (
         <Group aria-label="Project scripts">
           <Button

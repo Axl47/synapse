@@ -1834,6 +1834,48 @@ describe("ChatView timeline estimator parity (full app)", () => {
     }
   });
 
+  it("offers a header action button to add the first project script", async () => {
+    useComposerDraftStore.setState({
+      draftThreadsByThreadId: {
+        [THREAD_ID]: {
+          projectId: PROJECT_ID,
+          createdAt: NOW_ISO,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          entryPoint: "chat",
+          branch: null,
+          worktreePath: null,
+          envMode: "local",
+        },
+      },
+      projectDraftThreadIdByProjectId: {
+        [PROJECT_ID]: THREAD_ID,
+      },
+    });
+
+    const mounted = await mountChatView({
+      viewport: { ...DEFAULT_VIEWPORT, width: 1_400 },
+      snapshot: withProjectScripts(createDraftOnlySnapshot(), []),
+    });
+
+    try {
+      const addActionButton = await waitForElement(
+        () =>
+          Array.from(document.querySelectorAll("button")).find(
+            (button) => button.title === "Add action",
+          ) as HTMLButtonElement | null,
+        "Unable to find Add action button.",
+      );
+      addActionButton.click();
+
+      await expect.element(page.getByRole("heading", { name: "Add Action" })).toBeInTheDocument();
+      await expect.element(page.getByLabelText("Name")).toBeInTheDocument();
+      await expect.element(page.getByLabelText("Command")).toBeInTheDocument();
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("runs project scripts from local draft threads at the project cwd", async () => {
     useComposerDraftStore.setState({
       draftThreadsByThreadId: {
