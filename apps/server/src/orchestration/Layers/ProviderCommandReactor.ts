@@ -35,6 +35,7 @@ import { buildStalePendingRequestFailureDetail } from "@t3tools/shared/threadSum
 import { resolveThreadWorkspaceState } from "@t3tools/shared/threadEnvironment";
 import {
   inferLegacyProviderKindFromModelSelection,
+  mergeProviderStartOptions,
   providerStartOptionsFromInstance,
   resolveModelSelectionInstanceId,
   resolveProviderInstance,
@@ -343,6 +344,19 @@ const make = Effect.gen(function* () {
 
   const threadProviderOptions = new Map<string, ProviderStartOptions>();
   const threadModelSelections = new Map<string, ModelSelection>();
+
+  const cacheThreadProviderOptions = (
+    threadId: ThreadId,
+    provider: ProviderKind,
+    providerOptions: ProviderStartOptions | undefined,
+  ) => {
+    const normalized = normalizeProviderOptionsForComparison(provider, providerOptions);
+    if (normalized !== undefined && providerOptions !== undefined) {
+      threadProviderOptions.set(threadId, providerOptions);
+    } else {
+      threadProviderOptions.delete(threadId);
+    }
+  };
 
   const resolveThreadWorkspaceProject = Effect.fnUntraced(function* (
     thread: Pick<OrchestrationThread, "projectId">,
@@ -834,6 +848,13 @@ const make = Effect.gen(function* () {
           instanceId: desiredProviderInstance.instanceId,
         } as ModelSelection)
       : desiredModelSelection;
+    const desiredInstanceProviderOptions = desiredProviderInstance
+      ? providerStartOptionsFromInstance(desiredProviderInstance)
+      : undefined;
+    const desiredEffectiveProviderOptions = mergeProviderStartOptions(
+      options?.providerOptions,
+      desiredInstanceProviderOptions,
+    );
     const currentProviderInstanceId =
       thread.session?.providerInstanceId ?? resolveModelSelectionInstanceId(thread.modelSelection);
     const requestedProviderInstanceChanged =
@@ -887,8 +908,8 @@ const make = Effect.gen(function* () {
         providerInstanceId: desiredProviderInstanceId,
         ...(effectiveCwd ? { cwd: effectiveCwd } : {}),
         modelSelection: desiredRoutedModelSelection,
-        ...(options?.providerOptions !== undefined
-          ? { providerOptions: options.providerOptions }
+        ...(desiredEffectiveProviderOptions !== undefined
+          ? { providerOptions: desiredEffectiveProviderOptions }
           : {}),
         ...(input?.resumeCursor !== undefined ? { resumeCursor: input.resumeCursor } : {}),
         runtimeMode: desiredRuntimeMode,
@@ -942,7 +963,7 @@ const make = Effect.gen(function* () {
       const providerOptionsChanged = shouldRestartForProviderOptionsChange({
         requestedProvider: desiredProvider,
         previousProviderOptions,
-        requestedProviderOptions: options?.providerOptions,
+        requestedProviderOptions: desiredEffectiveProviderOptions,
       });
 
       if (
@@ -953,6 +974,7 @@ const make = Effect.gen(function* () {
         !shouldRestartForModelSelectionChange &&
         !providerOptionsChanged
       ) {
+        cacheThreadProviderOptions(threadId, desiredProvider, desiredEffectiveProviderOptions);
         return existingSessionThreadId;
       }
 
@@ -965,7 +987,7 @@ const make = Effect.gen(function* () {
           requestedProvider: desiredProvider,
           providerOptionsChanged,
           previousProviderOptions,
-          requestedProviderOptions: options?.providerOptions,
+          requestedProviderOptions: desiredEffectiveProviderOptions,
         })
           ? undefined
           : (activeSession?.resumeCursor ?? undefined);
@@ -995,6 +1017,7 @@ const make = Effect.gen(function* () {
         runtimeMode: restartedSession.runtimeMode,
       });
       yield* bindSessionToThread(restartedSession);
+      cacheThreadProviderOptions(threadId, desiredProvider, desiredEffectiveProviderOptions);
       return restartedSession.threadId;
     }
 
@@ -1004,8 +1027,8 @@ const make = Effect.gen(function* () {
         threadId,
         ...(effectiveCwd ? { cwd: effectiveCwd } : {}),
         modelSelection: desiredRoutedModelSelection,
-        ...(options?.providerOptions !== undefined
-          ? { providerOptions: options.providerOptions }
+        ...(desiredEffectiveProviderOptions !== undefined
+          ? { providerOptions: desiredEffectiveProviderOptions }
           : {}),
         runtimeMode: desiredRuntimeMode,
       });
@@ -1024,6 +1047,7 @@ const make = Effect.gen(function* () {
             updatedAt: createdAt,
           } satisfies ProviderSession);
         yield* bindSessionToThread(forkedSession);
+        cacheThreadProviderOptions(threadId, desiredProvider, desiredEffectiveProviderOptions);
         return threadId;
       }
     }
@@ -1034,6 +1058,7 @@ const make = Effect.gen(function* () {
 
     const startedSession = yield* startProviderSession(undefined);
     yield* bindSessionToThread(startedSession);
+    cacheThreadProviderOptions(threadId, desiredProvider, desiredEffectiveProviderOptions);
     return startedSession.threadId;
   });
 
@@ -1066,18 +1091,6 @@ const make = Effect.gen(function* () {
       ...(input.providerOptions !== undefined ? { providerOptions: input.providerOptions } : {}),
       ...(input.runtimeMode !== undefined ? { runtimeMode: input.runtimeMode } : {}),
     });
-    const providerForOptionsCache = yield* resolveProviderForModelSelection(
-      input.modelSelection ?? thread.modelSelection,
-    );
-    if (
-      input.providerOptions !== undefined &&
-      normalizeProviderOptionsForComparison(providerForOptionsCache, input.providerOptions) !==
-        undefined
-    ) {
-      threadProviderOptions.set(input.threadId, input.providerOptions);
-    } else {
-      threadProviderOptions.delete(input.threadId);
-    }
     if (input.modelSelection !== undefined) {
       threadModelSelections.set(input.threadId, input.modelSelection);
     }

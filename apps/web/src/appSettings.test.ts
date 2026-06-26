@@ -6,6 +6,7 @@
 import { Schema } from "effect";
 import { describe, expect, it } from "vitest";
 import { ProviderInstanceId } from "@t3tools/contracts";
+import { codexAccountInstanceId } from "@t3tools/shared/providerInstances";
 
 import {
   AppSettingsSchema,
@@ -469,6 +470,41 @@ describe("normalizeStoredAppSettings", () => {
       piBinaryPath: "",
     });
     expect(getCustomBinaryPathForProvider(normalized, "opencode")).toBe("");
+  });
+
+  it("keeps server-valid Codex account ids that need slugged instance ids", () => {
+    const decodedSettings = Schema.decodeSync(Schema.fromJsonString(AppSettingsSchema))(
+      JSON.stringify({
+        codexAccounts: [
+          {
+            id: "work@example.com",
+            label: "Work Email",
+            homePath: "/Users/you/.codex",
+            shadowHomePath: "/Users/you/.codex-work",
+          },
+        ],
+        selectedCodexAccountId: "work@example.com",
+      }),
+    );
+    const normalized = normalizeStoredAppSettings(decodedSettings);
+    const instanceId = codexAccountInstanceId("work@example.com");
+
+    expect(normalized.codexAccounts).toEqual([
+      {
+        id: "work@example.com",
+        label: "Work Email",
+        homePath: "/Users/you/.codex",
+        shadowHomePath: "/Users/you/.codex-work",
+      },
+    ]);
+    expect(normalized.selectedCodexAccountId).toBe("work@example.com");
+    expect(getProviderInstanceOptions(normalized)).toContainEqual(
+      expect.objectContaining({
+        instanceId,
+        provider: "codex",
+        label: "Work Email",
+      }),
+    );
   });
 
   it("normalizes settings-backed model favourites by provider instance", () => {

@@ -17,6 +17,7 @@ import {
   type ProviderReadPluginResult,
   type ProviderListSkillsResult,
   type ProviderRuntimeEvent,
+  type ProviderSession,
   type ServerVoiceTranscriptionResult,
   type ThreadTokenUsageSnapshot,
   type ProviderUserInputAnswers,
@@ -712,6 +713,7 @@ function runtimeEventBase(
     ...(event.parentTurnId ? { parentTurnId: event.parentTurnId } : {}),
     ...(event.itemId ? { itemId: asRuntimeItemId(event.itemId) } : {}),
     ...(event.requestId ? { requestId: asRuntimeRequestId(event.requestId) } : {}),
+    ...(event.providerInstanceId ? { providerInstanceId: event.providerInstanceId } : {}),
     ...(refs ? { providerRefs: refs } : {}),
     raw: {
       source: eventRawSource(event),
@@ -2041,18 +2043,27 @@ const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
             }
             yield* nativeEventLogger.write(event, event.threadId);
           });
+        const stampEventWithLiveSession = (event: ProviderEvent): ProviderEvent => {
+          const session = manager
+            .listSessions()
+            .find((entry: ProviderSession) => entry.threadId === event.threadId);
+          return event.providerInstanceId === undefined && session?.providerInstanceId
+            ? { ...event, providerInstanceId: session.providerInstanceId }
+            : event;
+        };
 
         const services = yield* Effect.services<never>();
         const listener = (event: ProviderEvent) =>
           Effect.gen(function* () {
-            yield* writeNativeEvent(event);
-            const runtimeEvents = mapToRuntimeEvents(event, event.threadId);
+            const stampedEvent = stampEventWithLiveSession(event);
+            yield* writeNativeEvent(stampedEvent);
+            const runtimeEvents = mapToRuntimeEvents(stampedEvent, stampedEvent.threadId);
             if (runtimeEvents.length === 0) {
               yield* Effect.logDebug("ignoring unhandled Codex provider event", {
-                method: event.method,
-                threadId: event.threadId,
-                turnId: event.turnId,
-                itemId: event.itemId,
+                method: stampedEvent.method,
+                threadId: stampedEvent.threadId,
+                turnId: stampedEvent.turnId,
+                itemId: stampedEvent.itemId,
               });
               return;
             }

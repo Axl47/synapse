@@ -1478,6 +1478,9 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         model: input.modelSelection
           ? normalizeCodexModelSlug(input.modelSelection.model)
           : undefined,
+        ...(input.modelSelection?.instanceId
+          ? { providerInstanceId: input.modelSelection.instanceId }
+          : {}),
         cwd: resolvedCwd,
         threadId,
         createdAt: now,

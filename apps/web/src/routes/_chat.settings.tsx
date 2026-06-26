@@ -1224,7 +1224,7 @@ function SettingsRouteView() {
       }
       const config =
         provider === "codex"
-          ? { binaryPath: codexBinaryPath, homePath: codexHomePath, shadowHomePath: "" }
+          ? { binaryPath: codexBinaryPath }
           : provider === "claudeAgent"
             ? { binaryPath: claudeBinaryPath, homePath: claudeHomePath }
             : provider === "cursor"
@@ -1253,7 +1253,7 @@ function SettingsRouteView() {
       nextInstances[instanceId] = {
         driver: provider,
         displayName: `${PROVIDER_DISPLAY_NAMES[provider]} ${index}`,
-        enabled: true,
+        enabled: provider !== "codex",
         config,
       };
       updateSettings({ providerInstances: nextInstances as ProviderInstanceConfigMap });
@@ -1262,7 +1262,6 @@ function SettingsRouteView() {
       claudeBinaryPath,
       claudeHomePath,
       codexBinaryPath,
-      codexHomePath,
       settings.cursorApiEndpoint,
       settings.cursorBinaryPath,
       settings.geminiBinaryPath,

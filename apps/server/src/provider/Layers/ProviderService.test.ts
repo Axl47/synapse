@@ -4,6 +4,7 @@ import path from "node:path";
 
 import type {
   ProviderApprovalDecision,
+  ProviderForkThreadInput,
   ProviderRuntimeEvent,
   ProviderSendTurnInput,
   ProviderSession,
@@ -187,6 +188,13 @@ function makeFakeCodexAdapter(provider: ProviderKind = "codex") {
     (_threadId: ThreadId): Effect.Effect<void, ProviderAdapterError> => Effect.void,
   );
 
+  const forkThread = vi.fn((input: ProviderForkThreadInput) =>
+    Effect.succeed({
+      threadId: input.threadId,
+      resumeCursor: { opaque: `fork-${String(input.threadId)}` },
+    }),
+  );
+
   const stopAll = vi.fn(
     (): Effect.Effect<void, ProviderAdapterError> =>
       Effect.sync(() => {
@@ -210,6 +218,7 @@ function makeFakeCodexAdapter(provider: ProviderKind = "codex") {
     readThread,
     rollbackThread,
     compactThread,
+    forkThread,
     stopAll,
     streamEvents: Stream.fromPubSub(runtimeEventPubSub),
   };
@@ -253,6 +262,7 @@ function makeFakeCodexAdapter(provider: ProviderKind = "codex") {
     readThread,
     rollbackThread,
     compactThread,
+    forkThread,
     stopAll,
   };
 }
@@ -352,6 +362,42 @@ const disabledRouting = makeProviderServiceLayer(undefined, {
     },
   },
 });
+
+routing.layer("ProviderServiceLive native forks", (it) => {
+  it.effect("skips native fork when requested instance differs from the source binding", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService;
+      const sourceThreadId = asThreadId("thread-fork-source-default");
+      const targetThreadId = asThreadId("thread-fork-target-work");
+
+      yield* provider.startSession(sourceThreadId, {
+        provider: "codex",
+        providerInstanceId: "codex",
+        threadId: sourceThreadId,
+        runtimeMode: "full-access",
+      });
+
+      assert.equal(typeof provider.forkThread, "function");
+      if (!provider.forkThread) {
+        return;
+      }
+
+      const result = yield* provider.forkThread({
+        sourceThreadId,
+        threadId: targetThreadId,
+        modelSelection: {
+          instanceId: "codex_work",
+          model: "gpt-5.4",
+        },
+        runtimeMode: "full-access",
+      });
+
+      assert.equal(result, null);
+      assert.equal(routing.codex.forkThread.mock.calls.length, 0);
+    }),
+  );
+});
+
 it.effect("ProviderServiceLive keeps persisted resumable sessions on startup", () =>
   Effect.gen(function* () {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "t3-provider-service-"));

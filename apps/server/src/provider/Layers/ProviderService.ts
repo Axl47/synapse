@@ -666,9 +666,18 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
           });
           return null;
         }
-        return event.providerInstanceId === undefined && bindingInstanceId !== undefined
-          ? { ...event, providerInstanceId: bindingInstanceId }
-          : event;
+        if (event.providerInstanceId === undefined && bindingInstanceId !== undefined) {
+          if (event.provider === "codex" && bindingInstanceId !== event.provider) {
+            yield* Effect.logWarning("dropping untagged Codex event for non-default binding", {
+              threadId: event.threadId,
+              bindingInstanceId,
+              eventType: event.type,
+            });
+            return null;
+          }
+          return { ...event, providerInstanceId: bindingInstanceId };
+        }
+        return event;
       });
 
     const upsertSessionBinding = (
@@ -1270,12 +1279,30 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
         const sourcePayloadProviderInstanceId = readPersistedProviderInstanceId(
           sourceBinding.runtimePayload,
         );
-        const sourceProviderInstanceId =
+        const sourceBoundProviderInstanceId =
           sourceBinding.providerInstanceId ??
           sourcePayloadProviderInstanceId ??
-          (input.modelSelection
-            ? resolveModelSelectionInstanceId(input.modelSelection)
-            : sourceBinding.provider);
+          sourceBinding.provider;
+        const requestedProviderInstanceId = input.modelSelection
+          ? resolveModelSelectionInstanceId(input.modelSelection)
+          : undefined;
+        if (
+          requestedProviderInstanceId !== undefined &&
+          requestedProviderInstanceId !== sourceBoundProviderInstanceId
+        ) {
+          yield* Effect.logInfo(
+            "provider native fork skipped because requested instance differs from source binding",
+            {
+              sourceThreadId: input.sourceThreadId,
+              threadId: input.threadId,
+              sourceProviderInstanceId: sourceBoundProviderInstanceId,
+              requestedProviderInstanceId,
+            },
+          );
+          return null;
+        }
+        const sourceProviderInstanceId =
+          requestedProviderInstanceId ?? sourceBoundProviderInstanceId;
         const hasSourceProviderInstanceBinding =
           sourceBinding.providerInstanceId !== undefined ||
           sourcePayloadProviderInstanceId !== undefined ||
