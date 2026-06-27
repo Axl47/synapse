@@ -20,9 +20,10 @@ import {
 } from "@t3tools/contracts";
 import { clamp } from "effect/Number";
 import { Effect, FileSystem, Layer, Option, Path, Queue, Schema, Stream } from "effect";
-import { HttpRouter, HttpServerRequest } from "effect/unstable/http";
+import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 import { RpcSerialization, RpcServer } from "effect/unstable/rpc";
 
+import { AutomationService } from "./automation/Services/AutomationService";
 import { authErrorResponse, makeEffectAuthRequest } from "./auth/http";
 import { ServerAuth } from "./auth/Services/ServerAuth";
 import { SessionCredentialService } from "./auth/Services/SessionCredentialService";
@@ -35,6 +36,7 @@ import { GitManager } from "./git/Services/GitManager";
 import { GitStatusBroadcaster } from "./git/Services/GitStatusBroadcaster";
 import { TextGeneration } from "./git/Services/TextGeneration";
 import { Keybindings } from "./keybindings";
+import { createLocalPreviewGrant } from "./localImageFiles";
 import { listLocalServers, stopLocalServer } from "./localServerMonitor";
 import { Open, resolveAvailableEditors } from "./open";
 import { makeDispatchCommandNormalizer } from "./orchestration/dispatchCommandNormalization";
@@ -57,6 +59,7 @@ import { TerminalManager } from "./terminal/Services/Manager";
 import { TerminalThreadTitleTracker } from "./terminal/terminalThreadTitleTracker";
 import { WorkspaceEntries } from "./workspace/Services/WorkspaceEntries";
 import { WorkspaceFileSystem } from "./workspace/Services/WorkspaceFileSystem";
+import { shouldRejectUntrustedRequestOrigin } from "./trustedOrigins";
 import { bufferLiveUiStream, type LiveUiStreamDropReport } from "./wsStreamBackpressure";
 
 const MAX_DIAGNOSTIC_CHILD_PROCESSES = 80;
@@ -326,6 +329,7 @@ export const makeWsRpcLayer = () =>
   WsRpcGroup.toLayer(
     Effect.gen(function* () {
       const checkpointDiffQuery = yield* CheckpointDiffQuery;
+      const automationService = yield* AutomationService;
       const config = yield* ServerConfig;
       const desktopContext = yield* DesktopContext;
       const devServerManager = yield* DevServerManager;
@@ -695,6 +699,11 @@ export const makeWsRpcLayer = () =>
           rpcEffect(workspaceEntries.searchLocal(input), "Failed to search local entries"),
         [WS_METHODS.projectsReadFile]: (input) =>
           rpcEffect(workspaceFileSystem.readFile(input), "Failed to read workspace file"),
+        [WS_METHODS.projectsCreateLocalFilePreviewGrant]: (input) =>
+          rpcEffect(
+            Effect.promise(() => createLocalPreviewGrant({ requestedPath: input.path })),
+            "Failed to create local file preview grant",
+          ),
         [WS_METHODS.projectsWriteFile]: (input) =>
           rpcEffect(workspaceFileSystem.writeFile(input), "Failed to write workspace file"),
         [WS_METHODS.projectsRunDevServer]: (input) =>
@@ -999,6 +1008,25 @@ export const makeWsRpcLayer = () =>
             }),
             "Failed to generate thread recap",
           ),
+        [WS_METHODS.serverGenerateAutomationIntent]: (input) =>
+          rpcEffect(
+            Effect.gen(function* () {
+              const settings = yield* serverSettings.getSettings;
+              const modelSelection =
+                input.textGenerationModelSelection ?? settings.textGenerationModelSelection;
+              return yield* textGeneration.generateAutomationIntent({
+                cwd: input.cwd,
+                message: input.message,
+                ...(input.defaultMode ? { defaultMode: input.defaultMode } : {}),
+                nowIso: input.nowIso,
+                ...(input.codexHomePath ? { codexHomePath: input.codexHomePath } : {}),
+                model: input.textGenerationModel ?? modelSelection.model,
+                modelSelection,
+                ...(input.providerOptions ? { providerOptions: input.providerOptions } : {}),
+              });
+            }),
+            "Failed to generate automation intent",
+          ),
         [WS_METHODS.serverUpsertKeybinding]: (input) =>
           rpcEffect(
             keybindings
@@ -1141,6 +1169,35 @@ export const makeWsRpcLayer = () =>
           rpcEffect(providerDiscoveryService.listModels(input), "Failed to list models"),
         [WS_METHODS.providerListAgents]: (input) =>
           rpcEffect(providerDiscoveryService.listAgents(input), "Failed to list agents"),
+        [WS_METHODS.automationList]: (input) =>
+          rpcEffect(automationService.list(input), "Failed to list automations"),
+        [WS_METHODS.automationCreate]: (input) =>
+          rpcEffect(automationService.create(input), "Failed to create automation"),
+        [WS_METHODS.automationUpdate]: (input) =>
+          rpcEffect(automationService.update(input), "Failed to update automation"),
+        [WS_METHODS.automationDelete]: (input) =>
+          rpcEffect(automationService.delete(input), "Failed to delete automation"),
+        [WS_METHODS.automationRunNow]: (input) =>
+          rpcEffect(automationService.runNow(input), "Failed to run automation"),
+        [WS_METHODS.automationCancelRun]: (input) =>
+          rpcEffect(automationService.cancelRun(input), "Failed to cancel automation run"),
+        [WS_METHODS.automationMarkRunRead]: (input) =>
+          rpcEffect(automationService.markRunRead(input), "Failed to update automation run"),
+        [WS_METHODS.automationArchiveRun]: (input) =>
+          rpcEffect(automationService.archiveRun(input), "Failed to update automation run"),
+        [WS_METHODS.subscribeAutomationEvents]: () =>
+          Stream.merge(
+            Stream.fromEffect(
+              automationService.list({}).pipe(
+                Effect.map(({ definitions, runs }) => ({
+                  type: "snapshot" as const,
+                  definitions,
+                  runs,
+                })),
+              ),
+            ),
+            automationService.streamEvents,
+          ).pipe(Stream.mapError((cause) => toWsRpcError(cause, "Automation event stream failed"))),
       });
     }),
   );
@@ -1169,7 +1226,17 @@ export const websocketRpcRouteLayer = Layer.effectDiscard(
         const serverAuth = yield* ServerAuth;
         const sessions = yield* SessionCredentialService;
         const url = HttpServerRequest.toURL(request);
-        const legacyToken = url ? url.searchParams.get("token") : null;
+        if (
+          !url ||
+          shouldRejectUntrustedRequestOrigin({
+            rawOrigin: request.headers.origin,
+            requestOrigin: url.origin,
+            config,
+          })
+        ) {
+          return HttpServerResponse.text("Forbidden", { status: 403 });
+        }
+        const legacyToken = url.searchParams.get("token");
         const authenticatedSession =
           !config.authToken || legacyToken === config.authToken
             ? null

@@ -14,6 +14,14 @@ export const COMPOSER_SURFACE_SHADOW_CLASS_NAME =
 export const COMPOSER_PICKER_TRIGGER_TEXT_CLASS_NAME =
   "text-[length:var(--app-font-size-ui-sm,11px)] text-[var(--color-text-foreground-secondary)] sm:text-[length:var(--app-font-size-ui-sm,11px)] font-normal hover:text-[var(--color-text-foreground)] data-pressed:text-[var(--color-text-foreground)]";
 
+/**
+ * Compact pill trigger for the composer-footer toolbar pickers (environment + branch).
+ * Matches `PickerTriggerButton` sizing (ui-sm label) so the project / environment / branch
+ * row in the empty-state footer reads as one set. Pair with a `size-3.5` leading icon and a
+ * `size-3` `ChevronDownIcon` so the three triggers stay on identical icon + chevron sizes.
+ */
+export const COMPOSER_TOOLBAR_PICKER_TRIGGER_CLASS_NAME = `inline-flex cursor-pointer items-center gap-2 rounded-md px-2 py-1 transition-colors hover:bg-[var(--color-background-elevated-secondary)] ${COMPOSER_PICKER_TRIGGER_TEXT_CLASS_NAME}`;
+
 /** Caps model-provider submenu height; pairs with the list scroll class below. */
 export const COMPOSER_PICKER_MODEL_SUBMENU_HEIGHT_CLASS_NAME =
   "[--available-height:min(20rem,55vh)]";
@@ -85,9 +93,8 @@ export const CHAT_CONTENT_CARD_CLASS_NAME = "chat-content-card relative z-[15] o
  *  `CHAT_CONTENT_CARD_CLASS_NAME` with their own background token instead. */
 export const CHAT_MAIN_CONTENT_SURFACE_CLASS_NAME = `${CHAT_BACKGROUND_CLASS_NAME} ${CHAT_CONTENT_CARD_CLASS_NAME}`;
 
-/** Full-height inset shell for chat-style routes (settings, workspace, single thread pane).
- *  The opaque card lives on the SidebarInset `surfaceClassName`, never on this transparent
- *  shell, so it never covers/blocks the sidebar. */
+/** Clipped full-height inset shell for routes that already own an outer card wrapper.
+ *  Default RouteInsetSurface card routes use an unclipped inset so seam shadows can bleed. */
 export const CHAT_ROUTE_INSET_SHELL_CLASS_NAME =
   "h-dvh min-h-0 overflow-hidden overscroll-y-none text-foreground";
 
@@ -107,14 +114,17 @@ export const CHAT_COLUMN_FRAME_CLASS_NAME = `mx-auto w-full min-w-0 ${COMPOSER_M
 export const COMPOSER_COLUMN_FRAME_CLASS_NAME = CHAT_COLUMN_FRAME_CLASS_NAME;
 
 /**
- * Frame for rows stacked above the composer (queued steer/queue rows, active task
- * list). Keeps stacked activity on the same width as the composer input so wide
- * screens do not make plan/task rows drift wider than the field they belong to.
+ * Frame for rows stacked above the composer (queued steer/queue rows, live file
+ * changes, active task list). Spans the full composer-input width: the stack overlaps
+ * the scrolling transcript (`-mt-5`), so a narrower panel would expose the transcript's
+ * last line in the side gutters where the transcript's overflow clips it — reading as
+ * "cut" beside the block. Matching the input width keeps each panel a clean, full-bleed
+ * surface over the column.
  *
  * Prefer ComposerStackedPanel inside ComposerColumnFrame instead of using this
  * token directly so chrome and attached-radius behavior stay centralized.
  */
-export const COMPOSER_STACKED_HEADER_FRAME_CLASS_NAME = "mx-auto -mb-px w-11/12 min-w-0";
+export const COMPOSER_STACKED_HEADER_FRAME_CLASS_NAME = "-mb-px w-full min-w-0";
 
 /** Opaque base behind the composer shell: the composer overlaps the scrolling
  *  transcript (`-mt-5`), so without a solid backing the frosted surface would let
@@ -150,6 +160,17 @@ export const APP_TRANSLUCENT_POPUP_SURFACE_BASE_CLASS_NAME =
 /** Default floating popup shell (dropdown menus, selects, popovers). */
 export const APP_TRANSLUCENT_POPUP_SURFACE_CLASS_NAME = `${APP_TRANSLUCENT_POPUP_SURFACE_BASE_CLASS_NAME} rounded-2xl shadow-xl`;
 
+/**
+ * Frosted surface chrome shared by every plain tooltip (default TooltipPopup) and
+ * the sidebar hover cards: the translucent shell at the tooltip's tighter
+ * `rounded-lg` radius with a lifted shadow. The sidebar hover cards extend this
+ * with their fixed width, so a plain tooltip, the thread card, and the project
+ * card all read as one surface and can never drift apart. Composer-attached
+ * picker tooltips deliberately stay on the picker chrome instead (see
+ * COMPOSER_PICKER_TOOLTIP_SURFACE_CLASS_NAME) so they match the menus they open.
+ */
+export const APP_TOOLTIP_SURFACE_CLASS_NAME = `${APP_TRANSLUCENT_POPUP_SURFACE_BASE_CLASS_NAME} rounded-lg shadow-xl`;
+
 /** Frosted backdrop layer inside composer picker dropdown panels. @deprecated Use APP_TRANSLUCENT_POPUP_SURFACE_BASE_CLASS_NAME instead. */
 export const COMPOSER_PICKER_MENU_BACKDROP_CLASS_NAME = "composer-picker-menu-surface";
 
@@ -169,8 +190,12 @@ export const COMPOSER_PICKER_MENU_POPUP_BODY_CLASS_NAME = `relative z-1 w-full m
 export const COMPOSER_PICKER_MENU_POPUP_VIEWPORT_CLASS_NAME =
   "relative min-w-(--anchor-width) max-h-[min(var(--available-height),28rem)]";
 
-/** Option row shared by composer menus and composer-surface select popups. Sizing via picker size CSS vars. */
-export const COMPOSER_PICKER_MENU_OPTION_CLASS_NAME = `[&>svg]:-mx-0.5 flex cursor-default select-none items-center ${COMPOSER_PICKER_OPTION_RADIUS_CLASS_NAME} text-[length:var(--app-font-size-ui,12px)] text-[var(--color-text-foreground)] outline-none data-disabled:pointer-events-none data-highlighted:bg-[var(--color-background-button-secondary-hover)] data-highlighted:text-[var(--color-text-foreground)] data-disabled:opacity-64 [&>svg:not([class*='opacity-'])]:opacity-80 [&>svg]:pointer-events-none [&>svg]:shrink-0`;
+/** Option row shared by composer menus and composer-surface select popups. Sizing via picker size CSS vars.
+ *  Leading-icon rules are declared for both `<svg>` (Tabler/Lucide) and the Central
+ *  icon `<span data-slot=central-icon>` so a masked Central glyph (e.g. the Explorer
+ *  "folders" or Terminal "console" icon) lines up and dims exactly like the SVG icons
+ *  instead of sitting brighter and 2px out of alignment. */
+export const COMPOSER_PICKER_MENU_OPTION_CLASS_NAME = `[&>svg,&>[data-slot=central-icon]]:-mx-0.5 flex cursor-default select-none items-center ${COMPOSER_PICKER_OPTION_RADIUS_CLASS_NAME} text-[length:var(--app-font-size-ui,12px)] text-[var(--color-text-foreground)] outline-none data-disabled:pointer-events-none data-highlighted:bg-[var(--color-background-button-secondary-hover)] data-highlighted:text-[var(--color-text-foreground)] data-disabled:opacity-64 [&>svg:not([class*='opacity-']),&>[data-slot=central-icon]:not([class*='opacity-'])]:opacity-80 [&>svg,&>[data-slot=central-icon]]:pointer-events-none [&>svg,&>[data-slot=central-icon]]:shrink-0`;
 
 /** Same as menu options, adapted for select item grid layout. */
 export const COMPOSER_PICKER_SELECT_OPTION_CLASS_NAME = `${COMPOSER_PICKER_MENU_OPTION_CLASS_NAME} grid in-data-[side=none]:min-w-[calc(var(--anchor-width)+1.25rem)]`;
@@ -220,8 +245,8 @@ export const RUNTIME_FULL_ACCESS_ACCENT_CLASS_NAME =
   "text-[var(--runtime-full-access-accent)] hover:opacity-85";
 
 /** Minimum composer editor height — two lines at the element's line-height.
- *  `leading-normal` (1.5) keeps the input in step with the transcript/bubble leading. */
-export const COMPOSER_EDITOR_LINE_HEIGHT_CLASS_NAME = "leading-normal";
+ *  `leading-relaxed` (1.625) keeps the input in step with the transcript/bubble leading. */
+export const COMPOSER_EDITOR_LINE_HEIGHT_CLASS_NAME = "leading-relaxed";
 export const COMPOSER_EDITOR_TEXT_CLASS_NAME = "text-[length:var(--app-font-size-chat,12px)]";
 /** Font, size, and leading shared by the composer editor and its placeholder so the
  *  placeholder always aligns with typed text. Keep both surfaces on this one token. */

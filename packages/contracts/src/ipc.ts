@@ -12,6 +12,22 @@ import type {
   AuthWebSocketTokenResult,
 } from "./auth";
 import type {
+  AutomationCancelRunInput,
+  AutomationCancelRunResult,
+  AutomationArchiveRunInput,
+  AutomationCreateInput,
+  AutomationDefinition,
+  AutomationDeleteInput,
+  AutomationListInput,
+  AutomationListResult,
+  AutomationMarkRunReadInput,
+  AutomationRunActionResult,
+  AutomationRunNowInput,
+  AutomationRunNowResult,
+  AutomationStreamEvent,
+  AutomationUpdateInput,
+} from "./automation";
+import type {
   GitCheckoutInput,
   GitActionProgressEvent,
   GitCreateBranchInput,
@@ -52,6 +68,8 @@ import type {
   GitUnstageFilesResult,
 } from "./git";
 import type {
+  ProjectCreateLocalFilePreviewGrantInput,
+  ProjectCreateLocalFilePreviewGrantResult,
   ProjectDevServerEvent,
   ProjectDiscoverScriptsInput,
   ProjectDiscoverScriptsResult,
@@ -76,6 +94,8 @@ import type {
   ServerConfig,
   ServerDesktopContext,
   ServerDiagnosticsResult,
+  ServerGenerateAutomationIntentInput,
+  ServerGenerateAutomationIntentResult,
   ServerGenerateThreadRecapInput,
   ServerGenerateThreadRecapResult,
   ServerGetEnvironmentResult,
@@ -405,6 +425,9 @@ export interface NativeApi {
       input: ProjectSearchLocalEntriesInput,
     ) => Promise<ProjectSearchLocalEntriesResult>;
     readFile: (input: ProjectReadFileInput) => Promise<ProjectReadFileResult>;
+    createLocalFilePreviewGrant: (
+      input: ProjectCreateLocalFilePreviewGrantInput,
+    ) => Promise<ProjectCreateLocalFilePreviewGrantResult>;
     writeFile: (input: ProjectWriteFileInput) => Promise<ProjectWriteFileResult>;
     runDevServer: (input: ProjectRunDevServerInput) => Promise<ProjectRunDevServerResult>;
     stopDevServer: (input: ProjectStopDevServerInput) => Promise<ProjectStopDevServerResult>;
@@ -492,6 +515,9 @@ export interface NativeApi {
     generateThreadRecap: (
       input: ServerGenerateThreadRecapInput,
     ) => Promise<ServerGenerateThreadRecapResult>;
+    generateAutomationIntent: (
+      input: ServerGenerateAutomationIntentInput,
+    ) => Promise<ServerGenerateAutomationIntentResult>;
     transcribeVoice: (
       input: ServerVoiceTranscriptionInput,
     ) => Promise<ServerVoiceTranscriptionResult>;
@@ -536,6 +562,17 @@ export interface NativeApi {
     onDomainEvent: (callback: (event: OrchestrationEvent) => void) => () => void;
     onShellEvent: (callback: (event: OrchestrationShellStreamItem) => void) => () => void;
     onThreadEvent: (callback: (event: OrchestrationThreadStreamItem) => void) => () => void;
+  };
+  automation: {
+    list: (input?: AutomationListInput) => Promise<AutomationListResult>;
+    create: (input: AutomationCreateInput) => Promise<AutomationDefinition>;
+    update: (input: AutomationUpdateInput) => Promise<AutomationDefinition>;
+    delete: (input: AutomationDeleteInput) => Promise<void>;
+    runNow: (input: AutomationRunNowInput) => Promise<AutomationRunNowResult>;
+    cancelRun: (input: AutomationCancelRunInput) => Promise<AutomationCancelRunResult>;
+    markRunRead: (input: AutomationMarkRunReadInput) => Promise<AutomationRunActionResult>;
+    archiveRun: (input: AutomationArchiveRunInput) => Promise<AutomationRunActionResult>;
+    onEvent: (callback: (event: AutomationStreamEvent) => void) => () => void;
   };
   browser: {
     open: (input: BrowserOpenInput) => Promise<ThreadBrowserState>;

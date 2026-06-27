@@ -23,6 +23,11 @@ import {
   isGenericToolTitle,
   normalizeCompactToolLabel,
 } from "./lib/toolCallLabel";
+import {
+  deriveWorkLogToolDetails,
+  mergeWorkLogToolDetails,
+  type WorkLogToolDetails,
+} from "./lib/toolCallDetails";
 import { isStalePendingRequestFailureDetail } from "./lib/pendingInteraction";
 import { stripProposedPlanBlocksFromText } from "./proposedPlan";
 
@@ -66,10 +71,20 @@ export interface WorkLogEntry {
   toolTitle?: string;
   toolName?: string;
   toolCallId?: string;
+  toolDetails?: WorkLogToolDetails;
   itemType?: ToolLifecycleItemType;
   requestKind?: PendingApproval["requestKind"];
   subagents?: ReadonlyArray<WorkLogSubagent>;
   subagentAction?: WorkLogSubagentAction;
+  automation?: WorkLogAutomation;
+}
+
+// Created-automation rows render as a dedicated card (icon + name + cadence + Open)
+// instead of a plain tool-call line, so carry just the fields that card needs.
+export interface WorkLogAutomation {
+  id: string;
+  name: string;
+  cadenceLabel: string;
 }
 
 export const WORK_LOG_PRESENTATION_VERSION = 6;
@@ -298,6 +313,38 @@ export function canSessionAnswerPendingRequests(
     return true;
   }
   return session.status !== "closed" && session.status !== "error";
+}
+
+/**
+ * Minimal view a session needs to expose to answer "is a turn live?": its status
+ * label and its in-flight turn id. Kept structural (not `Pick<ThreadSession>`) so
+ * the predicate also accepts the orchestration read-model session, whose status is
+ * a wider union and whose `activeTurnId` is `TurnId | null` rather than
+ * `TurnId | undefined`. Both shapes satisfy this.
+ */
+type RunningTurnSessionView = {
+  status: string;
+  activeTurnId?: TurnId | null | undefined;
+};
+
+/**
+ * A session is actively running a turn: it reports the `running` status and still
+ * has an in-flight `activeTurnId`. This is the single rule for "there is live work
+ * on this session right now" — it gates destructive thread lifecycle actions
+ * (archive/delete must stop the turn first) and marks the latest turn as running
+ * during read-model reconciliation. Centralized so every gate agrees on what
+ * "running" means; widening it later (e.g. to also block `starting`) updates every
+ * caller at once instead of leaving a stale inline check behind.
+ */
+export function isSessionRunningTurn<T extends RunningTurnSessionView>(
+  session: T | null | undefined,
+): session is T & { activeTurnId: TurnId } {
+  return session != null && session.status === "running" && session.activeTurnId != null;
+}
+
+/** Thread-level form of {@link isSessionRunningTurn}: true while the thread's session has an in-flight turn. */
+export function isThreadRunningTurn(thread: Pick<Thread, "session">): boolean {
+  return isSessionRunningTurn(thread.session);
 }
 
 export function deriveActiveWorkStartedAt(
@@ -794,6 +841,12 @@ function shouldKeepActivityForWorkLog(
     return true;
   }
 
+  // Created-automation milestones are thread-scoped and carry no provider turn id;
+  // keep them so the transcript card survives once the thread has turn-stamped messages.
+  if (activity.kind === "automation.created") {
+    return true;
+  }
+
   // An empty set means the transcript has no turn-stamped assistant messages
   // (e.g. providers that never supply turn ids); fall back to the legacy
   // latest-turn filter instead of hiding the whole work log.
@@ -845,6 +898,21 @@ function normalizeWorkLogTextForComparison(value: string | undefined): string {
     .toLowerCase()
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function extractWorkLogAutomation(
+  payload: Record<string, unknown> | null,
+): WorkLogAutomation | null {
+  if (!payload) {
+    return null;
+  }
+  const id = typeof payload.automationId === "string" ? payload.automationId : null;
+  const name = typeof payload.automationName === "string" ? payload.automationName : null;
+  if (!id || !name) {
+    return null;
+  }
+  const cadenceLabel = typeof payload.cadenceLabel === "string" ? payload.cadenceLabel : "";
+  return { id, name, cadenceLabel };
 }
 
 function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWorkLogEntry {
@@ -911,6 +979,12 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
   if (subagentAction) {
     entry.subagentAction = subagentAction;
   }
+  if (activity.kind === "automation.created") {
+    const automation = extractWorkLogAutomation(payload);
+    if (automation) {
+      entry.automation = automation;
+    }
+  }
   const readableTitle =
     extractCollabActionTitle(payload) ??
     deriveReadableToolTitle({
@@ -931,6 +1005,20 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
       normalizeWorkLogTextForComparison(entry.toolTitle ?? entry.label)
   ) {
     delete entry.detail;
+  }
+  const toolDetails = deriveWorkLogToolDetails({
+    payload,
+    itemType,
+    requestKind,
+    command: entry.command,
+    rawCommand: entry.rawCommand,
+    detail: entry.detail,
+    changedFiles: entry.changedFiles ?? changedFiles,
+    label: entry.label,
+    toolTitle: entry.toolTitle,
+  });
+  if (toolDetails) {
+    entry.toolDetails = toolDetails;
   }
   const collapseKey = deriveToolLifecycleCollapseKey(entry);
   if (collapseKey) {
@@ -1099,6 +1187,7 @@ function mergeDerivedWorkLogEntries(
   const collapseKey = next.collapseKey ?? previous.collapseKey;
   const toolName = next.toolName ?? previous.toolName;
   const toolCallId = next.toolCallId ?? previous.toolCallId;
+  const toolDetails = mergeWorkLogToolDetails(previous.toolDetails, next.toolDetails);
   const turnId = next.turnId ?? previous.turnId;
   return {
     ...previous,
@@ -1117,6 +1206,7 @@ function mergeDerivedWorkLogEntries(
     ...(collapseKey ? { collapseKey } : {}),
     ...(toolName ? { toolName } : {}),
     ...(toolCallId ? { toolCallId } : {}),
+    ...(toolDetails ? { toolDetails } : {}),
   };
 }
 

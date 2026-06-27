@@ -2,6 +2,17 @@ import { Schema, Struct } from "effect";
 import { NonNegativeInt, ProjectId, ThreadId, TrimmedNonEmptyString } from "./baseSchemas";
 
 import {
+  AutomationCancelRunInput,
+  AutomationArchiveRunInput,
+  AutomationCreateInput,
+  AutomationDeleteInput,
+  AutomationListInput,
+  AutomationMarkRunReadInput,
+  AutomationRunNowInput,
+  AutomationStreamEvent,
+  AutomationUpdateInput,
+} from "./automation";
+import {
   ClientOrchestrationCommand,
   OrchestrationEvent,
   OrchestrationImportThreadInput,
@@ -57,6 +68,7 @@ import {
 } from "./terminal";
 import { KeybindingRule } from "./keybindings";
 import {
+  ProjectCreateLocalFilePreviewGrantInput,
   ProjectDevServerEvent,
   ProjectDiscoverScriptsInput,
   ProjectListDirectoriesInput,
@@ -71,6 +83,7 @@ import { FilesystemBrowseInput } from "./filesystem";
 import { OpenInEditorInput } from "./editor";
 import {
   ServerConfigUpdatedPayload,
+  ServerGenerateAutomationIntentInput,
   ServerSetDesktopContextInput,
   ServerGenerateThreadRecapInput,
   ServerLifecycleStreamEvent,
@@ -108,6 +121,7 @@ export const WS_METHODS = {
   projectsSearchEntries: "projects.searchEntries",
   projectsSearchLocalEntries: "projects.searchLocalEntries",
   projectsReadFile: "projects.readFile",
+  projectsCreateLocalFilePreviewGrant: "projects.createLocalFilePreviewGrant",
   projectsWriteFile: "projects.writeFile",
   projectsRunDevServer: "projects.runDevServer",
   projectsStopDevServer: "projects.stopDevServer",
@@ -172,6 +186,7 @@ export const WS_METHODS = {
   serverGetDiagnostics: "server.getDiagnostics",
   serverTranscribeVoice: "server.transcribeVoice",
   serverGenerateThreadRecap: "server.generateThreadRecap",
+  serverGenerateAutomationIntent: "server.generateAutomationIntent",
   serverUpsertKeybinding: "server.upsertKeybinding",
   subscribeServerLifecycle: "server.subscribeLifecycle",
   subscribeServerConfig: "server.subscribeConfig",
@@ -194,11 +209,23 @@ export const WS_METHODS = {
   providerReadPlugin: "provider.readPlugin",
   providerListModels: "provider.listModels",
   providerListAgents: "provider.listAgents",
+
+  // Automation methods
+  automationList: "automation.list",
+  automationCreate: "automation.create",
+  automationUpdate: "automation.update",
+  automationDelete: "automation.delete",
+  automationRunNow: "automation.runNow",
+  automationCancelRun: "automation.cancelRun",
+  automationMarkRunRead: "automation.markRunRead",
+  automationArchiveRun: "automation.archiveRun",
+  subscribeAutomationEvents: "automation.subscribe",
 } as const;
 
 // ── Push Event Channels ──────────────────────────────────────────────
 
 export const WS_CHANNELS = {
+  automationEvent: "automation.event",
   gitActionProgress: "git.actionProgress",
   terminalEvent: "terminal.event",
   projectDevServerEvent: "project.devServerEvent",
@@ -245,6 +272,10 @@ const WebSocketRequestBody = Schema.Union([
   tagRequestBody(WS_METHODS.projectsSearchEntries, ProjectSearchEntriesInput),
   tagRequestBody(WS_METHODS.projectsSearchLocalEntries, ProjectSearchLocalEntriesInput),
   tagRequestBody(WS_METHODS.projectsReadFile, ProjectReadFileInput),
+  tagRequestBody(
+    WS_METHODS.projectsCreateLocalFilePreviewGrant,
+    ProjectCreateLocalFilePreviewGrantInput,
+  ),
   tagRequestBody(WS_METHODS.projectsWriteFile, ProjectWriteFileInput),
   tagRequestBody(WS_METHODS.projectsRunDevServer, ProjectRunDevServerInput),
   tagRequestBody(WS_METHODS.projectsStopDevServer, ProjectStopDevServerInput),
@@ -309,6 +340,7 @@ const WebSocketRequestBody = Schema.Union([
   tagRequestBody(WS_METHODS.serverGetDiagnostics, Schema.Struct({})),
   tagRequestBody(WS_METHODS.serverTranscribeVoice, ServerVoiceTranscriptionInput),
   tagRequestBody(WS_METHODS.serverGenerateThreadRecap, ServerGenerateThreadRecapInput),
+  tagRequestBody(WS_METHODS.serverGenerateAutomationIntent, ServerGenerateAutomationIntentInput),
   tagRequestBody(WS_METHODS.serverUpsertKeybinding, KeybindingRule),
   tagRequestBody(WS_METHODS.subscribeServerDesktopContext, Schema.Struct({})),
 
@@ -322,6 +354,17 @@ const WebSocketRequestBody = Schema.Union([
   tagRequestBody(WS_METHODS.providerReadPlugin, ProviderReadPluginInput),
   tagRequestBody(WS_METHODS.providerListModels, ProviderListModelsInput),
   tagRequestBody(WS_METHODS.providerListAgents, ProviderListAgentsInput),
+
+  // Automation methods
+  tagRequestBody(WS_METHODS.automationList, AutomationListInput),
+  tagRequestBody(WS_METHODS.automationCreate, AutomationCreateInput),
+  tagRequestBody(WS_METHODS.automationUpdate, AutomationUpdateInput),
+  tagRequestBody(WS_METHODS.automationDelete, AutomationDeleteInput),
+  tagRequestBody(WS_METHODS.automationRunNow, AutomationRunNowInput),
+  tagRequestBody(WS_METHODS.automationCancelRun, AutomationCancelRunInput),
+  tagRequestBody(WS_METHODS.automationMarkRunRead, AutomationMarkRunReadInput),
+  tagRequestBody(WS_METHODS.automationArchiveRun, AutomationArchiveRunInput),
+  tagRequestBody(WS_METHODS.subscribeAutomationEvents, Schema.Struct({})),
 ]);
 
 export const WebSocketRequest = Schema.Struct({
@@ -360,6 +403,7 @@ export interface WsPushPayloadByChannel {
   readonly [WS_CHANNELS.serverConfigUpdated]: typeof ServerConfigUpdatedPayload.Type;
   readonly [WS_CHANNELS.serverProviderStatusesUpdated]: typeof ServerProviderStatusesUpdatedPayload.Type;
   readonly [WS_CHANNELS.serverSettingsUpdated]: typeof ServerSettingsUpdatedPayload.Type;
+  readonly [WS_CHANNELS.automationEvent]: typeof AutomationStreamEvent.Type;
   readonly [WS_CHANNELS.gitActionProgress]: typeof GitActionProgressEvent.Type;
   readonly [WS_CHANNELS.terminalEvent]: typeof TerminalEvent.Type;
   readonly [WS_CHANNELS.projectDevServerEvent]: typeof ProjectDevServerEvent.Type;
@@ -399,6 +443,10 @@ export const WsPushServerSettingsUpdated = makeWsPushSchema(
   WS_CHANNELS.serverSettingsUpdated,
   ServerSettingsUpdatedPayload,
 );
+export const WsPushAutomationEvent = makeWsPushSchema(
+  WS_CHANNELS.automationEvent,
+  AutomationStreamEvent,
+);
 export const WsPushGitActionProgress = makeWsPushSchema(
   WS_CHANNELS.gitActionProgress,
   GitActionProgressEvent,
@@ -428,6 +476,7 @@ export const WsPushChannelSchema = Schema.Literals([
   WS_CHANNELS.serverConfigUpdated,
   WS_CHANNELS.serverProviderStatusesUpdated,
   WS_CHANNELS.serverSettingsUpdated,
+  WS_CHANNELS.automationEvent,
   WS_CHANNELS.terminalEvent,
   WS_CHANNELS.projectDevServerEvent,
   ORCHESTRATION_WS_CHANNELS.domainEvent,
@@ -442,6 +491,7 @@ export const WsPush = Schema.Union([
   WsPushServerConfigUpdated,
   WsPushServerProviderStatusesUpdated,
   WsPushServerSettingsUpdated,
+  WsPushAutomationEvent,
   WsPushGitActionProgress,
   WsPushTerminalEvent,
   WsPushProjectDevServerEvent,

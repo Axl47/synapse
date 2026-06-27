@@ -22,6 +22,7 @@ import {
   type ThreadId,
   TurnId,
 } from "@t3tools/contracts";
+import { prepareWindowsSafeProcess } from "@t3tools/shared/windowsProcess";
 import {
   DateTime,
   Deferred,
@@ -43,6 +44,7 @@ import type * as EffectAcpSchema from "effect-acp/schema";
 
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig, type ServerConfigShape } from "../../config.ts";
+import { appendFileAttachmentsPromptBlock } from "../attachmentProjection.ts";
 import { filterProviderPromptImageAttachments } from "../promptAttachments.ts";
 import {
   ProviderAdapterProcessError,
@@ -1130,15 +1132,23 @@ export function makeCursorAdapter(
             mapAcpToAdapterError(PROVIDER, input.threadId, method, cause),
         });
         const promptParts: Array<EffectAcpSchema.ContentBlock> = [];
-        if (input.input?.trim()) {
+        const promptText = appendFileAttachmentsPromptBlock({
+          text: input.input?.trim()
+            ? withCursorPlanModePrompt({
+                text: input.input.trim(),
+                ...(input.interactionMode !== undefined
+                  ? { interactionMode: input.interactionMode }
+                  : {}),
+              })
+            : undefined,
+          attachments: input.attachments,
+          attachmentsDir: serverConfig.attachmentsDir,
+          include: "all-files",
+        });
+        if (promptText) {
           promptParts.push({
             type: "text",
-            text: withCursorPlanModePrompt({
-              text: input.input.trim(),
-              ...(input.interactionMode !== undefined
-                ? { interactionMode: input.interactionMode }
-                : {}),
-            }),
+            text: promptText,
           });
         }
         if (input.attachments && input.attachments.length > 0) {
@@ -1467,15 +1477,18 @@ export function makeCursorAdapter(
       );
       const effectiveApiEndpoint = apiEndpoint || cursorSettings.apiEndpoint;
       const runCursorModelListCommand = Effect.gen(function* () {
+        const args = [
+          ...(effectiveApiEndpoint ? (["-e", effectiveApiEndpoint] as const) : []),
+          "models",
+        ];
+        const prepared = prepareWindowsSafeProcess(effectiveBinaryPath, args, {
+          env: process.env,
+        });
         const child = yield* childProcessSpawner.spawn(
-          ChildProcess.make(
-            effectiveBinaryPath,
-            [...(effectiveApiEndpoint ? (["-e", effectiveApiEndpoint] as const) : []), "models"],
-            {
-              shell: process.platform === "win32",
-              env: process.env,
-            },
-          ),
+          ChildProcess.make(prepared.command, prepared.args, {
+            shell: prepared.shell,
+            env: process.env,
+          }),
         );
         const [stdout, stderr, exitCode] = yield* Effect.all(
           [

@@ -22,6 +22,7 @@ import GitActionsControl from "../GitActionsControl";
 import {
   ArrowRightIcon,
   CheckIcon,
+  HandoffIcon,
   HistoryIcon,
   MessageCircleIcon,
   PanelRightCloseIcon,
@@ -92,6 +93,9 @@ interface ChatHeaderProps {
   availableEditors: ReadonlyArray<EditorId>;
   diffToggleShortcutLabel: string | null;
   handoffBadgeLabel: string | null;
+  handoffActionLabel: string;
+  handoffDisabled: boolean;
+  handoffActionTargetProviders: ReadonlyArray<ProviderKind>;
   handoffBadgeSourceProvider: ProviderKind | null;
   handoffBadgeTargetProvider: ProviderKind | null;
   gitCwd: string | null;
@@ -134,6 +138,7 @@ interface ChatHeaderProps {
   onUpdateProjectScript: (scriptId: string, input: NewProjectScriptInput) => Promise<void>;
   onDeleteProjectScript: (scriptId: string) => Promise<void>;
   onToggleDiff: () => void;
+  onCreateHandoff: (targetProvider: ProviderKind) => void;
   onNavigateToThread: (threadId: ThreadId) => void;
   onRenameThread: () => void;
   onCloseThreadPane?: () => void;
@@ -401,7 +406,7 @@ function EditorRailTabs(props: {
               <span>New chat</span>
             </MenuItem>
             <MenuItem onClick={newTerminalTab}>
-              <TerminalIcon className="size-3.5 shrink-0 text-[var(--color-text-accent)]" />
+              <TerminalIcon className="size-3.5 shrink-0 text-muted-foreground" />
               <span>New terminal</span>
             </MenuItem>
           </ComposerPickerMenuPopup>
@@ -489,6 +494,9 @@ export const ChatHeader = memo(function ChatHeader({
   availableEditors,
   diffToggleShortcutLabel,
   handoffBadgeLabel,
+  handoffActionLabel,
+  handoffDisabled,
+  handoffActionTargetProviders,
   handoffBadgeSourceProvider,
   handoffBadgeTargetProvider,
   gitCwd,
@@ -508,6 +516,7 @@ export const ChatHeader = memo(function ChatHeader({
   onUpdateProjectScript,
   onDeleteProjectScript,
   onToggleDiff,
+  onCreateHandoff,
   onNavigateToThread,
   onRenameThread,
   onCloseThreadPane,
@@ -670,7 +679,7 @@ export const ChatHeader = memo(function ChatHeader({
                   </span>
                 )}
                 <h2
-                  className="max-w-[clamp(12rem,42vw,36rem)] truncate text-sm font-medium text-foreground"
+                  className="max-w-[clamp(12rem,42vw,36rem)] truncate font-system-ui text-[length:var(--app-font-size-ui,12px)] font-normal text-foreground"
                   title={activeThreadTitle}
                   onDoubleClick={() => onRenameThread()}
                 >
@@ -738,6 +747,39 @@ export const ChatHeader = memo(function ChatHeader({
       <div className="flex shrink-0 items-center gap-2 [-webkit-app-region:no-drag]">
         {!isDisposableThread && !hideHandoffControls && !environment ? (
           <ProviderUsageMenuControl provider={activeProvider} />
+        ) : null}
+        {!isDisposableThread && !hideHandoffControls ? (
+          <Menu modal={false}>
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <MenuTrigger
+                    render={
+                      <ChatHeaderButton
+                        type="button"
+                        tone="outline"
+                        className={compact ? "gap-1" : "gap-1.5"}
+                        aria-label={handoffActionLabel}
+                        disabled={handoffDisabled || handoffActionTargetProviders.length === 0}
+                      />
+                    }
+                  >
+                    <HandoffIcon className="size-[1em] shrink-0 opacity-80" />
+                    {!compact ? <span className="truncate font-normal">Hand off</span> : null}
+                  </MenuTrigger>
+                }
+              />
+              <TooltipPopup side="bottom">{handoffActionLabel}</TooltipPopup>
+            </Tooltip>
+            <ComposerPickerMenuPopup align="end" side="bottom" className="w-48 min-w-48">
+              {handoffActionTargetProviders.map((provider) => (
+                <MenuItem key={provider} onClick={() => onCreateHandoff(provider)}>
+                  {renderProviderIcon(provider, "size-3.5 shrink-0")}
+                  <span>Handoff to {PROVIDER_DISPLAY_NAMES[provider]}</span>
+                </MenuItem>
+              ))}
+            </ComposerPickerMenuPopup>
+          </Menu>
         ) : null}
         {/* Project actions stay mounted in the header so scripts without
             keybindings remain runnable, empty projects can add their first
