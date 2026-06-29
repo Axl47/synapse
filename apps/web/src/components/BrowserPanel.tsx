@@ -14,6 +14,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { createPortal } from "react-dom";
 import { useQuery } from "@tanstack/react-query";
 import { useStore } from "zustand";
 import {
@@ -852,9 +853,10 @@ export function BrowserPanel({
       // about:blank white over our dark DOM home — the "always white" empty state.
       const obscuredByOverlay =
         showLocalServersHome ||
-        (options?.skipOverlayCheck
-          ? lastOverlayObscuredRef.current
-          : hasNativeBrowserObscuringOverlay(element));
+        (!browserFullscreen &&
+          (options?.skipOverlayCheck
+            ? lastOverlayObscuredRef.current
+            : hasNativeBrowserObscuringOverlay(element)));
       lastOverlayObscuredRef.current = obscuredByOverlay;
       setBrowserWebviewOverlayOcclusion(browserWebviewRef.current, obscuredByOverlay);
       const rect = element.getBoundingClientRect();
@@ -1556,13 +1558,14 @@ export function BrowserPanel({
       return shell;
     }
 
-    return (
+    return createPortal(
       <div
-        className="fixed inset-0 z-[200] flex min-h-0 min-w-0 bg-[var(--color-background-surface)]"
+        className="fixed inset-0 z-[10000] flex min-h-0 min-w-0 bg-[var(--color-background-surface)]"
         data-browser-fullscreen="true"
       >
         {shell}
-      </div>
+      </div>,
+      document.body,
     );
   };
 
