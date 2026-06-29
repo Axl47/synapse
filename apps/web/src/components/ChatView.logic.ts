@@ -630,14 +630,38 @@ export function shouldRenderTerminalWorkspace(options: {
 export function resolveProjectScriptTerminalTarget(options: {
   baseTerminalId: string;
   createTerminalId: () => string;
-  hasRunningTerminal: boolean;
   preferNewTerminal?: boolean | undefined;
+  runningTerminalIds: readonly string[];
   terminalOpen: boolean;
+  terminalIds: readonly string[];
 }): { shouldCreateNewTerminal: boolean; terminalId: string } {
   // Project scripts require their requested cwd/env before the command write;
-  // live PTYs keep their launch context, so visible or running terminals get a new tab.
-  const shouldCreateNewTerminal =
-    Boolean(options.preferNewTerminal) || options.terminalOpen || options.hasRunningTerminal;
+  // live PTYs keep their launch context, so busy terminals still get a new tab.
+  if (options.preferNewTerminal) {
+    return {
+      shouldCreateNewTerminal: true,
+      terminalId: options.createTerminalId(),
+    };
+  }
+
+  const runningTerminalIds = new Set(options.runningTerminalIds);
+  if (options.terminalOpen) {
+    const candidateTerminalIds = [
+      options.baseTerminalId,
+      ...options.terminalIds.filter((terminalId) => terminalId !== options.baseTerminalId),
+    ];
+    const idleTerminalId = candidateTerminalIds.find(
+      (terminalId) => !runningTerminalIds.has(terminalId),
+    );
+    if (idleTerminalId) {
+      return {
+        shouldCreateNewTerminal: false,
+        terminalId: idleTerminalId,
+      };
+    }
+  }
+
+  const shouldCreateNewTerminal = options.terminalOpen || runningTerminalIds.size > 0;
 
   return {
     shouldCreateNewTerminal,

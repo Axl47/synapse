@@ -9,11 +9,13 @@
 - If the user asks to focus on code only, do not run `bun fmt`, `bun lint`, or `bun typecheck` automatically. In that mode, make the code changes first and only run verification if the user explicitly asks for it.
 - NEVER run `bun test`. Always use `bun run test` (runs Vitest).
 
+## ExecPlans
+
+When writing complex features or significant refactors, use an ExecPlan (as described in `.docs/PLANS.md`) from design to implementation. New plans should be standalone `.html` files in `.docs/exec/`.
+
 ## Project Snapshot
 
 Synara is a minimal web GUI for using coding agents like Codex and Claude.
-
-This repository is a VERY EARLY WIP. Proposing sweeping changes that improve long-term maintainability is encouraged.
 
 ## Core Priorities
 
@@ -84,3 +86,25 @@ Docs:
 - Codex-Monitor (Tauri, feature-complete, strong reference implementation): https://github.com/Dimillian/CodexMonitor
 
 Use these as implementation references when designing protocol handling, UX flows, and operational safeguards.
+
+## Final Output
+
+When asking the user to verify implemented changes, output a checklist they can fill to make sure everything works as intended. Describe what they should see, how it should work, and what they need to manually test. The user will then fill in the checklist and provide feedback on any issues they encounter, which can be used to further refine the implementation.
+
+If the user asked for multiple changes and only some were implemented, make sure to clearly indicate which ones were completed, which ones were not fully realized, and which ones are still pending. For example:
+
+```txt
+- [x] Implement app scaffold (completed with basic layout and navigation)
+- [~] Implement feature A (stub implementation completed)
+- [ ] Implement feature B (pending due to X reason)
+```
+
+Include a commit message after each implementation or fix, following the Conventional Commits specifications. If it's a large change, follow this format:
+
+```txt
+feat(update): add startup update prompt choices and sectioned changelog pipeline
+- feat(update): gate startup updates behind user choice (Yes/No/Remind Later)
+- refactor(update): split updater flow into eligibility check and install phases
+- fix(navigation): clamp bottom navbar sizing to prevent tiny rendering on some phones
+- docs(implementation): document updater prompt behavior and changelog contract
+```

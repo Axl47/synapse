@@ -4343,9 +4343,10 @@ export default function ChatView({
         resolveProjectScriptTerminalTarget({
           baseTerminalId,
           createTerminalId: randomTerminalId,
-          hasRunningTerminal: terminalState.runningTerminalIds.length > 0,
           preferNewTerminal: options?.preferNewTerminal,
+          runningTerminalIds: terminalState.runningTerminalIds,
           terminalOpen: terminalState.terminalOpen,
+          terminalIds: terminalState.terminalIds,
         });
 
       setTerminalOpen(true);
@@ -4366,6 +4367,7 @@ export default function ChatView({
           },
           cwd: targetCwd,
           command: script.command,
+          reuseExistingSession: !shouldCreateNewTerminal && terminalState.terminalOpen,
           worktreePath: options?.worktreePath ?? activeThread.worktreePath ?? null,
           ...(options?.env ? { env: options.env } : {}),
         });

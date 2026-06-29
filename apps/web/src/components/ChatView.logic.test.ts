@@ -791,8 +791,9 @@ describe("resolveProjectScriptTerminalTarget", () => {
     const target = resolveProjectScriptTerminalTarget({
       baseTerminalId: "default",
       createTerminalId: () => "new-terminal",
-      hasRunningTerminal: false,
+      runningTerminalIds: [],
       terminalOpen: false,
+      terminalIds: ["default"],
     });
 
     expect(target).toEqual({
@@ -801,13 +802,44 @@ describe("resolveProjectScriptTerminalTarget", () => {
     });
   });
 
-  it("creates a fresh terminal when a live terminal could keep stale cwd or env", () => {
+  it("reuses the open base terminal when it is idle", () => {
+    const target = resolveProjectScriptTerminalTarget({
+      baseTerminalId: "default",
+      createTerminalId: () => "new-terminal",
+      runningTerminalIds: [],
+      terminalOpen: true,
+      terminalIds: ["default"],
+    });
+
+    expect(target).toEqual({
+      shouldCreateNewTerminal: false,
+      terminalId: "default",
+    });
+  });
+
+  it("reuses another open terminal when the active terminal is busy", () => {
+    const target = resolveProjectScriptTerminalTarget({
+      baseTerminalId: "default",
+      createTerminalId: () => "new-terminal",
+      runningTerminalIds: ["default"],
+      terminalOpen: true,
+      terminalIds: ["default", "terminal-2"],
+    });
+
+    expect(target).toEqual({
+      shouldCreateNewTerminal: false,
+      terminalId: "terminal-2",
+    });
+  });
+
+  it("creates a fresh terminal when every open terminal is busy", () => {
     expect(
       resolveProjectScriptTerminalTarget({
         baseTerminalId: "default",
         createTerminalId: () => "visible-script-terminal",
-        hasRunningTerminal: false,
+        runningTerminalIds: ["default", "terminal-2"],
         terminalOpen: true,
+        terminalIds: ["default", "terminal-2"],
       }),
     ).toEqual({
       shouldCreateNewTerminal: true,
@@ -818,8 +850,9 @@ describe("resolveProjectScriptTerminalTarget", () => {
       resolveProjectScriptTerminalTarget({
         baseTerminalId: "default",
         createTerminalId: () => "running-script-terminal",
-        hasRunningTerminal: true,
+        runningTerminalIds: ["default"],
         terminalOpen: false,
+        terminalIds: ["default"],
       }),
     ).toEqual({
       shouldCreateNewTerminal: true,
@@ -831,9 +864,10 @@ describe("resolveProjectScriptTerminalTarget", () => {
     const target = resolveProjectScriptTerminalTarget({
       baseTerminalId: "default",
       createTerminalId: () => "forced-script-terminal",
-      hasRunningTerminal: false,
+      runningTerminalIds: [],
       preferNewTerminal: true,
       terminalOpen: false,
+      terminalIds: ["default"],
     });
 
     expect(target).toEqual({
