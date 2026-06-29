@@ -6,7 +6,14 @@
 // Note: raw <button>s for autocomplete-suggestion rows and tab-title activate
 // regions are intentional — list-row and tab semantics, not shadcn Buttons.
 
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import {
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useStore } from "zustand";
 import {
@@ -22,8 +29,9 @@ import {
   EllipsisIcon,
   ExternalLinkIcon,
   GlobeIcon,
-  LinkIcon,
   LoaderCircleIcon,
+  Maximize2,
+  Minimize2,
   type LucideIcon,
   PlusIcon,
   RefreshCwIcon,
@@ -555,6 +563,7 @@ export function BrowserPanel({
     ignoredTransitionSignals: 0,
   });
   const [addressValue, setAddressValue] = useState("");
+  const [browserFullscreen, setBrowserFullscreen] = useState(false);
   const [isAddressFocused, setIsAddressFocused] = useState(false);
   const [workspaceReady, setWorkspaceReady] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);
@@ -980,7 +989,7 @@ export function BrowserPanel({
       burstFramesRemainingRef.current = 0;
       burstStableFramesRef.current = 0;
     };
-  }, [api, isLiveRuntime, showLocalServersHome, threadId]);
+  }, [api, browserFullscreen, isLiveRuntime, showLocalServersHome, threadId]);
 
   const onSubmitAddress = useCallback(() => {
     if (!ensureLiveRuntime()) {
@@ -1266,6 +1275,24 @@ export function BrowserPanel({
     });
   }, [api, isLiveRuntime, threadId]);
 
+  useEffect(() => {
+    if (!browserFullscreen) {
+      return;
+    }
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.key !== "Escape") {
+        return;
+      }
+      setBrowserFullscreen(false);
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [browserFullscreen]);
+
   const onCloseTab = useCallback(
     (tabId: string) => {
       if (!ensureLiveRuntime()) {
@@ -1286,6 +1313,9 @@ export function BrowserPanel({
     },
     [api, ensureLiveRuntime, onClosePanel, runBrowserAction, threadId, upsertThreadState],
   );
+
+  const BrowserFullscreenIcon = browserFullscreen ? Minimize2 : Maximize2;
+  const browserFullscreenLabel = browserFullscreen ? "Exit full screen" : "Enter full screen";
 
   const header = (
     <div className="flex min-w-0 flex-1 items-center gap-2">
@@ -1454,13 +1484,12 @@ export function BrowserPanel({
           variant="ghost"
           size="icon-sm"
           className="size-7"
-          disabled={!activeTab}
-          aria-label="Copy link"
-          title="Copy link"
-          onClick={copyActiveTabLink}
+          aria-label={browserFullscreenLabel}
+          title={browserFullscreenLabel}
+          onClick={() => setBrowserFullscreen((isFullscreen) => !isFullscreen)}
         >
-          <LinkIcon className="size-3.5" />
-          <span className="sr-only">Copy link</span>
+          <BrowserFullscreenIcon className="size-3.5" />
+          <span className="sr-only">{browserFullscreenLabel}</span>
         </Button>
         <Menu modal={false}>
           <MenuTrigger
@@ -1516,123 +1545,138 @@ export function BrowserPanel({
     </div>
   );
 
-  if (!api && isLiveRuntime) {
-    return (
-      <DiffPanelShell mode={mode} header={header}>
-        <DiffPanelLoadingState label="Browser is unavailable." />
+  const renderShell = (children: ReactNode) => {
+    const shell = (
+      <DiffPanelShell mode={browserFullscreen ? "sidebar" : mode} header={header}>
+        {children}
       </DiffPanelShell>
     );
+
+    if (!browserFullscreen) {
+      return shell;
+    }
+
+    return (
+      <div
+        className="fixed inset-0 z-[200] flex min-h-0 min-w-0 bg-[var(--color-background-surface)]"
+        data-browser-fullscreen="true"
+      >
+        {shell}
+      </div>
+    );
+  };
+
+  if (!api && isLiveRuntime) {
+    return renderShell(<DiffPanelLoadingState label="Browser is unavailable." />);
   }
 
-  return (
-    <DiffPanelShell mode={mode} header={header}>
-      <div className="flex min-h-0 flex-1 flex-col">
-        <div
-          ref={browserTabsBarRef}
-          className={cn(
-            "flex items-center gap-2 border-b border-border px-2 py-1.5",
-            // Extend the frameless window drag region across the tab strip's empty space so
-            // the panel is easy to grab; interactive children stay no-drag via global CSS.
-            isElectron && mode !== "sheet" && "drag-region",
-          )}
-        >
-          <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto">
-            {threadBrowserState?.tabs.map((tab) => {
-              const isActive = tab.id === activeTab?.id;
-              const tabIsBlank = isBlankBrowserTabUrl(tab);
-              return (
-                <div
-                  key={tab.id}
-                  className={cn(
-                    "group flex min-w-0 max-w-[14rem] items-center px-2.5 text-left transition-colors",
-                    BROWSER_CHROME_CONTROL_CLASS_NAME,
-                    isActive
-                      ? cn(BROWSER_CHROME_CONTROL_FILLED_CLASS_NAME, "text-foreground")
-                      : "border-transparent text-muted-foreground hover:border-border/60 hover:bg-background/40 hover:text-foreground",
-                    tab.status === "suspended" && !tabIsBlank ? "opacity-75" : "",
+  return renderShell(
+    <div className="flex min-h-0 flex-1 flex-col">
+      <div
+        ref={browserTabsBarRef}
+        className={cn(
+          "flex items-center gap-2 border-b border-border px-2 py-1.5",
+          // Extend the frameless window drag region across the tab strip's empty space so
+          // the panel is easy to grab; interactive children stay no-drag via global CSS.
+          isElectron && mode !== "sheet" && "drag-region",
+        )}
+      >
+        <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto">
+          {threadBrowserState?.tabs.map((tab) => {
+            const isActive = tab.id === activeTab?.id;
+            const tabIsBlank = isBlankBrowserTabUrl(tab);
+            return (
+              <div
+                key={tab.id}
+                className={cn(
+                  "group flex min-w-0 max-w-[14rem] items-center px-2.5 text-left transition-colors",
+                  BROWSER_CHROME_CONTROL_CLASS_NAME,
+                  isActive
+                    ? cn(BROWSER_CHROME_CONTROL_FILLED_CLASS_NAME, "text-foreground")
+                    : "border-transparent text-muted-foreground hover:border-border/60 hover:bg-background/40 hover:text-foreground",
+                  tab.status === "suspended" && !tabIsBlank ? "opacity-75" : "",
+                )}
+              >
+                <span className="mr-2 flex size-4 shrink-0 items-center justify-center rounded-sm">
+                  {tab.faviconUrl ? (
+                    <img alt="" src={tab.faviconUrl} className="size-3 rounded-[2px]" />
+                  ) : (
+                    <GlobeIcon className="size-3 text-muted-foreground" />
                   )}
+                </span>
+                <button
+                  type="button"
+                  className="min-w-0 flex-1 truncate text-left"
+                  onClick={() => {
+                    if (!ensureLiveRuntime()) return;
+                    if (!api) return;
+                    void runBrowserAction(() =>
+                      api.browser.selectTab({ threadId, tabId: tab.id }),
+                    ).then((state) => {
+                      if (state) {
+                        upsertThreadState(state);
+                      }
+                    });
+                  }}
                 >
-                  <span className="mr-2 flex size-4 shrink-0 items-center justify-center rounded-sm">
-                    {tab.faviconUrl ? (
-                      <img alt="" src={tab.faviconUrl} className="size-3 rounded-[2px]" />
-                    ) : (
-                      <GlobeIcon className="size-3 text-muted-foreground" />
-                    )}
-                  </span>
-                  <button
-                    type="button"
-                    className="min-w-0 flex-1 truncate text-left"
-                    onClick={() => {
-                      if (!ensureLiveRuntime()) return;
-                      if (!api) return;
-                      void runBrowserAction(() =>
-                        api.browser.selectTab({ threadId, tabId: tab.id }),
-                      ).then((state) => {
-                        if (state) {
-                          upsertThreadState(state);
-                        }
-                      });
-                    }}
-                  >
-                    {tab.title || "Untitled"}
-                  </button>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon-sm"
-                    className={closeButtonClassName(isActive)}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      onCloseTab(tab.id);
-                    }}
-                  >
-                    <XIcon className="size-3" />
-                    <span className="sr-only">Close tab</span>
-                  </Button>
-                </div>
-              );
-            })}
+                  {tab.title || "Untitled"}
+                </button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-sm"
+                  className={closeButtonClassName(isActive)}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onCloseTab(tab.id);
+                  }}
+                >
+                  <XIcon className="size-3" />
+                  <span className="sr-only">Close tab</span>
+                </Button>
+              </div>
+            );
+          })}
+        </div>
+        {browserChromeStatus ? (
+          <div
+            className={cn(
+              "max-w-[13rem] shrink-0 truncate rounded-full border px-2.5 py-1 text-[11px] leading-none sm:max-w-[16rem]",
+              browserChromeStatus.tone === "error"
+                ? "border-destructive/25 bg-destructive/8 text-destructive"
+                : "border-border/60 bg-background/80 text-muted-foreground",
+            )}
+            title={browserChromeStatus.label}
+          >
+            {browserChromeStatus.label}
           </div>
-          {browserChromeStatus ? (
-            <div
-              className={cn(
-                "max-w-[13rem] shrink-0 truncate rounded-full border px-2.5 py-1 text-[11px] leading-none sm:max-w-[16rem]",
-                browserChromeStatus.tone === "error"
-                  ? "border-destructive/25 bg-destructive/8 text-destructive"
-                  : "border-border/60 bg-background/80 text-muted-foreground",
-              )}
-              title={browserChromeStatus.label}
-            >
-              {browserChromeStatus.label}
-            </div>
-          ) : null}
-        </div>
-        <div className="relative min-h-0 flex-1 bg-transparent">
-          {!isLiveRuntime ? (
-            <BrowserRuntimePreview
-              title={activeTab?.title || "Browser is sleeping"}
-              detail={activeTab?.lastCommittedUrl ?? activeTab?.url ?? "Restoring cached browser"}
-            />
-          ) : !workspaceReady ? (
-            <div className="absolute inset-0 z-10">
-              <DiffPanelLoadingState label="Starting browser..." />
-            </div>
-          ) : null}
-          {isLiveRuntime ? (
-            <div ref={browserViewportRef} className="absolute inset-0 bg-[#0d0d0d]" />
-          ) : null}
-          {showLocalServersHome ? (
-            <BrowserLocalServersHome
-              activeTabId={activeTab?.id ?? null}
-              loading={localServersQuery.isLoading || localServersQuery.isFetching}
-              onNavigate={onOpenLocalServer}
-              onRefresh={() => void localServersQuery.refetch()}
-              servers={localServersQuery.data?.servers ?? []}
-            />
-          ) : null}
-        </div>
+        ) : null}
       </div>
-    </DiffPanelShell>
+      <div className="relative min-h-0 flex-1 bg-transparent">
+        {!isLiveRuntime ? (
+          <BrowserRuntimePreview
+            title={activeTab?.title || "Browser is sleeping"}
+            detail={activeTab?.lastCommittedUrl ?? activeTab?.url ?? "Restoring cached browser"}
+          />
+        ) : !workspaceReady ? (
+          <div className="absolute inset-0 z-10">
+            <DiffPanelLoadingState label="Starting browser..." />
+          </div>
+        ) : null}
+        {isLiveRuntime ? (
+          <div ref={browserViewportRef} className="absolute inset-0 bg-[#0d0d0d]" />
+        ) : null}
+        {showLocalServersHome ? (
+          <BrowserLocalServersHome
+            activeTabId={activeTab?.id ?? null}
+            loading={localServersQuery.isLoading || localServersQuery.isFetching}
+            onNavigate={onOpenLocalServer}
+            onRefresh={() => void localServersQuery.refetch()}
+            servers={localServersQuery.data?.servers ?? []}
+          />
+        ) : null}
+      </div>
+    </div>,
   );
 }
 
