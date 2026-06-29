@@ -9,6 +9,7 @@ import {
   AuthRevokePairingLinkInput,
 } from "@t3tools/contracts";
 import { EDITOR_ICON_ROUTE_PATH } from "@t3tools/shared/editorIcons";
+import { isSupportedLocalHtmlPath } from "@t3tools/shared/localPreviewFiles";
 import { DateTime, Effect, Exit, FileSystem, Layer, Path, Schema, Stream } from "effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 
@@ -37,6 +38,17 @@ const PROJECT_FAVICON_CACHE_CONTROL = "public, max-age=3600";
 const SITE_FAVICON_CACHE_CONTROL_SUCCESS = "public, max-age=86400"; // 24 h
 const SITE_FAVICON_CACHE_CONTROL_FALLBACK = "public, max-age=3600"; // 1 h (negative result)
 const EDITOR_ICON_CACHE_CONTROL_SUCCESS = "public, max-age=86400"; // 24 h
+const LOCAL_HTML_PREVIEW_CSP = [
+  "sandbox",
+  "default-src 'none'",
+  "img-src data: blob:",
+  "style-src 'unsafe-inline'",
+  "font-src data:",
+  "script-src 'none'",
+  "object-src 'none'",
+  "base-uri 'none'",
+  "form-action 'none'",
+].join("; ");
 const decodeBootstrapInput = Schema.decodeUnknownEffect(AuthBootstrapInput);
 const decodeCreatePairingCredentialInput = Schema.decodeUnknownEffect(
   AuthCreatePairingCredentialInput,
@@ -520,6 +532,10 @@ export const localImageEffectRouteLayer = HttpRouter.add(
     const fileSystem = yield* FileSystem.FileSystem;
     const isDownload = url.searchParams.get("download") === "1";
     const safeFileName = previewFile.fileName.replaceAll('"', "");
+    const htmlPreviewHeaders =
+      !isDownload && isSupportedLocalHtmlPath(previewFile.path)
+        ? { "Content-Security-Policy": LOCAL_HTML_PREVIEW_CSP }
+        : {};
     return streamedFileResponse({
       fileSystem,
       path: previewFile.path,
@@ -532,8 +548,11 @@ export const localImageEffectRouteLayer = HttpRouter.add(
         // random web page that can guess path/cwd query params.
         ...localPreviewCorsHeaders({ config, request, url }),
         // PDFs render in an unsandboxed same-origin iframe; never let the
-        // browser second-guess the declared content type.
+        // browser second-guess the declared content type. HTML previews add a
+        // CSP sandbox below so local documents render without inheriting app
+        // origin script privileges.
         "X-Content-Type-Options": "nosniff",
+        ...htmlPreviewHeaders,
         ...(isDownload ? { "Content-Disposition": `attachment; filename="${safeFileName}"` } : {}),
       },
     });

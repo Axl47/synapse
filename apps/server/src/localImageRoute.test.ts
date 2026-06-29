@@ -228,6 +228,29 @@ describe("localImageEffectRouteLayer", () => {
     });
   });
 
+  it("serves workspace HTML inline with a static-preview CSP sandbox", async () => {
+    const workspace = makeTempDir("dpcode-effect-html-workspace-");
+    writeFileSync(path.join(workspace, ".git"), "gitdir: .git");
+    const htmlPath = path.join(workspace, "plan.html");
+    writeFileSync(
+      htmlPath,
+      "<!doctype html><html><head><style>body{color:red}</style></head><body><h1>Plan</h1><script>window.evil=true</script></body></html>",
+    );
+    const config = makeServerConfig({ cwd: workspace });
+
+    await withEffectServer(config, localImageEffectRouteLayer, async (origin) => {
+      const params = new URLSearchParams({ path: htmlPath, cwd: workspace });
+      const response = await fetch(`${origin}/api/local-image?${params}`);
+      expect(response.status).toBe(200);
+      expect(response.headers.get("content-type")).toContain("text/html");
+      expect(response.headers.get("content-disposition")).toBeNull();
+      expect(response.headers.get("x-content-type-options")).toBe("nosniff");
+      expect(response.headers.get("content-security-policy")).toContain("sandbox");
+      expect(response.headers.get("content-security-policy")).toContain("script-src 'none'");
+      await expect(response.text()).resolves.toContain("<h1>Plan</h1>");
+    });
+  });
+
   it("allows the configured Vite dev origin to read PDF bytes", async () => {
     const workspace = makeTempDir("dpcode-effect-pdf-dev-origin-");
     writeFileSync(path.join(workspace, ".git"), "gitdir: .git");

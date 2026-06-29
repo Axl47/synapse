@@ -111,6 +111,7 @@ import {
 } from "../confirmedCustomBinaryPathStore";
 import { isElectron } from "../env";
 import { stripDiffSearchParams } from "../diffRouteSearch";
+import { buildLocalHtmlPreviewUrl } from "../lib/localImageUrls";
 import { resolveSubagentPresentationForThread } from "../lib/subagentPresentation";
 import { ensureHomeChatProject, isHomeChatContainerProject } from "../lib/chatProjects";
 import { resolveFirstSendTarget } from "../lib/chatFirstSend";
@@ -3616,9 +3617,11 @@ export default function ChatView({
       void api?.browser.open({ threadId, initialUrl: url }).catch((error) => {
         toastManager.add({
           type: "error",
-          title: "Could not open repository",
+          title: "Could not open browser",
           description:
-            error instanceof Error ? error.message : "The in-app browser could not open GitHub.",
+            error instanceof Error
+              ? error.message
+              : "The in-app browser could not open this URL.",
         });
       });
       if (onOpenBrowserUrl) {
@@ -9322,6 +9325,14 @@ export default function ChatView({
       if (diffEnvironmentPending) {
         return;
       }
+      const htmlPreviewUrl = buildLocalHtmlPreviewUrl({
+        src: filePath,
+        cwd: threadWorkspaceCwd,
+      });
+      if (htmlPreviewUrl) {
+        openBrowserUrl(htmlPreviewUrl);
+        return;
+      }
       if (onOpenTurnDiffPanel) {
         onOpenTurnDiffPanel(turnId, filePath);
         return;
@@ -9343,7 +9354,14 @@ export default function ChatView({
         },
       });
     },
-    [diffEnvironmentPending, navigate, onOpenTurnDiffPanel, threadId],
+    [
+      diffEnvironmentPending,
+      navigate,
+      onOpenTurnDiffPanel,
+      openBrowserUrl,
+      threadId,
+      threadWorkspaceCwd,
+    ],
   );
   const onReviewComposerLiveChanges = useCallback(() => {
     if (activeTurnLiveDiffState.turnId) {

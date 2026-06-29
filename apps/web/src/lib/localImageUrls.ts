@@ -8,6 +8,7 @@
 import {
   LOCAL_IMAGE_ROUTE_PATH,
   SUPPORTED_LOCAL_IMAGE_EXTENSION_REGEX,
+  isSupportedLocalHtmlPath,
 } from "@t3tools/shared/localPreviewFiles";
 import { isWindowsAbsolutePath } from "@t3tools/shared/path";
 
@@ -50,7 +51,7 @@ export function isLocalImageMarkdownSrc(src: string | undefined): src is string 
   );
 }
 
-export function buildLocalImageUrl(input: {
+export function buildLocalPreviewUrl(input: {
   readonly src: string;
   readonly cwd: string | undefined;
   readonly download?: boolean;
@@ -73,6 +74,27 @@ export function buildLocalImageUrl(input: {
   // include the same legacy startup token attachments already use; in web/dev (where
   // the page and server share an origin) this falls back to the same relative path.
   return resolveWsHttpUrl(`${LOCAL_IMAGE_ROUTE_PATH}?${params.toString()}`);
+}
+
+export function buildLocalImageUrl(input: {
+  readonly src: string;
+  readonly cwd: string | undefined;
+  readonly download?: boolean;
+  readonly grant?: string | null | undefined;
+}): string {
+  return buildLocalPreviewUrl(input);
+}
+
+export function buildLocalHtmlPreviewUrl(input: {
+  readonly src: string | null | undefined;
+  readonly cwd: string | null | undefined;
+}): string | null {
+  const src = input.src?.trim();
+  const cwd = input.cwd?.trim();
+  if (!src || !cwd || !isSupportedLocalHtmlPath(src)) {
+    return null;
+  }
+  return buildLocalPreviewUrl({ src, cwd });
 }
 
 export function localImageFileName(src: string): string {
