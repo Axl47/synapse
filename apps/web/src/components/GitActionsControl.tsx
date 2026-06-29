@@ -899,14 +899,18 @@ export default function GitActionsControl({
     });
   }, [pendingDefaultBranchAction]);
 
-  const runDialogActionOnNewBranch = useCallback(() => {
-    if (!isCommitDialogOpen) return;
-    const commitMessage = dialogCommitMessage.trim();
-
+  const closeCommitDialog = useCallback(() => {
     setIsCommitDialogOpen(false);
     setDialogCommitMessage("");
     setExcludedFiles(new Set());
     setIsEditingFiles(false);
+  }, []);
+
+  const runDialogActionOnNewBranch = useCallback(() => {
+    if (!isCommitDialogOpen) return;
+    const commitMessage = dialogCommitMessage.trim();
+
+    closeCommitDialog();
 
     void runGitActionWithToast({
       action: "commit",
@@ -915,7 +919,13 @@ export default function GitActionsControl({
       featureBranch: true,
       skipDefaultBranchPrompt: true,
     });
-  }, [allSelected, isCommitDialogOpen, dialogCommitMessage, selectedFiles]);
+  }, [
+    allSelected,
+    closeCommitDialog,
+    dialogCommitMessage,
+    isCommitDialogOpen,
+    selectedFiles,
+  ]);
 
   const openCreateBranchDialog = useCallback(() => {
     setCreateBranchName(suggestedCreateBranchName);
@@ -1199,10 +1209,7 @@ export default function GitActionsControl({
   const runDialogAction = useCallback(() => {
     if (!isCommitDialogOpen) return;
     const commitMessage = dialogCommitMessage.trim();
-    setIsCommitDialogOpen(false);
-    setDialogCommitMessage("");
-    setExcludedFiles(new Set());
-    setIsEditingFiles(false);
+    closeCommitDialog();
     void runGitActionWithToast({
       action: "commit",
       ...(commitMessage ? { commitMessage } : {}),
@@ -1210,12 +1217,22 @@ export default function GitActionsControl({
     });
   }, [
     allSelected,
+    closeCommitDialog,
     dialogCommitMessage,
     isCommitDialogOpen,
     selectedFiles,
-    setDialogCommitMessage,
-    setIsCommitDialogOpen,
   ]);
+
+  const runDialogCommitAndPush = useCallback(() => {
+    if (!isCommitDialogOpen) return;
+    const commitMessage = dialogCommitMessage.trim();
+    closeCommitDialog();
+    void runGitActionWithToast({
+      action: "commit_push",
+      ...(commitMessage ? { commitMessage } : {}),
+      ...(!allSelected ? { filePaths: selectedFiles.map((f) => f.path) } : {}),
+    });
+  }, [allSelected, closeCommitDialog, dialogCommitMessage, isCommitDialogOpen, selectedFiles]);
 
   const openChangedFileInEditor = useCallback(
     (filePath: string) => {
@@ -1245,6 +1262,9 @@ export default function GitActionsControl({
 
   const hasRunnableCommitPushAction = gitActionMenuItems.some(
     (item) => (item.id === "commit_push" || item.id === "push") && !item.disabled,
+  );
+  const canRunDialogCommitAndPushAction = gitActionMenuItems.some(
+    (item) => item.dialogAction === "commit_push" && !item.disabled,
   );
   const shouldDimPanelCommitPushRow = isGitActionRunning || !hasRunnableCommitPushAction;
 
@@ -1311,10 +1331,7 @@ export default function GitActionsControl({
         open={isCommitDialogOpen}
         onOpenChange={(open) => {
           if (!open) {
-            setIsCommitDialogOpen(false);
-            setDialogCommitMessage("");
-            setExcludedFiles(new Set());
-            setIsEditingFiles(false);
+            closeCommitDialog();
           }
         }}
       >
@@ -1448,17 +1465,16 @@ export default function GitActionsControl({
             </div>
           </DialogPanel>
           <DialogFooter>
+            <Button variant="outline" size="sm" onClick={closeCommitDialog}>
+              Cancel
+            </Button>
             <Button
               variant="outline"
               size="sm"
-              onClick={() => {
-                setIsCommitDialogOpen(false);
-                setDialogCommitMessage("");
-                setExcludedFiles(new Set());
-                setIsEditingFiles(false);
-              }}
+              disabled={noneSelected || !canRunDialogCommitAndPushAction}
+              onClick={runDialogCommitAndPush}
             >
-              Cancel
+              Commit and Push
             </Button>
             <Button
               variant="outline"
