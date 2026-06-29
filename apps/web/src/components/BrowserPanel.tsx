@@ -57,6 +57,7 @@ import { IMAGE_SIZE_LIMIT_LABEL } from "~/lib/composerSend";
 import { PANEL_RESIZE_OVERLAY_SYNC_EVENT } from "~/lib/panelResize";
 import { serverLocalServersQueryOptions } from "~/lib/serverReactQuery";
 import { cn, isMacPlatform } from "~/lib/utils";
+import { DESKTOP_TOP_BAR_TRAFFIC_LIGHT_GUTTER_CLASS } from "~/hooks/useDesktopTopBarGutter";
 
 import {
   useBrowserStateStore,
@@ -712,7 +713,7 @@ export function BrowserPanel({
       return;
     }
 
-    if (showLocalServersHome) {
+    if (showLocalServersHome || browserFullscreen) {
       detachRendererBrowserWebview();
       return;
     }
@@ -795,6 +796,7 @@ export function BrowserPanel({
     activeTab,
     api,
     detachRendererBrowserWebview,
+    browserFullscreen,
     isLiveRuntime,
     runBrowserAction,
     showLocalServersHome,
@@ -863,6 +865,18 @@ export function BrowserPanel({
       const bounds = obscuredByOverlay
         ? null
         : (() => {
+            if (browserFullscreen) {
+              const height = window.innerHeight - rect.top;
+              if (window.innerWidth <= 0 || height <= 0) {
+                return null;
+              }
+              return {
+                x: 0,
+                y: rect.top,
+                width: window.innerWidth,
+                height,
+              };
+            }
             if (rect.width <= 0 || rect.height <= 0) {
               return null;
             }
@@ -873,9 +887,10 @@ export function BrowserPanel({
               height: rect.height,
             };
           })();
+      const surface = browserFullscreen ? "native" : "renderer";
       const nextKey = bounds
-        ? `renderer:${Math.round(bounds.x)}:${Math.round(bounds.y)}:${Math.round(bounds.width)}:${Math.round(bounds.height)}`
-        : "renderer:hidden";
+        ? `${surface}:${Math.round(bounds.x)}:${Math.round(bounds.y)}:${Math.round(bounds.width)}:${Math.round(bounds.height)}`
+        : `${surface}:hidden`;
       lastMeasuredBoundsKeyRef.current = nextKey;
       if (lastSentBoundsRef.current === nextKey) {
         perfCountersRef.current.syncSkips += 1;
@@ -884,7 +899,7 @@ export function BrowserPanel({
       lastSentBoundsRef.current = nextKey;
       perfCountersRef.current.syncSends += 1;
       void api.browser
-        .setPanelBounds({ threadId, bounds, surface: "renderer" })
+        .setPanelBounds({ threadId, bounds, surface })
         .catch(ignoreBrowserBoundsSyncError);
     };
 
@@ -1318,9 +1333,18 @@ export function BrowserPanel({
 
   const BrowserFullscreenIcon = browserFullscreen ? Minimize2 : Maximize2;
   const browserFullscreenLabel = browserFullscreen ? "Exit full screen" : "Enter full screen";
+  const browserFullscreenTrafficLightGutter =
+    browserFullscreen &&
+    isElectron &&
+    typeof navigator !== "undefined" &&
+    isMacPlatform(navigator.platform)
+      ? DESKTOP_TOP_BAR_TRAFFIC_LIGHT_GUTTER_CLASS
+      : null;
 
   const header = (
-    <div className="flex min-w-0 flex-1 items-center gap-2">
+    <div
+      className={cn("flex min-w-0 flex-1 items-center gap-2", browserFullscreenTrafficLightGutter)}
+    >
       {/* Keep the browser chrome interactive inside Electron's draggable titlebar. */}
       <div className="relative flex min-w-0 flex-1 items-center gap-2 [-webkit-app-region:no-drag]">
         <div className="flex shrink-0 items-center gap-1 [-webkit-app-region:no-drag]">
