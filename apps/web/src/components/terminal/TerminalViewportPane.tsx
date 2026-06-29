@@ -55,6 +55,7 @@ interface TerminalViewportPaneProps {
   onTogglePresentationMode?: (() => void) | undefined;
   onTogglePanel?: (() => void) | undefined;
   isPanelOpen?: boolean | undefined;
+  suppressSingleTerminalPaneChrome?: boolean | undefined;
 }
 
 function normalizeWeights(weights: number[]): number[] {
@@ -99,6 +100,16 @@ function PaneActionButton(props: { label: string; onClick: () => void; children:
   );
 }
 
+export function shouldRenderTerminalPaneChrome(input: {
+  isRootPane: boolean;
+  terminalCount: number;
+  suppressSingleTerminalPaneChrome: boolean;
+}): boolean {
+  if (!input.suppressSingleTerminalPaneChrome) return true;
+  if (!input.isRootPane) return true;
+  return input.terminalCount > 1;
+}
+
 export default function TerminalViewportPane({
   groupId,
   layout,
@@ -116,6 +127,7 @@ export default function TerminalViewportPane({
   onTogglePresentationMode,
   onTogglePanel,
   isPanelOpen,
+  suppressSingleTerminalPaneChrome = false,
 }: TerminalViewportPaneProps) {
   const renderNode = (node: ThreadTerminalLayoutNode): ReactNode => {
     if (node.type === "terminal") {
@@ -125,6 +137,11 @@ export default function TerminalViewportPane({
       const isFocusedPane = activePaneTerminalId === resolvedActiveTerminalId;
       const canMoveActiveTerminalToGroup =
         !!onMoveTerminalToGroup && canMoveTerminalToOwnGroup(layout, activePaneTerminalId);
+      const shouldRenderPaneChrome = shouldRenderTerminalPaneChrome({
+        isRootPane: layout === node,
+        terminalCount: node.terminalIds.length,
+        suppressSingleTerminalPaneChrome,
+      });
       const moveActiveTerminalToGroup = () => {
         if (!onMoveTerminalToGroup) return;
         onMoveTerminalToGroup(activePaneTerminalId);
@@ -140,112 +157,114 @@ export default function TerminalViewportPane({
             }
           }}
         >
-          <div className="flex min-h-9 items-center gap-1 bg-[var(--color-background-surface)] px-1.5 py-1">
-            <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-              {node.terminalIds.map((terminalId) => {
-                const visualIdentity = terminalVisualIdentityById.get(terminalId);
-                const isActiveTab = terminalId === activePaneTerminalId;
-                const tabTitle = visualIdentity?.title ?? "Terminal";
-                const closeTabLabel = `Close ${visualIdentity?.title ?? "terminal"}`;
+          {shouldRenderPaneChrome ? (
+            <div className="flex min-h-9 items-center gap-1 bg-[var(--color-background-surface)] px-1.5 py-1">
+              <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+                {node.terminalIds.map((terminalId) => {
+                  const visualIdentity = terminalVisualIdentityById.get(terminalId);
+                  const isActiveTab = terminalId === activePaneTerminalId;
+                  const tabTitle = visualIdentity?.title ?? "Terminal";
+                  const closeTabLabel = `Close ${visualIdentity?.title ?? "terminal"}`;
 
-                return (
-                  <SurfaceTabChip
-                    key={terminalId}
-                    active={isActiveTab}
-                    className={cn(isActiveTab && !isFocusedPane && "opacity-70")}
-                    title={tabTitle}
-                    label={tabTitle}
-                    labelClassName="max-w-40"
-                    icon={
-                      <TerminalIdentityIcon
-                        className="size-3.5"
-                        iconKey={visualIdentity?.iconKey ?? "terminal"}
-                      />
-                    }
-                    leading={
-                      visualIdentity && visualIdentity.state !== "idle" ? (
-                        <TerminalActivityIndicator
-                          className="text-foreground/70"
-                          state={visualIdentity.state}
+                  return (
+                    <SurfaceTabChip
+                      key={terminalId}
+                      active={isActiveTab}
+                      className={cn(isActiveTab && !isFocusedPane && "opacity-70")}
+                      title={tabTitle}
+                      label={tabTitle}
+                      labelClassName="max-w-40"
+                      icon={
+                        <TerminalIdentityIcon
+                          className="size-3.5"
+                          iconKey={visualIdentity?.iconKey ?? "terminal"}
                         />
-                      ) : null
+                      }
+                      leading={
+                        visualIdentity && visualIdentity.state !== "idle" ? (
+                          <TerminalActivityIndicator
+                            className="text-foreground/70"
+                            state={visualIdentity.state}
+                          />
+                        ) : null
+                      }
+                      closeLabel={closeTabLabel}
+                      onSelect={() => onActiveTerminalChange(terminalId)}
+                      onClose={onCloseTerminal ? () => onCloseTerminal(terminalId) : undefined}
+                    />
+                  );
+                })}
+
+                {onNewTerminalTab ? (
+                  <PaneActionButton
+                    label="New terminal tab"
+                    onClick={() => onNewTerminalTab(activePaneTerminalId)}
+                  >
+                    <Plus className="size-3.5" />
+                  </PaneActionButton>
+                ) : null}
+              </div>
+
+              <div className="flex shrink-0 items-center gap-0.5">
+                {canMoveActiveTerminalToGroup ? (
+                  <PaneActionButton
+                    label="Move to its own terminal tab"
+                    onClick={moveActiveTerminalToGroup}
+                  >
+                    <TerminalSquareIcon className="size-3.5" />
+                  </PaneActionButton>
+                ) : null}
+                {onSplitTerminalRight ? (
+                  <PaneActionButton
+                    label="Split right"
+                    onClick={() => onSplitTerminalRight(activePaneTerminalId)}
+                  >
+                    <SquareSplitHorizontal className="size-3.5" />
+                  </PaneActionButton>
+                ) : null}
+                {onSplitTerminalDown ? (
+                  <PaneActionButton
+                    label="Split down"
+                    onClick={() => onSplitTerminalDown(activePaneTerminalId)}
+                  >
+                    <SquareSplitVertical className="size-3.5" />
+                  </PaneActionButton>
+                ) : null}
+                {onTogglePresentationMode ? (
+                  <PaneActionButton
+                    label={
+                      presentationMode === "workspace"
+                        ? "Collapse terminal into chat drawer"
+                        : "Expand terminal into workspace"
                     }
-                    closeLabel={closeTabLabel}
-                    onSelect={() => onActiveTerminalChange(terminalId)}
-                    onClose={onCloseTerminal ? () => onCloseTerminal(terminalId) : undefined}
-                  />
-                );
-              })}
-
-              {onNewTerminalTab ? (
-                <PaneActionButton
-                  label="New terminal tab"
-                  onClick={() => onNewTerminalTab(activePaneTerminalId)}
-                >
-                  <Plus className="size-3.5" />
-                </PaneActionButton>
-              ) : null}
+                    onClick={onTogglePresentationMode}
+                  >
+                    {presentationMode === "workspace" ? (
+                      <Minimize2 className="size-3.5" />
+                    ) : (
+                      <Maximize2 className="size-3.5" />
+                    )}
+                  </PaneActionButton>
+                ) : null}
+                {onTogglePanel ? (
+                  <PaneActionButton
+                    label={isPanelOpen ? "Collapse side panel" : "Open side panel"}
+                    onClick={onTogglePanel}
+                  >
+                    <PanelRightCloseIcon />
+                  </PaneActionButton>
+                ) : null}
+                {onCloseTerminal ? (
+                  <PaneActionButton
+                    label="Close active terminal tab"
+                    onClick={() => onCloseTerminal(activePaneTerminalId)}
+                  >
+                    <Trash2 className="size-3.5" />
+                  </PaneActionButton>
+                ) : null}
+              </div>
             </div>
-
-            <div className="flex shrink-0 items-center gap-0.5">
-              {canMoveActiveTerminalToGroup ? (
-                <PaneActionButton
-                  label="Move to its own terminal tab"
-                  onClick={moveActiveTerminalToGroup}
-                >
-                  <TerminalSquareIcon className="size-3.5" />
-                </PaneActionButton>
-              ) : null}
-              {onSplitTerminalRight ? (
-                <PaneActionButton
-                  label="Split right"
-                  onClick={() => onSplitTerminalRight(activePaneTerminalId)}
-                >
-                  <SquareSplitHorizontal className="size-3.5" />
-                </PaneActionButton>
-              ) : null}
-              {onSplitTerminalDown ? (
-                <PaneActionButton
-                  label="Split down"
-                  onClick={() => onSplitTerminalDown(activePaneTerminalId)}
-                >
-                  <SquareSplitVertical className="size-3.5" />
-                </PaneActionButton>
-              ) : null}
-              {onTogglePresentationMode ? (
-                <PaneActionButton
-                  label={
-                    presentationMode === "workspace"
-                      ? "Collapse terminal into chat drawer"
-                      : "Expand terminal into workspace"
-                  }
-                  onClick={onTogglePresentationMode}
-                >
-                  {presentationMode === "workspace" ? (
-                    <Minimize2 className="size-3.5" />
-                  ) : (
-                    <Maximize2 className="size-3.5" />
-                  )}
-                </PaneActionButton>
-              ) : null}
-              {onTogglePanel ? (
-                <PaneActionButton
-                  label={isPanelOpen ? "Collapse side panel" : "Open side panel"}
-                  onClick={onTogglePanel}
-                >
-                  <PanelRightCloseIcon />
-                </PaneActionButton>
-              ) : null}
-              {onCloseTerminal ? (
-                <PaneActionButton
-                  label="Close active terminal tab"
-                  onClick={() => onCloseTerminal(activePaneTerminalId)}
-                >
-                  <Trash2 className="size-3.5" />
-                </PaneActionButton>
-              ) : null}
-            </div>
-          </div>
+          ) : null}
 
           <div className="relative min-h-0 min-w-0 flex-1 bg-[var(--color-background-surface)]">
             {node.terminalIds.map((terminalId) => {
