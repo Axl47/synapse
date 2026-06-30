@@ -247,7 +247,32 @@ describe("localImageEffectRouteLayer", () => {
       expect(response.headers.get("x-content-type-options")).toBe("nosniff");
       expect(response.headers.get("content-security-policy")).toContain("sandbox");
       expect(response.headers.get("content-security-policy")).toContain("script-src 'none'");
-      await expect(response.text()).resolves.toContain("<h1>Plan</h1>");
+      const body = await response.text();
+      expect(body).toContain("<h1>Plan</h1>");
+      expect(body).not.toContain("data-synara-local-html-preview-fit");
+    });
+  });
+
+  it("can inject viewport-fit CSS for browser-opened workspace HTML previews", async () => {
+    const workspace = makeTempDir("dpcode-effect-html-fit-workspace-");
+    writeFileSync(path.join(workspace, ".git"), "gitdir: .git");
+    const htmlPath = path.join(workspace, "plan.html");
+    writeFileSync(
+      htmlPath,
+      "<!doctype html><html><head><style>main{max-width:1180px}</style></head><body><main><h1>Plan</h1></main></body></html>",
+    );
+    const config = makeServerConfig({ cwd: workspace });
+
+    await withEffectServer(config, localImageEffectRouteLayer, async (origin) => {
+      const params = new URLSearchParams({ path: htmlPath, cwd: workspace, fit: "viewport" });
+      const response = await fetch(`${origin}/api/local-image?${params}`);
+      expect(response.status).toBe(200);
+      expect(response.headers.get("content-type")).toContain("text/html");
+      expect(response.headers.get("content-security-policy")).toContain("sandbox");
+      const body = await response.text();
+      expect(body).toContain("data-synara-local-html-preview-fit");
+      expect(body).toContain("max-width: none !important");
+      expect(body).toContain("<h1>Plan</h1>");
     });
   });
 

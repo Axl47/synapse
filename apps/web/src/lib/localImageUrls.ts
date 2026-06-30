@@ -94,7 +94,12 @@ export function buildLocalHtmlPreviewUrl(input: {
   if (!src || !cwd || !isSupportedLocalHtmlPath(src)) {
     return null;
   }
-  return buildLocalPreviewUrl({ src, cwd });
+  const previewUrl = buildLocalPreviewUrl({ src, cwd });
+  const url = new URL(previewUrl, "http://synara.local");
+  url.searchParams.set("fit", "viewport");
+  return previewUrl.startsWith("http://") || previewUrl.startsWith("https://")
+    ? url.toString()
+    : `${url.pathname}${url.search}`;
 }
 
 export function localImageFileName(src: string): string {

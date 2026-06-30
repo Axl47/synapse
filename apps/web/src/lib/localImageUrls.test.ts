@@ -55,7 +55,7 @@ describe("local image URL helpers", () => {
   it("builds html preview URLs without treating html as a markdown image", () => {
     expect(isLocalImageMarkdownSrc("docs/plan.html")).toBe(false);
     expect(buildLocalHtmlPreviewUrl({ src: "docs/plan.html", cwd: "/Users/me/project" })).toBe(
-      "/api/local-image?path=docs%2Fplan.html&cwd=%2FUsers%2Fme%2Fproject",
+      "/api/local-image?path=docs%2Fplan.html&cwd=%2FUsers%2Fme%2Fproject&fit=viewport",
     );
     expect(buildLocalHtmlPreviewUrl({ src: "docs/notes.md", cwd: "/Users/me/project" })).toBeNull();
     expect(buildLocalHtmlPreviewUrl({ src: "docs/plan.html", cwd: undefined })).toBeNull();
