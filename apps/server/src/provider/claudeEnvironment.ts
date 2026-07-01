@@ -48,6 +48,12 @@ export function buildClaudeProcessEnv(input?: {
 }): NodeJS.ProcessEnv {
   const trimmedHomePath = input?.homePath?.trim();
   const env: NodeJS.ProcessEnv = { ...(input?.env ?? process.env) };
+  // Align the subprocess HOME with the credential home being checked so Claude
+  // reads the same login state the health/session gate validated. Instance
+  // environment overrides and instance homes still win below.
+  if (input?.homeDir) {
+    env.HOME = input.homeDir;
+  }
   if (input?.environment) {
     Object.assign(env, input.environment);
   }
