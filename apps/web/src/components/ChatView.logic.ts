@@ -531,6 +531,63 @@ export function hasServerAcknowledgedLocalDispatch(input: {
   return false;
 }
 
+/**
+ * Steering a non-Codex provider interrupts the live turn and lets the server
+ * re-dispatch the steer text as a fresh turn. Between the abort and the
+ * steered turn's start the thread briefly looks idle, which would otherwise
+ * let the queued-composer auto-dispatch race the steered turn (and fire every
+ * queued message at once). The gate holds auto-dispatch through that gap.
+ */
+export interface QueuedSteerGate {
+  /** The abort gap has been observed (phase left "running" after the steer). */
+  sawInterruptGap: boolean;
+  /** Epoch ms when the gap started; null while the original turn still runs. */
+  gapStartedAt: number | null;
+}
+
+/** Recovery bound: a healthy interrupt→steered-turn handoff takes ~1-2s. */
+export const QUEUED_STEER_GATE_TIMEOUT_MS = 15_000;
+
+export type QueuedSteerGateTransition =
+  | { kind: "clear" }
+  | { kind: "hold"; gate: QueuedSteerGate; expiresInMs: number | null };
+
+export function resolveQueuedSteerGateTransition(input: {
+  gate: QueuedSteerGate;
+  phase: SessionPhase;
+  sessionErrored: boolean;
+  now: number;
+}): QueuedSteerGateTransition {
+  if (input.phase === "disconnected" || input.sessionErrored) {
+    // The steer will not produce a follow-up turn; release the queue.
+    return { kind: "clear" };
+  }
+  if (input.phase === "running") {
+    if (input.gate.sawInterruptGap) {
+      // The steered turn is live; normal live-turn guards take over from here.
+      return { kind: "clear" };
+    }
+    // Original turn still running (interrupt not processed yet): keep holding.
+    return {
+      kind: "hold",
+      gate: { sawInterruptGap: false, gapStartedAt: null },
+      expiresInMs: null,
+    };
+  }
+  const gapStartedAt = input.gate.gapStartedAt ?? input.now;
+  const expiresInMs = QUEUED_STEER_GATE_TIMEOUT_MS - (input.now - gapStartedAt);
+  if (expiresInMs <= 0) {
+    // The steered turn never started (lost interrupt, provider failure that
+    // didn't surface as a session error). Fail open so the queue can't stall.
+    return { kind: "clear" };
+  }
+  return {
+    kind: "hold",
+    gate: { sawInterruptGap: true, gapStartedAt },
+    expiresInMs,
+  };
+}
+
 export const ACTIVE_TURN_LAYOUT_SETTLE_DELAY_MS = 180;
 
 export function shouldStartActiveTurnLayoutGrace(options: {
@@ -630,14 +687,38 @@ export function shouldRenderTerminalWorkspace(options: {
 export function resolveProjectScriptTerminalTarget(options: {
   baseTerminalId: string;
   createTerminalId: () => string;
-  hasRunningTerminal: boolean;
   preferNewTerminal?: boolean | undefined;
+  runningTerminalIds: readonly string[];
   terminalOpen: boolean;
+  terminalIds: readonly string[];
 }): { shouldCreateNewTerminal: boolean; terminalId: string } {
   // Project scripts require their requested cwd/env before the command write;
-  // live PTYs keep their launch context, so visible or running terminals get a new tab.
-  const shouldCreateNewTerminal =
-    Boolean(options.preferNewTerminal) || options.terminalOpen || options.hasRunningTerminal;
+  // live PTYs keep their launch context, so busy terminals still get a new tab.
+  if (options.preferNewTerminal) {
+    return {
+      shouldCreateNewTerminal: true,
+      terminalId: options.createTerminalId(),
+    };
+  }
+
+  const runningTerminalIds = new Set(options.runningTerminalIds);
+  if (options.terminalOpen) {
+    const candidateTerminalIds = [
+      options.baseTerminalId,
+      ...options.terminalIds.filter((terminalId) => terminalId !== options.baseTerminalId),
+    ];
+    const idleTerminalId = candidateTerminalIds.find(
+      (terminalId) => !runningTerminalIds.has(terminalId),
+    );
+    if (idleTerminalId) {
+      return {
+        shouldCreateNewTerminal: false,
+        terminalId: idleTerminalId,
+      };
+    }
+  }
+
+  const shouldCreateNewTerminal = options.terminalOpen || runningTerminalIds.size > 0;
 
   return {
     shouldCreateNewTerminal,

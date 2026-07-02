@@ -6,6 +6,9 @@
 import "@xterm/xterm/css/xterm.css";
 import { SearchAddon } from "@xterm/addon-search";
 import {
+  Maximize2,
+  Minimize2,
+  PanelRightCloseIcon,
   Plus,
   SquareSplitHorizontal,
   SquareSplitVertical,
@@ -618,6 +621,11 @@ export default function ThreadTerminalDrawer({
   const onNewTerminalAction = useCallback(() => {
     onNewTerminal();
   }, [onNewTerminal]);
+  const showTerminalGroupTabs = resolvedTerminalGroups.length > 1;
+  const shouldSuppressSingleTerminalPaneChrome =
+    showTerminalGroupTabs &&
+    activeGroupLayout.type === "terminal" &&
+    activeGroupLayout.terminalIds.length === 1;
 
   const terminalChromeActions: TerminalChromeActionItem[] = [
     {
@@ -643,8 +651,35 @@ export default function ThreadTerminalDrawer({
       children: <Trash2 className="size-3.25" />,
     },
   ];
-  const showTerminalGroupTabs = resolvedTerminalGroups.length > 1;
-  const topTabBarActions = terminalChromeActions;
+  const elevatedSinglePaneActions: TerminalChromeActionItem[] = [
+    ...(shouldSuppressSingleTerminalPaneChrome && onTogglePresentationMode
+      ? [
+          {
+            label:
+              presentationMode === "workspace"
+                ? "Collapse terminal into chat drawer"
+                : "Expand terminal into workspace",
+            onClick: onTogglePresentationMode,
+            children:
+              presentationMode === "workspace" ? (
+                <Minimize2 className="size-3.25" />
+              ) : (
+                <Maximize2 className="size-3.25" />
+              ),
+          },
+        ]
+      : []),
+    ...(shouldSuppressSingleTerminalPaneChrome && onTogglePanel
+      ? [
+          {
+            label: isPanelOpen ? "Collapse side panel" : "Open side panel",
+            onClick: onTogglePanel,
+            children: <PanelRightCloseIcon className="size-3.25" />,
+          },
+        ]
+      : []),
+  ];
+  const topTabBarActions = [...terminalChromeActions, ...elevatedSinglePaneActions];
 
   return (
     <aside
@@ -723,6 +758,7 @@ export default function ThreadTerminalDrawer({
               onTogglePresentationMode={onTogglePresentationMode}
               onTogglePanel={onTogglePanel}
               isPanelOpen={isPanelOpen}
+              suppressSingleTerminalPaneChrome={shouldSuppressSingleTerminalPaneChrome}
               renderViewport={(terminalId, options) => (
                 <TerminalViewport
                   key={terminalId}

@@ -25,6 +25,7 @@ import {
   type ComponentProps,
   type KeyboardEvent,
   type RefObject,
+  type ReactElement,
   type ReactNode,
 } from "react";
 import {
@@ -37,10 +38,13 @@ import { type TurnDiffSummary } from "../../types";
 import ChatMarkdown from "../ChatMarkdown";
 import { InlineLinkChip } from "../InlineLinkChip";
 import {
+  ArrowUpCircleIcon,
   BotIcon,
   CheckIcon,
   ChangesIcon,
   CircleAlertIcon,
+  CircleQuestionIcon,
+  ClockIcon,
   EyeIcon,
   GitHubIcon,
   HammerIcon,
@@ -64,9 +68,9 @@ import { buildExpandedImagePreview, ExpandedImagePreview } from "./ExpandedImage
 import { ProposedPlanCard } from "./ProposedPlanCard";
 import { ToolCallDetailsContent, ToolCallDetailsDialog } from "./ToolCallDetailsDialog";
 import { DiffStatLabel } from "./DiffStatLabel";
+import { fileDiffStatsByPath, resolveFileDiffStatByChangedPath } from "~/lib/diffRendering";
 import { ReviewChangesButton } from "./ReviewChangesButton";
 import { FileEntryIcon } from "./FileEntryIcon";
-import { CentralIcon } from "~/lib/central-icons";
 import { InlineMentionChip } from "./InlineMentionChip";
 import { InlineSkillChip } from "./InlineSkillChip";
 import { InlineAgentChip } from "./InlineAgentChip";
@@ -77,6 +81,11 @@ import { FileAttachmentChip } from "./FileAttachmentChip";
 import { FileCommentsSummaryChip } from "./FileCommentsSummaryChip";
 import { UserMessagePastedTextCard } from "./PastedTextChip";
 import {
+  hasLeadingUserMedia,
+  resolveUserTurnMarker,
+  type UserTurnMarkerKind,
+} from "./userTurnMarker";
+import {
   computeStableMessagesTimelineRows,
   deriveMessagesTimelineRows,
   MAX_VISIBLE_WORK_LOG_ENTRIES,
@@ -86,7 +95,13 @@ import {
   resolveAssistantMessageCopyState,
   type StableMessagesTimelineRowsState,
 } from "./MessagesTimeline.logic";
-import { deriveReadableCommandDisplay, isInspectCommand } from "../../lib/toolCallLabel";
+import {
+  deriveReadableCommandDisplay,
+  extractWebFetchUrl,
+  resolveCommandVisualKind,
+} from "../../lib/toolCallLabel";
+import { describeLinkChip } from "~/lib/linkChips";
+import { LinkChipIcon } from "../LinkChipIcon";
 import { openWorkspaceFileReference, useWorkspaceFileOpener } from "../../lib/workspaceFileOpener";
 import { isAgentActivityWorkEntry } from "./agentActivity.logic";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
@@ -132,6 +147,11 @@ import {
   resolveSubagentPresentation,
 } from "../../lib/subagentPresentation";
 import { deriveUserMessagePreviewState } from "./userMessagePreview";
+import {
+  resolveActiveTrailSnapshot,
+  type ActiveTrailSnapshot,
+  type MessageTrailAnchor,
+} from "./messageTrail.logic";
 
 const MAX_VISIBLE_INLINE_TOOL_ENTRIES = 4;
 // Changed-files list in the per-turn card is capped so large turns stay compact;
@@ -142,6 +162,19 @@ const MAX_VISIBLE_CHANGED_FILES = 5;
 const MIN_BOTTOM_CONTENT_INSET_PX = 64;
 const MESSAGE_HOVER_REVEAL_CLASS_NAME =
   "opacity-0 transition-opacity pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto group-focus-within:opacity-100 group-focus-within:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto";
+// Shared interaction tone for a work row's leading glyph and labels: muted by
+// default, brightening to foreground when the enclosing row is hovered/focused.
+// This is the single source for that treatment so command, MCP, agent, and
+// "Edited <file>" rows stay visually coherent (they previously drifted in
+// opacity). The row's `group/<name>` token is baked into each literal — Tailwind
+// only generates classes it can see statically, so the group cannot be
+// interpolated. Add one entry per group token used by a work row.
+const WORK_ROW_MUTED_HOVER_TONE: Record<"tool-row" | "file-row", string> = {
+  "tool-row":
+    "text-muted-foreground/70 transition-colors group-hover/tool-row:text-foreground group-focus-visible/tool-row:text-foreground",
+  "file-row":
+    "text-muted-foreground/70 transition-colors group-hover/file-row:text-foreground group-focus-visible/file-row:text-foreground",
+};
 // How long a jumped-to message keeps its highlight tint before fading back out.
 const JUMP_HIGHLIGHT_DURATION_MS = 1200;
 const MARKER_FINE_SCROLL_RETRY_TIMEOUT_MS = 900;
@@ -150,6 +183,10 @@ const TRANSCRIPT_DISCLOSURE_TRANSITION_MS = 220;
 const TRANSCRIPT_DISCLOSURE_CLEANUP_BUFFER_MS = 40;
 const MESSAGE_SEND_ENTER_ANIMATION_MS = 180;
 const MESSAGE_SEND_ENTER_CLEANUP_BUFFER_MS = 60;
+// Treat any partially visible row (>= 1px) as in view, so the navigation trail's
+// "active" tick tracks the topmost rendered row rather than waiting for a turn to
+// be substantially on-screen.
+const TRAIL_VIEWABILITY_CONFIG = { itemVisiblePercentThreshold: 0 } as const;
 // The deep-link "active" ring is applied imperatively to the rendered marker spans so jumping
 // never re-parses a message's markdown tree (the className is purely a CSS box-shadow).
 const ACTIVE_MARKER_CLASS_NAME = "thread-marker-active";
@@ -170,18 +207,32 @@ export interface MessagesTimelineController {
 // target agent-task rows specifically; both render the shared central robot glyph.
 const AgentTaskIcon: LucideIcon = (props) => <BotIcon {...props} />;
 
-// Keeps the steer marker visually attached to the whole sent-message stack.
+// Keeps the origin/steer marker visually attached to the whole sent-message stack.
+// Which marker (if any) applies comes from the shared resolveUserTurnMarker predicate,
+// which the timelineHeight estimator also uses — keep presentation-only concerns here.
+const USER_TURN_MARKER_PRESENTATION: Record<
+  UserTurnMarkerKind,
+  { readonly Icon: LucideIcon; readonly label: string }
+> = {
+  automation: { Icon: ClockIcon, label: "Sent via Automation" },
+  steer: { Icon: SteerIcon, label: "Steering conversation" },
+};
+
 function UserDispatchModeChip({
   dispatchMode,
+  dispatchOrigin,
   hasLeadingMedia,
 }: {
   dispatchMode: TimelineMessage["dispatchMode"];
+  dispatchOrigin: TimelineMessage["dispatchOrigin"];
   hasLeadingMedia: boolean;
 }) {
-  if (dispatchMode !== "steer") {
+  const markerKind = resolveUserTurnMarker({ dispatchMode, dispatchOrigin });
+  if (!markerKind) {
     return null;
   }
 
+  const { Icon, label } = USER_TURN_MARKER_PRESENTATION[markerKind];
   return (
     <div
       className={cn(
@@ -189,8 +240,8 @@ function UserDispatchModeChip({
         hasLeadingMedia ? "mb-3" : "mb-1.5",
       )}
     >
-      <SteerIcon className="size-3 shrink-0 text-muted-foreground/75" />
-      <span>Steering conversation</span>
+      <Icon className="size-3 shrink-0 text-muted-foreground/75" />
+      <span>{label}</span>
     </div>
   );
 }
@@ -199,6 +250,11 @@ function basename(value: string): string {
   const slash = Math.max(value.lastIndexOf("/"), value.lastIndexOf("\\"));
   return slash >= 0 ? value.slice(slash + 1) : value;
 }
+
+// Stable empty stat map so file-change rows without a parsable patch don't churn
+// referential identity on every render.
+const EMPTY_FILE_DIFF_STATS: ReadonlyMap<string, { additions: number; deletions: number }> =
+  new Map();
 
 function cssAttributeSelectorValue(value: string): string {
   return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
@@ -269,6 +325,8 @@ interface MessagesTimelineProps {
   isRevertingCheckpoint: boolean;
   onImageExpand: (preview: ExpandedImagePreview) => void;
   onIsAtEndChange?: (isAtEnd: boolean) => void;
+  /** Emits current + visible sent-message anchors as the viewport scrolls (drives the trail). */
+  onTrailHighlightsChange?: (snapshot: ActiveTrailSnapshot) => void;
   onMessagesClickCapture?: ComponentProps<typeof LegendList>["onClickCapture"];
   onMessagesMouseUp?: ComponentProps<typeof LegendList>["onMouseUp"];
   onMessagesPointerCancel?: ComponentProps<typeof LegendList>["onPointerCancel"];
@@ -322,6 +380,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   isRevertingCheckpoint,
   onImageExpand,
   onIsAtEndChange,
+  onTrailHighlightsChange,
   onMessagesClickCapture,
   onMessagesMouseUp,
   onMessagesPointerCancel,
@@ -687,16 +746,72 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       window.cancelAnimationFrame(frameId);
     };
   }, [onIsAtEndChange, resolvedListRef, rows.length]);
+  // Sent-message anchors (id + position in the virtualized row list) for the
+  // navigation trail. Held in a ref so the viewability callback stays stable and
+  // doesn't re-subscribe LegendList on every transcript change.
+  const userMessageAnchors = useMemo<MessageTrailAnchor[]>(() => {
+    const anchors: MessageTrailAnchor[] = [];
+    rows.forEach((row, index) => {
+      if (row.kind === "message" && row.message.role === "user") {
+        anchors.push({ id: row.message.id, rowIndex: index });
+      }
+    });
+    return anchors;
+  }, [rows]);
+  const userMessageAnchorsRef = useRef(userMessageAnchors);
+  userMessageAnchorsRef.current = userMessageAnchors;
+  const emitTrailHighlightsForViewport = useCallback(
+    (topRowIndex: number, bottomRowIndex: number) => {
+      if (!onTrailHighlightsChange || !Number.isFinite(topRowIndex)) {
+        return;
+      }
+      onTrailHighlightsChange(
+        resolveActiveTrailSnapshot(userMessageAnchorsRef.current, topRowIndex, bottomRowIndex),
+      );
+    },
+    [onTrailHighlightsChange],
+  );
   const handleListScroll = useCallback<NonNullable<MessagesTimelineProps["onMessagesScroll"]>>(
     (event) => {
       onMessagesScroll?.(event);
       const state = resolvedListRef.current?.getState?.();
       if (state) {
         onIsAtEndChange?.(state.isAtEnd);
+        emitTrailHighlightsForViewport(state.start, state.end);
       }
     },
-    [onIsAtEndChange, onMessagesScroll, resolvedListRef],
+    [emitTrailHighlightsForViewport, onIsAtEndChange, onMessagesScroll, resolvedListRef],
   );
+  const handleViewableItemsChanged = useCallback<
+    NonNullable<ComponentProps<typeof LegendList>["onViewableItemsChanged"]>
+  >(
+    ({ viewableItems }) => {
+      let topIndex = Number.POSITIVE_INFINITY;
+      let bottomIndex = Number.NEGATIVE_INFINITY;
+      for (const token of viewableItems) {
+        if (token.isViewable) {
+          topIndex = Math.min(topIndex, token.index);
+          bottomIndex = Math.max(bottomIndex, token.index);
+        }
+      }
+      emitTrailHighlightsForViewport(topIndex, bottomIndex);
+    },
+    [emitTrailHighlightsForViewport],
+  );
+  useEffect(() => {
+    if (!onTrailHighlightsChange) {
+      return;
+    }
+    const frameId = window.requestAnimationFrame(() => {
+      const state = resolvedListRef.current?.getState?.();
+      if (state) {
+        emitTrailHighlightsForViewport(state.start, state.end);
+      }
+    });
+    return () => {
+      window.cancelAnimationFrame(frameId);
+    };
+  }, [emitTrailHighlightsForViewport, onTrailHighlightsChange, resolvedListRef, rows.length]);
   const toggleFileChangesExpanded = useCallback((turnId: TurnId) => {
     setExpandedFileChangesByTurnId((current) => ({
       ...current,
@@ -866,11 +981,13 @@ export const MessagesTimeline = memo(function MessagesTimeline({
             Boolean(onEditUserMessage) &&
             row.message.id === latestEditableUserMessageId &&
             displayedUserMessage.copyText.trim().length > 0;
-          const hasLeadingMedia =
-            renderedAssistantSelections.length > 0 ||
-            renderedFileComments.length > 0 ||
-            renderedPastedTexts.length > 0 ||
-            userImages.length > 0;
+          const hasLeadingMedia = hasLeadingUserMedia({
+            imageCount: userImages.length,
+            fileCount: userFiles.length,
+            assistantSelectionCount: renderedAssistantSelections.length,
+            fileCommentCount: renderedFileComments.length,
+            pastedTextCount: renderedPastedTexts.length,
+          });
           const isTailContentRow = row.id === tailContentRowId;
           return (
             <div className="flex w-full justify-end">
@@ -883,6 +1000,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
                 {/* Keep user-message chrome outside the bubble so the message reads as one simple block. */}
                 <UserDispatchModeChip
                   dispatchMode={row.message.dispatchMode}
+                  dispatchOrigin={row.message.dispatchOrigin}
                   hasLeadingMedia={hasLeadingMedia}
                 />
                 {renderedAssistantSelections.length > 0 && (
@@ -949,7 +1067,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
                       "w-max max-w-full min-w-0 self-end bg-[var(--app-user-message-background)]",
                       USER_MESSAGE_BUBBLE_RADIUS_CLASS_NAME,
                       bubbleIsChipOnly
-                        ? "py-1 px-3.5"
+                        ? "py-0.5 px-3"
                         : USER_MESSAGE_BUBBLE_SHELL_CHROME_CLASS_NAME,
                     )}
                   >
@@ -1613,6 +1731,12 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         onPointerDown={onMessagesPointerDown}
         onPointerUp={onMessagesPointerUp}
         onScroll={handleListScroll}
+        {...(onTrailHighlightsChange
+          ? {
+              onViewableItemsChanged: handleViewableItemsChanged,
+              viewabilityConfig: TRAIL_VIEWABILITY_CONFIG,
+            }
+          : {})}
         onTouchEnd={onMessagesTouchEnd}
         onTouchMove={onMessagesTouchMove}
         onTouchStart={onMessagesTouchStart}
@@ -2433,14 +2557,27 @@ function isFileReadToolEntry(workEntry: TimelineWorkEntry): boolean {
   return name === "read" || name === "readfile" || name === "viewfile";
 }
 
-// Read-only inspection commands (read/search/find/list) share the search icon so
-// every inspection row looks the same; other shell commands keep the terminal icon.
+// Command rows reuse toolCallLabel's wrapper-aware classifier so wrapped git/gh
+// commands get the GitHub mark while ordinary commands keep the terminal icon.
 function commandWorkEntryIcon(workEntry: TimelineWorkEntry): LucideIcon {
   const command = workEntry.command ?? workEntry.rawCommand;
-  return command && isInspectCommand(command) ? SearchIcon : TerminalIcon;
+  switch (command ? resolveCommandVisualKind(command) : "terminal") {
+    case "inspect":
+      return SearchIcon;
+    case "git":
+    case "github":
+      return GitHubIcon;
+    case "terminal":
+      return TerminalIcon;
+  }
 }
 
 function workEntryIcon(workEntry: TimelineWorkEntry): LucideIcon {
+  // User-input rows read as a question (awaiting an answer) and an upload
+  // (answer submitted) rather than the generic "info" checkmark.
+  if (workEntry.activityKind === "user-input.requested") return CircleQuestionIcon;
+  if (workEntry.activityKind === "user-input.resolved") return ArrowUpCircleIcon;
+
   if (workEntry.requestKind === "command") return commandWorkEntryIcon(workEntry);
   if (workEntry.requestKind === "file-read") return SearchIcon;
   if (workEntry.requestKind === "file-change") return PencilIcon;
@@ -2473,7 +2610,9 @@ function isGitHubMcpToolCall(workEntry: TimelineWorkEntry): boolean {
   return Boolean(toolName?.startsWith("mcp__codex_apps__github"));
 }
 
-// Render command, agent-task, and file-change rows at the tighter compact density.
+// Render command, agent-task, file-change, and file-read rows at the tighter
+// compact density so every tool-call line shares one height regardless of whether
+// it carries a disclosure chevron.
 function prefersCompactWorkEntryRow(workEntry: TimelineWorkEntry): boolean {
   // Commands stay compact even when surfaced with a non-terminal icon (read-only
   // inspections like `cat` now use the file-read search icon).
@@ -2486,7 +2625,10 @@ function prefersCompactWorkEntryRow(workEntry: TimelineWorkEntry): boolean {
     EntryIcon === HammerIcon ||
     EntryIcon === AgentTaskIcon ||
     EntryIcon === PencilIcon ||
-    EntryIcon === SkillCubeIcon
+    EntryIcon === SkillCubeIcon ||
+    // File-read / inspect rows (e.g. `Read …`) surface the search icon and have no
+    // disclosure chevron; keep them at the same compact height as command rows.
+    EntryIcon === SearchIcon
   );
 }
 
@@ -2589,21 +2731,49 @@ function commandTooltipContent(command: string, displayText: string) {
     <div className="max-w-96 whitespace-pre-wrap leading-tight">
       <div className="space-y-2">
         <div className="space-y-0.5">
-          <div className="text-[10px] font-medium uppercase tracking-[0.12em] text-muted-foreground/70">
-            Summary
-          </div>
+          <div className="text-muted-foreground/70">Summary</div>
           <div>{displayText}</div>
         </div>
         <div className="space-y-0.5">
-          <div className="text-[10px] font-medium uppercase tracking-[0.12em] text-muted-foreground/70">
-            Raw call
-          </div>
+          <div className="text-muted-foreground/70">Raw call</div>
           <code className="block whitespace-pre-wrap break-words font-chat-code text-[11px] text-foreground/92">
             {command}
           </code>
         </div>
       </div>
     </div>
+  );
+}
+
+// Hover content for a tool-call row: the rich command card when a raw command is
+// present, otherwise the plain label (used to reveal truncated text / file paths).
+// Returns null when there's nothing worth showing so the row renders untouched.
+function toolRowTooltipContent(
+  rawCommand: string | null | undefined,
+  displayText: string,
+  fallback: string | undefined,
+): ReactNode {
+  if (rawCommand) {
+    return commandTooltipContent(rawCommand, displayText);
+  }
+  return fallback ? <span className="whitespace-pre-wrap">{fallback}</span> : null;
+}
+
+// Frosted hover tooltip for tool-call rows — the same surface (via the `default`
+// variant) as the sidebar thread/project hover cards, so the rows read as one
+// system. Replaces the native `title` tooltip; renders the trigger untouched when
+// there's no content to show.
+function ToolRowTooltip(props: { content: ReactNode; children: ReactElement }) {
+  if (!props.content) {
+    return props.children;
+  }
+  return (
+    <Tooltip>
+      <TooltipTrigger render={props.children} />
+      <TooltipPopup side="top" align="start" className="max-w-96 whitespace-normal">
+        {props.content}
+      </TooltipPopup>
+    </Tooltip>
   );
 }
 
@@ -2639,21 +2809,35 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
   } = props;
   const compact = density === "compact";
   const EntryIcon = workEntryIcon(workEntry);
-  // Every tool row leads with a single left icon; keep branded glyphs for GitHub/MCP rows.
+  // Web-fetch tool calls surface the target site (favicon + URL) instead of the raw
+  // `WebFetch: {json}` arguments, reusing the same link-chip icon/label path as
+  // composer and markdown links so every site reference looks identical.
+  const webFetchUrl = extractWebFetchUrl(workEntry);
+  // Every tool row leads with a single left icon; keep branded glyphs discoverable
+  // for command rows and app-backed tool rows.
   const isGitHubToolRow = isGitHubMcpToolCall(workEntry);
   const isMcpToolRow = workEntry.itemType === "mcp_tool_call" && !isGitHubToolRow;
   const LeftIcon = isGitHubToolRow ? GitHubIcon : isMcpToolRow ? McpIcon : EntryIcon;
-  const leftIconKind = isGitHubToolRow ? "github" : isMcpToolRow ? "mcp" : undefined;
+  const leftIconKind = webFetchUrl
+    ? "web-fetch"
+    : isGitHubToolRow || EntryIcon === GitHubIcon
+      ? "github"
+      : isMcpToolRow
+        ? "mcp"
+        : undefined;
   const heading = toolWorkEntryHeading(workEntry);
   const preview = workEntryPreview(workEntry);
-  const displayText = combineWorkEntryDisplayText(heading, preview);
+  const displayText = webFetchUrl
+    ? describeLinkChip(webFetchUrl).label
+    : combineWorkEntryDisplayText(heading, preview);
   const showInlineAgentTaskPreview =
     workEntry.itemType === "collab_agent_tool_call" &&
     (workEntry.subagents?.length ?? 0) === 0 &&
     Boolean(preview) &&
     normalizeWorkDisplayText(heading) !== normalizeWorkDisplayText(preview ?? "");
   const rawCommand = workEntry.rawCommand ?? workEntry.command;
-  const hoverText = rawCommand ?? (showInlineAgentTaskPreview ? heading : displayText);
+  const hoverText =
+    rawCommand ?? (showInlineAgentTaskPreview ? heading : (webFetchUrl ?? displayText));
   const changedFiles = workEntry.changedFiles ?? [];
   const showEditedRows = isFileChangeWorkEntry(workEntry) && changedFiles.length > 0;
   const showSubagentRows =
@@ -2673,9 +2857,19 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
   // File-read rows open the referenced file in the in-app viewer when the
   // hosting surface provides an opener (right-dock file pane / editor pane).
   const opener = useWorkspaceFileOpener();
+  // Per-file +N/-M parsed from this tool call's own patch, used as a fallback when
+  // the turn-diff summary isn't in scope (e.g. standalone work rows) so every
+  // "Edited <file>" row can still show diff stats.
+  const toolDiffStatsByPath = useMemo(
+    () =>
+      isFileChangeWorkEntry(workEntry)
+        ? fileDiffStatsByPath(workEntry.toolDetails?.diff)
+        : EMPTY_FILE_DIFF_STATS,
+    [workEntry],
+  );
 
   // A created-automation row renders as its own card instead of a tool-call line.
-  // Kept after the lone hook above so the early return never changes hook order.
+  // Kept after the hooks above so the early return never changes hook order.
   const automation = workEntry.automation;
   if (automation) {
     return (
@@ -2713,7 +2907,18 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
       {showEditedRows ? (
         <div className="space-y-0.5">
           {changedFiles.map((changedFilePath) => {
-            const changedFileStat = fileDiffStatByPath?.get(changedFilePath);
+            // Prefer the turn-diff summary's per-file stat; fall back to the stat
+            // parsed from this tool call's own patch so the +N/-M shows even when
+            // no summary is in scope (standalone work rows) or it lacks the file.
+            const summaryStat = fileDiffStatByPath?.get(changedFilePath);
+            const changedFileStat =
+              summaryStat && summaryStat.additions + summaryStat.deletions > 0
+                ? summaryStat
+                : (resolveFileDiffStatByChangedPath(
+                    toolDiffStatsByPath,
+                    changedFilePath,
+                    changedFiles.length,
+                  ) ?? summaryStat);
             const canOpenEditedDiff = Boolean(turnId && onOpenTurnDiff);
             const canOpenEditedRow = canOpenToolDetails || canOpenEditedDiff;
             const editedRowClassName = cn(
@@ -2736,7 +2941,7 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
                   key={`${workEntry.id}:${changedFilePath}`}
                   details={workEntry.toolDetails}
                   compact={compact}
-                  title="View tool details"
+                  tooltip={<span className="whitespace-pre-wrap">{changedFilePath}</span>}
                   summaryClassName={editedRowClassName}
                   dataFileChangeRow
                 >
@@ -2858,9 +3063,7 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
                           style={{ fontSize: `${Math.max(10, rowFontSizePx - 2)}px` }}
                           title={subagent.latestUpdate}
                         >
-                          <span className="shrink-0 uppercase tracking-[0.14em] text-muted-foreground/30">
-                            Latest
-                          </span>
+                          <span className="shrink-0 text-muted-foreground/30">Latest</span>
                           <span className="truncate">{subagent.latestUpdate}</span>
                         </div>
                       ) : null}
@@ -2883,7 +3086,7 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
                       <button
                         type="button"
                         className={cn(
-                          "shrink-0 rounded-full border border-border/45 px-2.5 py-1 text-[9px] font-medium uppercase tracking-[0.12em] text-muted-foreground/62 transition-colors",
+                          "shrink-0 rounded-full border border-border/45 px-2.5 py-1 text-[9px] font-medium text-muted-foreground/62 transition-colors",
                           canOpenThread
                             ? "hover:border-foreground/15 hover:text-foreground/84"
                             : "cursor-default opacity-50",
@@ -2902,7 +3105,7 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
                 );
               })}
               {hiddenSubagentCount > 0 ? (
-                <div className="pl-4 text-[10px] uppercase tracking-[0.12em] text-muted-foreground/46">
+                <div className="pl-4 text-[10px] text-muted-foreground/46">
                   +{hiddenSubagentCount} more
                 </div>
               ) : null}
@@ -2915,12 +3118,17 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
             <>
               <span
                 className={cn(
-                  "flex shrink-0 items-center justify-center text-muted-foreground/70 transition-colors group-hover/tool-row:text-foreground group-focus-visible/tool-row:text-foreground",
+                  "flex shrink-0 items-center justify-center",
+                  WORK_ROW_MUTED_HOVER_TONE["tool-row"],
                   compact ? "size-4" : "size-5",
                 )}
                 data-tool-icon={leftIconKind}
               >
-                <LeftIcon className={compact ? "size-3.5" : "size-4"} />
+                {webFetchUrl ? (
+                  <LinkChipIcon url={webFetchUrl} className={compact ? "size-3.5" : "size-4"} />
+                ) : (
+                  <LeftIcon className={compact ? "size-3.5" : "size-4"} />
+                )}
               </span>
               <div
                 className={cn(
@@ -2958,7 +3166,7 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
                       compact ? "truncate leading-5" : "truncate leading-6",
                       // Match the leading icon's tone so the row reads as one muted unit, and
                       // brighten the whole row to foreground on hover/focus instead of a fill.
-                      "text-muted-foreground/70 transition-colors group-hover/tool-row:text-foreground group-focus-visible/tool-row:text-foreground",
+                      WORK_ROW_MUTED_HOVER_TONE["tool-row"],
                     )}
                     style={{ fontSize: `${rowFontSizePx}px` }}
                   >
@@ -2973,7 +3181,7 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
               <ToolDetailsDisclosure
                 details={workEntry.toolDetails}
                 compact={compact}
-                title={rawCommand ?? displayText}
+                tooltip={toolRowTooltipContent(rawCommand, displayText, displayText)}
               >
                 {rowContentChildren}
               </ToolDetailsDisclosure>
@@ -2984,26 +3192,19 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
             <AgentActivityOpenSurface
               canOpen={canOpenAgentActivity || canOpenReadFile}
               compact={compact}
-              title={canOpenReadFile ? (readFilePath ?? hoverText) : hoverText}
               onOpen={openAgentActivity ?? openReadFile}
               onHover={prefetchReadFile}
+              tooltip={toolRowTooltipContent(
+                rawCommand,
+                displayText,
+                canOpenReadFile ? (readFilePath ?? hoverText) : hoverText,
+              )}
             >
               {rowContentChildren}
             </AgentActivityOpenSurface>
           );
 
-          if (!rawCommand) {
-            return rowContent;
-          }
-
-          return (
-            <Tooltip>
-              <TooltipTrigger render={rowContent} />
-              <TooltipPopup side="top" align="start" className="max-w-96 whitespace-normal">
-                {commandTooltipContent(rawCommand, displayText)}
-              </TooltipPopup>
-            </Tooltip>
-          );
+          return rowContent;
         })()
       )}
     </div>
@@ -3027,21 +3228,27 @@ function EditedFileRowContent(props: {
     <>
       <span
         className={cn(
-          "flex shrink-0 items-center justify-center text-muted-foreground/40 transition-colors group-hover/file-row:text-foreground group-focus-visible/file-row:text-foreground",
+          "flex shrink-0 items-center justify-center",
+          WORK_ROW_MUTED_HOVER_TONE["file-row"],
           compact ? "size-4" : "size-5",
         )}
         data-tool-icon="edit"
       >
-        <CentralIcon name="pencil" className={compact ? "size-3.5" : "size-4"} />
+        <PencilIcon className={compact ? "size-3.5" : "size-4"} />
       </span>
       <span
-        className="font-system-ui shrink-0 text-muted-foreground/40 transition-colors group-hover/file-row:text-foreground group-focus-visible/file-row:text-foreground"
+        className={cn("font-system-ui shrink-0", WORK_ROW_MUTED_HOVER_TONE["file-row"])}
         style={{ fontSize: `${fontSizePx}px` }}
       >
         Edited
       </span>
       <span
-        className="font-system-ui max-w-[28rem] truncate text-muted-foreground/40 underline-offset-2 transition-colors group-hover/file-row:text-foreground group-hover/file-row:underline group-focus-visible/file-row:text-foreground group-focus-visible/file-row:underline"
+        className={cn(
+          "font-system-ui max-w-[28rem] truncate underline-offset-2",
+          WORK_ROW_MUTED_HOVER_TONE["file-row"],
+          // Filename doubles as a link affordance: underline on the same row hover/focus.
+          "group-hover/file-row:underline group-focus-visible/file-row:underline",
+        )}
         style={{ fontSize: `${fontSizePx}px` }}
       >
         {basename(filePath)}
@@ -3066,6 +3273,8 @@ function AgentActivityOpenSurface(props: {
   onHover?: (() => void) | undefined;
   onOpen?: (() => void) | undefined;
   title?: string | undefined;
+  /** Styled frosted hover tooltip (preferred over the native `title`). */
+  tooltip?: ReactNode;
   dataToolDetailTrigger?: boolean | undefined;
 }) {
   const className = cn(
@@ -3074,26 +3283,26 @@ function AgentActivityOpenSurface(props: {
     props.canOpen ? "cursor-pointer focus-visible:outline-none" : "cursor-default",
   );
 
-  if (props.canOpen) {
-    return (
-      <button
-        type="button"
-        className={className}
-        title={props.title}
-        onClick={props.onOpen}
-        data-tool-detail-trigger={props.dataToolDetailTrigger ? "true" : undefined}
-        {...(props.onHover ? { onPointerEnter: props.onHover, onFocus: props.onHover } : {})}
-      >
-        {props.children}
-      </button>
-    );
-  }
-
-  return (
+  // Wrap the real DOM element (not this component) so Base UI's tooltip trigger
+  // can attach its hover handlers and compose with our own onClick/onPointerEnter.
+  const surface = props.canOpen ? (
+    <button
+      type="button"
+      className={className}
+      title={props.title}
+      onClick={props.onOpen}
+      data-tool-detail-trigger={props.dataToolDetailTrigger ? "true" : undefined}
+      {...(props.onHover ? { onPointerEnter: props.onHover, onFocus: props.onHover } : {})}
+    >
+      {props.children}
+    </button>
+  ) : (
     <div className={className} title={props.title}>
       {props.children}
     </div>
   );
+
+  return <ToolRowTooltip content={props.tooltip}>{surface}</ToolRowTooltip>;
 }
 
 function ToolDetailsDisclosure(props: {
@@ -3102,7 +3311,7 @@ function ToolDetailsDisclosure(props: {
   dataFileChangeRow?: boolean | undefined;
   details: NonNullable<TimelineWorkEntry["toolDetails"]>;
   summaryClassName?: string | undefined;
-  title?: string | undefined;
+  tooltip?: ReactNode;
 }) {
   const summaryClassName =
     props.summaryClassName ??
@@ -3154,25 +3363,28 @@ function ToolDetailsDisclosure(props: {
 
   useEffect(() => () => clearMotionTimers(), [clearMotionTimers]);
 
+  const summaryButton = (
+    <button
+      type="button"
+      className={summaryClassName}
+      aria-expanded={open}
+      data-file-change-row={props.dataFileChangeRow ? "true" : undefined}
+      data-tool-detail-trigger="true"
+      onClick={() => {
+        setDetailsOpen(!open);
+      }}
+    >
+      {props.children}
+      <DisclosureChevron
+        open={open}
+        className="text-muted-foreground/38 group-hover/tool-row:text-foreground group-hover/file-row:text-foreground group-focus-visible/tool-row:text-foreground group-focus-visible/file-row:text-foreground"
+      />
+    </button>
+  );
+
   return (
     <div className="group/tool-details min-w-0">
-      <button
-        type="button"
-        className={summaryClassName}
-        title={props.title ?? "View tool details"}
-        aria-expanded={open}
-        data-file-change-row={props.dataFileChangeRow ? "true" : undefined}
-        data-tool-detail-trigger="true"
-        onClick={() => {
-          setDetailsOpen(!open);
-        }}
-      >
-        {props.children}
-        <DisclosureChevron
-          open={open}
-          className="text-muted-foreground/38 group-hover/tool-row:text-foreground group-hover/file-row:text-foreground group-focus-visible/tool-row:text-foreground group-focus-visible/file-row:text-foreground"
-        />
-      </button>
+      <ToolRowTooltip content={props.tooltip}>{summaryButton}</ToolRowTooltip>
       {renderDetails ? (
         <DisclosureRegion
           open={motionOpen}

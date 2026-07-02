@@ -10,6 +10,7 @@ import {
 } from "@t3tools/shared/terminalThreads";
 
 import { projectScriptRuntimeEnv } from "./projectScripts";
+import { quotePosixShellArgument } from "./lib/shellQuote";
 
 export const PROJECT_COMMAND_TERMINAL_COLS = 120;
 export const PROJECT_COMMAND_TERMINAL_ROWS = 30;
@@ -17,6 +18,19 @@ export const PROJECT_COMMAND_TERMINAL_ROWS = 30;
 export interface ProjectCommandTerminalMetadata {
   cliKind: TerminalCliKind | null;
   label: string;
+}
+
+function buildExistingSessionProjectCommand(input: {
+  command: string;
+  cwd: string;
+  env: Record<string, string>;
+}): string {
+  const exportAssignments = Object.entries(input.env).map(
+    ([key, value]) => `${key}=${quotePosixShellArgument(value)}`,
+  );
+  const exportCommand =
+    exportAssignments.length > 0 ? ` && export ${exportAssignments.join(" ")}` : "";
+  return `cd ${quotePosixShellArgument(input.cwd)}${exportCommand} && ${input.command}`;
 }
 
 export async function runProjectCommandInTerminal(input: {
@@ -28,6 +42,7 @@ export async function runProjectCommandInTerminal(input: {
   command: string;
   worktreePath?: string | null;
   env?: Record<string, string>;
+  reuseExistingSession?: boolean | undefined;
 }): Promise<{
   snapshot: TerminalSessionSnapshot;
   metadata: ProjectCommandTerminalMetadata | null;
@@ -48,10 +63,17 @@ export async function runProjectCommandInTerminal(input: {
     cols: PROJECT_COMMAND_TERMINAL_COLS,
     rows: PROJECT_COMMAND_TERMINAL_ROWS,
   });
+  const command = input.reuseExistingSession
+    ? buildExistingSessionProjectCommand({
+        command: input.command,
+        cwd: input.cwd,
+        env: runtimeEnv,
+      })
+    : input.command;
   await input.api.terminal.write({
     threadId: input.threadId,
     terminalId: input.terminalId,
-    data: `${input.command}\r`,
+    data: `${command}\r`,
   });
 
   return {

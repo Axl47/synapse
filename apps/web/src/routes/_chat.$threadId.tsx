@@ -1293,7 +1293,7 @@ function SplitChatSurface(props: { splitViewId: SplitViewId; routeThreadId: Thre
           })
         }
         onToggleBrowser={() => togglePanePanel(leaf.id, "browser")}
-        onOpenBrowserUrl={() => updatePanePanelState(leaf.id, { panel: "browser" })}
+        onOpenBrowserUrl={(_url) => updatePanePanelState(leaf.id, { panel: "browser" })}
         onOpenTurnDiff={(turnId, filePath) => openPaneTurnDiff(leaf.id, turnId, filePath)}
         onClosePanel={() => closePanePanel(leaf.id)}
         onUpdatePanelState={(patch) => updatePanePanelState(leaf.id, patch)}
@@ -1539,7 +1539,7 @@ function SingleChatSurface(props: {
     requestImmediateDockHydration("browser");
     toggleSingletonPane(props.threadId, { kind: "browser" });
   }, [props.threadId, requestImmediateDockHydration, toggleSingletonPane]);
-  const handleOpenBrowserUrl = useCallback(() => {
+  const handleOpenBrowserUrl = useCallback((_url: string) => {
     requestImmediateDockHydration("browser");
     openPane(props.threadId, { kind: "browser" });
   }, [openPane, props.threadId, requestImmediateDockHydration]);

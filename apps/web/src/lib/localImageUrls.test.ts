@@ -1,6 +1,11 @@
 import { afterEach, describe, expect, it } from "vitest";
 
-import { buildLocalImageUrl, isLocalImageMarkdownSrc, localImageFileName } from "./localImageUrls";
+import {
+  buildLocalHtmlPreviewUrl,
+  buildLocalImageUrl,
+  isLocalImageMarkdownSrc,
+  localImageFileName,
+} from "./localImageUrls";
 
 describe("local image URL helpers", () => {
   afterEach(() => {
@@ -45,6 +50,15 @@ describe("local image URL helpers", () => {
         grant: "grant-token",
       }),
     ).toBe("/api/local-image?path=%2FUsers%2Fme%2FDownloads%2Fshot.png&grant=grant-token");
+  });
+
+  it("builds html preview URLs without treating html as a markdown image", () => {
+    expect(isLocalImageMarkdownSrc("docs/plan.html")).toBe(false);
+    expect(buildLocalHtmlPreviewUrl({ src: "docs/plan.html", cwd: "/Users/me/project" })).toBe(
+      "/api/local-image?path=docs%2Fplan.html&cwd=%2FUsers%2Fme%2Fproject&fit=viewport",
+    );
+    expect(buildLocalHtmlPreviewUrl({ src: "docs/notes.md", cwd: "/Users/me/project" })).toBeNull();
+    expect(buildLocalHtmlPreviewUrl({ src: "docs/plan.html", cwd: undefined })).toBeNull();
   });
 
   it("forwards the desktop bridge legacy token so <img> requests stay authenticated", () => {

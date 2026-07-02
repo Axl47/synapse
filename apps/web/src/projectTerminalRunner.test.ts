@@ -52,4 +52,46 @@ describe("runProjectCommandInTerminal", () => {
     });
     expect(result.snapshot.pid).toBe(1234);
   });
+
+  it("writes cwd and env setup when reusing an existing terminal session", async () => {
+    const open = vi.fn().mockResolvedValue({
+      threadId: "thread-1",
+      terminalId: "terminal-1",
+      cwd: "/repo/apps/web",
+      status: "running",
+      pid: 1234,
+      history: "",
+      exitCode: null,
+      exitSignal: null,
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    });
+    const write = vi.fn().mockResolvedValue(undefined);
+
+    await runProjectCommandInTerminal({
+      api: {
+        terminal: {
+          open,
+          write,
+        },
+      } as never,
+      threadId: "thread-1" as never,
+      terminalId: "terminal-1",
+      project: { cwd: "/repo root" },
+      cwd: "/repo root/apps/web",
+      command: "pnpm run dev",
+      worktreePath: "/repo-worktree",
+      env: { EXTRA: "with spaces" },
+      reuseExistingSession: true,
+    });
+
+    expect(write).toHaveBeenCalledWith({
+      threadId: "thread-1",
+      terminalId: "terminal-1",
+      data: [
+        "cd '/repo root/apps/web'",
+        "export T3CODE_PROJECT_ROOT='/repo root' T3CODE_WORKTREE_PATH=/repo-worktree EXTRA='with spaces'",
+        "pnpm run dev\r",
+      ].join(" && "),
+    });
+  });
 });

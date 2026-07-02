@@ -9,6 +9,7 @@ import {
   AuthRevokePairingLinkInput,
 } from "@t3tools/contracts";
 import { EDITOR_ICON_ROUTE_PATH } from "@t3tools/shared/editorIcons";
+import { isSupportedLocalHtmlPath } from "@t3tools/shared/localPreviewFiles";
 import { DateTime, Effect, Exit, FileSystem, Layer, Path, Schema, Stream } from "effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 
@@ -37,6 +38,39 @@ const PROJECT_FAVICON_CACHE_CONTROL = "public, max-age=3600";
 const SITE_FAVICON_CACHE_CONTROL_SUCCESS = "public, max-age=86400"; // 24 h
 const SITE_FAVICON_CACHE_CONTROL_FALLBACK = "public, max-age=3600"; // 1 h (negative result)
 const EDITOR_ICON_CACHE_CONTROL_SUCCESS = "public, max-age=86400"; // 24 h
+const LOCAL_HTML_PREVIEW_CSP = [
+  "sandbox",
+  "default-src 'none'",
+  "img-src data: blob:",
+  "style-src 'unsafe-inline'",
+  "font-src data:",
+  "script-src 'none'",
+  "object-src 'none'",
+  "base-uri 'none'",
+  "form-action 'none'",
+].join("; ");
+const LOCAL_HTML_PREVIEW_FIT_STYLE = `
+<style data-synara-local-html-preview-fit>
+@media screen {
+  html,
+  body {
+    min-width: 100% !important;
+    min-height: 100% !important;
+  }
+
+  body {
+    width: 100% !important;
+  }
+
+  body > header,
+  body > main,
+  body > footer,
+  body > nav > ul {
+    width: 100% !important;
+    max-width: none !important;
+  }
+}
+</style>`;
 const decodeBootstrapInput = Schema.decodeUnknownEffect(AuthBootstrapInput);
 const decodeCreatePairingCredentialInput = Schema.decodeUnknownEffect(
   AuthCreatePairingCredentialInput,
@@ -141,6 +175,25 @@ function localPreviewCorsHeaders(input: {
     "Access-Control-Allow-Origin": origin,
     Vary: "Origin",
   };
+}
+
+function injectLocalHtmlPreviewFitStyle(html: string): string {
+  if (html.includes("data-synara-local-html-preview-fit")) {
+    return html;
+  }
+
+  const headCloseIndex = html.search(/<\/head\s*>/i);
+  if (headCloseIndex >= 0) {
+    return `${html.slice(0, headCloseIndex)}${LOCAL_HTML_PREVIEW_FIT_STYLE}\n${html.slice(headCloseIndex)}`;
+  }
+
+  const htmlOpenMatch = /<html\b[^>]*>/i.exec(html);
+  if (htmlOpenMatch?.index !== undefined) {
+    const insertIndex = htmlOpenMatch.index + htmlOpenMatch[0].length;
+    return `${html.slice(0, insertIndex)}<head>${LOCAL_HTML_PREVIEW_FIT_STYLE}</head>${html.slice(insertIndex)}`;
+  }
+
+  return `${LOCAL_HTML_PREVIEW_FIT_STYLE}\n${html}`;
 }
 
 export function makeEffectHttpRouteLayer(readiness: ServerReadiness) {
@@ -520,22 +573,41 @@ export const localImageEffectRouteLayer = HttpRouter.add(
     const fileSystem = yield* FileSystem.FileSystem;
     const isDownload = url.searchParams.get("download") === "1";
     const safeFileName = previewFile.fileName.replaceAll('"', "");
+    const isHtmlPreview = !isDownload && isSupportedLocalHtmlPath(previewFile.path);
+    const htmlPreviewHeaders = isHtmlPreview
+      ? { "Content-Security-Policy": LOCAL_HTML_PREVIEW_CSP }
+      : {};
+    const responseHeaders = {
+      "Cache-Control": "private, max-age=60",
+      // The PDF viewer fetches bytes from either the desktop app origin or
+      // the configured Vite dev origin. Reflect only those trusted origins:
+      // auth-token-less local servers must not expose workspace files to any
+      // random web page that can guess path/cwd query params.
+      ...localPreviewCorsHeaders({ config, request, url }),
+      // PDFs render in an unsandboxed same-origin iframe; never let the
+      // browser second-guess the declared content type. HTML previews add a
+      // CSP sandbox below so local documents render without inheriting app
+      // origin script privileges.
+      "X-Content-Type-Options": "nosniff",
+      ...htmlPreviewHeaders,
+      ...(isDownload ? { "Content-Disposition": `attachment; filename="${safeFileName}"` } : {}),
+    };
+    if (isHtmlPreview && url.searchParams.get("fit") === "viewport") {
+      const data = yield* fileSystem.readFile(previewFile.path);
+      return HttpServerResponse.text(
+        injectLocalHtmlPreviewFitStyle(new TextDecoder().decode(data)),
+        {
+          status: 200,
+          contentType: "text/html; charset=utf-8",
+          headers: responseHeaders,
+        },
+      );
+    }
     return streamedFileResponse({
       fileSystem,
       path: previewFile.path,
       sizeBytes: previewFile.sizeBytes,
-      headers: {
-        "Cache-Control": "private, max-age=60",
-        // The PDF viewer fetches bytes from either the desktop app origin or
-        // the configured Vite dev origin. Reflect only those trusted origins:
-        // auth-token-less local servers must not expose workspace files to any
-        // random web page that can guess path/cwd query params.
-        ...localPreviewCorsHeaders({ config, request, url }),
-        // PDFs render in an unsandboxed same-origin iframe; never let the
-        // browser second-guess the declared content type.
-        "X-Content-Type-Options": "nosniff",
-        ...(isDownload ? { "Content-Disposition": `attachment; filename="${safeFileName}"` } : {}),
-      },
+      headers: responseHeaders,
     });
   }).pipe(Effect.catchTag("AuthError", (error) => Effect.succeed(authErrorResponse(error)))),
 );
