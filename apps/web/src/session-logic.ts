@@ -77,6 +77,10 @@ export interface WorkLogEntry {
   subagents?: ReadonlyArray<WorkLogSubagent>;
   subagentAction?: WorkLogSubagentAction;
   automation?: WorkLogAutomation;
+  // Source activity kind, kept so the timeline can pick a kind-specific icon
+  // (e.g. user-input.requested -> question glyph) instead of the generic
+  // tone fallback. Same rationale as `toolName` below.
+  activityKind?: OrchestrationThreadActivity["kind"];
 }
 
 // Created-automation rows render as a dedicated card (icon + name + cadence + Open)
@@ -823,13 +827,14 @@ export function deriveWorkLogEntries(
     .filter((activity) => !isUninformativeCommandStartActivity(activity))
     .map(toDerivedWorkLogEntry);
   // Strip the derivation-only helpers that exist solely on DerivedWorkLogEntry.
-  // `toolName` is intentionally kept: it is a public WorkLogEntry field that the
-  // timeline relies on to pick the right tool icon (e.g. file-read tools like
-  // Claude's `Read` -> search icon, GitHub MCP rows -> GitHub icon). Stripping it
-  // here previously made those icon checks dead code, leaving the generic wrench.
+  // `toolName` and `activityKind` are intentionally kept: they are public
+  // WorkLogEntry fields that the timeline relies on to pick the right icon (e.g.
+  // file-read tools like Claude's `Read` -> search icon, GitHub MCP rows ->
+  // GitHub icon, user-input rows -> question / submit glyphs). Stripping
+  // `toolName` here previously made those icon checks dead code, leaving the
+  // generic wrench.
   return collapseDerivedWorkLogEntries(entries).map(
     ({
-      activityKind: _activityKind,
       collapseCommand: _collapseCommand,
       collapseKey: _collapseKey,
       runtimeWarningMessage: _runtimeWarningMessage,
@@ -1144,17 +1149,42 @@ function collapseDerivedWorkLogEntries(
   entries: ReadonlyArray<DerivedWorkLogEntry>,
 ): DerivedWorkLogEntry[] {
   const collapsed: DerivedWorkLogEntry[] = [];
+  // Tools that carry a unique tool-call id (collapseKey "tool:<id>") merge by that
+  // id regardless of position. This is what fixes providers that emit every tool's
+  // started event before any of their completed events — Claude's parallel tool
+  // calls — which the adjacency-only path below renders as a started row plus a
+  // separate completed row. The id is unique per call, so distinct calls of the
+  // same tool never merge into each other.
+  const stableToolIndexByKey = new Map<string, number>();
   for (const entry of entries) {
     const previous = collapsed.at(-1);
     if (previous && shouldCollapseRuntimeWarningEntries(previous, entry)) {
       collapsed[collapsed.length - 1] = mergeRuntimeWarningEntries(previous, entry);
       continue;
     }
+    const stableToolKey =
+      entry.collapseKey?.startsWith("tool:") &&
+      isRenderableToolLifecycleActivity(entry.activityKind)
+        ? entry.collapseKey
+        : undefined;
+    if (stableToolKey !== undefined) {
+      const existingIndex = stableToolIndexByKey.get(stableToolKey);
+      if (existingIndex !== undefined) {
+        collapsed[existingIndex] = mergeDerivedWorkLogEntries(collapsed[existingIndex]!, entry);
+        continue;
+      }
+    }
     if (previous && shouldCollapseToolLifecycleEntries(previous, entry)) {
       collapsed[collapsed.length - 1] = mergeDerivedWorkLogEntries(previous, entry);
+      if (stableToolKey !== undefined) {
+        stableToolIndexByKey.set(stableToolKey, collapsed.length - 1);
+      }
       continue;
     }
     collapsed.push(entry);
+    if (stableToolKey !== undefined) {
+      stableToolIndexByKey.set(stableToolKey, collapsed.length - 1);
+    }
   }
   return collapsed;
 }

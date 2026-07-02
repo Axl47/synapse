@@ -1,5 +1,115 @@
 # Changelog
 
+## 0.3.7 - 2026-07-02
+
+### Added
+
+- Added live desktop update download percentages on the sidebar update button, including clamped integer handling and focused edge-case coverage.
+- Added single-flight checkpoint capture for matching repo/ref pairs, with a 180s aggregate timeout and first-writer-wins `skipIfExists` baselines.
+- Added recovery coverage for missing message-start baselines before turn-start checkpoint aliasing.
+- Added pure Claude auth-status parsing and generic provider CLI-output helpers, making provider health behavior easier to test in isolation.
+- Added a shared in-process `claude auth status` lock so health probes and macOS credential keepalive ticks do not race the same rotating OAuth refresh token.
+- Added CI timeouts and non-interactive browser-runtime install safeguards so hosted quality runs fail fast instead of hanging indefinitely.
+
+### Changed
+
+- Bumped Synara release package versions to `0.3.7` across the server, desktop, web, and contracts packages, and refreshed `bun.lock` workspace metadata.
+- Moved the sidebar Chats section into the scrollable sidebar content, added an accessible disclosure state, and reused the shared disclosure chevron.
+- Refined the desktop update action styling to use the info color while active downloads show a compact percent pill.
+- Refined Claude provider health to retry structured `loggedIn:false` false negatives once, read verified local credential metadata, and preserve subscription/auth labels more reliably.
+- Forked the macOS Claude credential keepalive after server startup and passed the configured home dir into the Claude process environment so the best-effort keepalive cannot block boot.
+- Moved the CI quality job onto GitHub-hosted runners and switched Playwright installation to the workspace-local binary after `bunx` installs stalled.
+
+### Fixed
+
+- Fixed Claude Agent health checks that could briefly report an authenticated account as logged out when concurrent `claude auth status` calls raced a refresh-token rotation.
+- Fixed checkpoint baseline races that could overwrite or miss the original pre-turn snapshot used for transcript diffs and restore points.
+- Fixed first-message sends from the empty chat landing opening the Environment panel unexpectedly after the transcript view appears.
+- Fixed crowded sidebar footer behavior by keeping chat history rows with the main sidebar list and leaving the footer for account/update controls.
+- Fixed release CI being blocked by the unavailable Blacksmith runner queue; Linux browser tests now continue for signal without blocking while geometry parity failures are tracked separately.
+
+### Verification
+
+- `bun run fmt:check` passed across 1508 files.
+- `bun run lint` passed with 158 warnings, 0 errors.
+- `bun run typecheck` passed across all 8 packages with the existing TS44 informational JSON/schema-preference messages.
+- `bun run release:smoke` passed and refreshed install/lockfile state. It noted an available newer `@pierre/diffs@1.2.12` while keeping the current dependency range unchanged.
+- `bun run build` passed: 6 tasks successful in 14.425s. The build still reports existing Astro `transformWithEsbuild`, tsdown/plugin timing, Rolldown/Babel plugin timing, desktop typeless-module, and large Vite chunk warnings.
+- `bun run test` passed: 10 tasks successful in 5m23.405s. `@t3tools/web` passed 191 files / 2274 tests. `effect-acp` passed 3 files / 24 tests. `t3` passed 140 files with 1 skipped file, 1532 passed tests, and 6 skipped tests.
+- `bun install` refreshed `bun.lock` after the package-version bump and reported no dependency changes.
+- Website changelog mirror checks passed in `/Users/emanueledipietro/Developer/dpcode-website`: `npm run build` prerendered `/changelog/v0.3.7`, and `npm run lint` passed.
+
+## 0.3.6 - 2026-06-30
+
+### Added
+
+- Added safer Cursor ACP command discovery and launcher fallback coverage for bundled sibling shims, legacy shims, and fallback ordering.
+- Added Muxy Open In support through editor metadata, server open handling, and focused tests.
+- Added live message trail rendering, shared trail logic, browser coverage, and timeline integration for active transcript updates.
+- Added desktop clipboard image sharing for share-card/profile exports.
+- Added Claude credential keepalive coverage to keep macOS OAuth credentials fresh across longer sessions.
+
+### Changed
+
+- Bumped Synara release package versions to `0.3.6` across the server, desktop, web, and contracts packages.
+- Refined Cursor agent command resolution so fallback launchers prefer known-safe agent paths and reject unsafe editor fallbacks.
+- Refined checkpoint and transcript handling around turn completion, live trail rendering, and message timeline integration.
+- Refined Sonnet 5 model variant metadata, sidebar status icons, command-row branding, tool-call labels, chat bubble padding, and model effort picker copy.
+- Refined task-completion notification logic and share-card export behavior around desktop clipboard support.
+
+### Fixed
+
+- Fixed Cursor ACP CLI path resolution for packaged/bundled Cursor layouts and legacy shim paths.
+- Fixed unsafe Cursor editor fallback behavior by rejecting launch paths that do not match the expected agent command shape.
+- Fixed Claude sessions becoming stale after long macOS OAuth credential idle periods.
+- Fixed file-change checkpoint timing around completed turns so summaries attach after the relevant assistant message is known.
+- Fixed formatting drift in ProviderHealth, Cursor ACP, and shared model test files caught by the release gate.
+
+### Verification
+
+- Initial `bun run fmt:check` failed on `apps/server/src/provider/Layers/ProviderHealth.test.ts`, `apps/server/src/provider/Layers/ProviderHealth.ts`, `apps/server/src/provider/acp/CursorAcpCommand.ts`, `apps/server/src/provider/acp/CursorAcpSupport.ts`, and `packages/shared/src/model.test.ts`; after targeted `bunx oxfmt` on those files, the final formatter check passed.
+- `bun run lint` passed with 158 warnings, 0 errors.
+- `bun run typecheck` passed across all 8 packages with the existing TS44 informational JSON messages.
+- `bun run release:smoke` passed and refreshed install/lockfile state.
+- `bun run build` passed. The build still reports existing Astro `transformWithEsbuild`, tsdown/plugin timing, desktop typeless-module, and large Vite chunk warnings.
+- `bun run test` passed: 10 tasks successful in 5m38.929s. `@t3tools/web` passed 191 files / 2273 tests. `t3` passed 138 files with 1 skipped file, 1517 passed tests, and 6 skipped tests.
+- Website changelog mirror checks passed in `/Users/emanueledipietro/Developer/dpcode-website`: `npm run build` and `npm run lint` passed.
+
+## 0.3.5 - 2026-06-30
+
+### Added
+
+- Added temporary-thread promotion coverage and renamed disposable-thread helpers around the temporary-thread lifecycle.
+- Added undo-toast archive behavior for sidebar thread archive actions, backed by shared thread archive helpers and toast coverage.
+- Added macOS desktop icon-cache refresh logic with startup/update integration and focused platform-gated tests.
+- Added focused coverage for queued composer headers, timeline work-row grouping, diff rendering, thread archive undo, and desktop update button presentation.
+
+### Changed
+
+- Bumped Synara release package versions to `0.3.5` across the server, desktop, web, and contracts packages, and refreshed `bun.lock` workspace package versions.
+- Reworked temporary chat promotion so draft/temporary threads move into durable chat flow more predictably across ChatView, sidebar state, session logic, and route activation.
+- Replaced archive confirmation friction with immediate archive plus undo toast, including sidebar row actions, settings primitives, and shared error messaging polish.
+- Refined pending user-input panels, queued composer state, work rows, tool details, markdown spacing, composer picker styling, model/traits pickers, and chat timeline presentation.
+- Cleaned up activity heatmap export, share cards, diff-rendering helpers, sidebar labels, and several compact toolbar/control labels.
+
+### Fixed
+
+- Fixed dark-mode composer input surface border styling after the recent composer picker polish.
+- Fixed stale macOS Dock/Finder icon behavior after app icon changes by refreshing icon caches from the desktop process when needed.
+- Fixed archive recovery ergonomics by replacing the blocking confirmation path with a reversible toast action.
+- Fixed temporary-thread naming and lifecycle drift left over from disposable-thread terminology.
+- Fixed small UI inconsistencies in pending approvals, pending inputs, PDF toolbar, terminal chrome, settings routes, and What's New popout sizing.
+
+### Verification
+
+- `bun run fmt:check` passed.
+- `bun run lint` passed with 155 warnings, 0 errors.
+- `bun run typecheck` passed across all 8 packages with the existing TS44 informational JSON messages.
+- `bun run release:smoke` passed and refreshed install/lockfile state. It reported a slow filesystem warning for the Bun install cache during the final pass.
+- `bun run build` passed. The build still reports existing Astro `transformWithEsbuild`, tsdown/plugin timing, desktop typeless-module, and large Vite chunk warnings.
+- `bun run test` passed: 10 tasks successful in 6m9.469s. `@t3tools/web` passed 190 files / 2229 tests. `t3` passed 137 files with 1 skipped file, 1492 passed tests, and 6 skipped tests.
+- Website changelog mirror checks passed in `/Users/emanueledipietro/Developer/dpcode-website`: `npm run build` prerendered `/changelog/v0.3.5`, and `npm run lint` passed.
+
 ## 0.3.4 - 2026-06-29
 
 ### Added
