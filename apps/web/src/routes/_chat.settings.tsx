@@ -3029,6 +3029,10 @@ function SettingsRouteView() {
           <div className="space-y-2">
             {instanceRows.map(([instanceId, instance]) => {
               const config = instance.config;
+              const serverPasswordRedacted = readProviderInstanceConfigBoolean(
+                config,
+                "serverPasswordRedacted",
+              );
               const instanceStatus = providerInstanceStatusSummary(
                 instance.enabled === false ? undefined : providerStatusByInstance.get(instanceId),
               );
@@ -3172,20 +3176,48 @@ function SettingsRouteView() {
                         <span className="block text-xs font-medium text-foreground">
                           Server password
                         </span>
-                        <DebouncedSettingTextInput
-                          id={`provider-instance-${instanceId}-server-password`}
-                          size="sm"
-                          variant="soft"
-                          className="mt-1"
-                          value={readProviderInstanceConfigString(config, "serverPassword")}
-                          onCommit={(nextValue) =>
-                            updateProviderInstance(instanceId, {
-                              config: { serverPassword: nextValue },
-                            })
-                          }
-                          placeholder={providerSettings.serverPasswordPlaceholder}
-                          spellCheck={false}
-                        />
+                        <div className="mt-1 flex items-center gap-2">
+                          <DebouncedSettingTextInput
+                            id={`provider-instance-${instanceId}-server-password`}
+                            size="sm"
+                            variant="soft"
+                            className="flex-1"
+                            value={readProviderInstanceConfigString(config, "serverPassword")}
+                            onCommit={(nextValue) => {
+                              if (serverPasswordRedacted && nextValue.length === 0) {
+                                // Keep the stored secret when the redacted field
+                                // is left untouched; Clear removes it explicitly.
+                                return;
+                              }
+                              updateProviderInstance(instanceId, {
+                                config: { serverPassword: nextValue },
+                              });
+                            }}
+                            placeholder={
+                              serverPasswordRedacted
+                                ? "Secret saved — type to replace"
+                                : providerSettings.serverPasswordPlaceholder
+                            }
+                            spellCheck={false}
+                          />
+                          {serverPasswordRedacted ? (
+                            <Button
+                              type="button"
+                              size="xs"
+                              variant="ghost"
+                              onClick={() =>
+                                updateProviderInstance(instanceId, {
+                                  config: { serverPassword: "" },
+                                })
+                              }
+                              aria-label={`Clear saved server password for ${
+                                instance.displayName || instanceId
+                              }`}
+                            >
+                              Clear
+                            </Button>
+                          ) : null}
+                        </div>
                       </label>
                     ) : null}
                     {providerSettings.agentDirKey ? (

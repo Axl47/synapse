@@ -1202,12 +1202,37 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
         { discard: true, concurrency: "unbounded" },
       ).pipe(Effect.asVoid);
 
+    const providerInstanceExists = (input: {
+      readonly operation: string;
+      readonly instanceId: string;
+      readonly provider: string;
+    }) =>
+      serverSettings.getSettings.pipe(
+        Effect.mapError((cause) =>
+          toValidationError(input.operation, "Failed to load provider instance settings.", cause),
+        ),
+        Effect.map((settings) =>
+          Boolean(
+            resolveProviderInstance(settings, {
+              instanceId: input.instanceId,
+              ...providerKindConstraint(input.provider),
+            }),
+          ),
+        ),
+      );
+
     const resolveRoutableSession = (input: {
       readonly threadId: ThreadId;
       readonly operation: string;
       readonly allowRecovery: boolean;
       /** Stop/cleanup paths must still route sessions of disabled instances. */
       readonly allowDisabled?: boolean;
+      /**
+       * Stop/cleanup paths must also tear down runtimes whose provider
+       * instance was deleted from settings; those route by the persisted
+       * binding (or live session) instead of failing instance resolution.
+       */
+      readonly allowDeleted?: boolean;
     }) =>
       Effect.gen(function* () {
         const bindingOption = yield* directory.getBinding(input.threadId);
@@ -1217,10 +1242,26 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
           // the provider binding, but the adapter already owns a live session.
           const live = yield* findLiveSession(input.threadId);
           if (live) {
+            const liveProviderInstanceId = live.session.providerInstanceId ?? live.session.provider;
+            if (input.allowDeleted === true) {
+              const exists = yield* providerInstanceExists({
+                operation: input.operation,
+                instanceId: liveProviderInstanceId,
+                provider: live.session.provider,
+              });
+              if (!exists) {
+                return {
+                  adapter: live.adapter,
+                  threadId: input.threadId,
+                  providerInstanceId: liveProviderInstanceId,
+                  isActive: true,
+                } as const;
+              }
+            }
             const resolved = yield* resolveLaunchProviderInstance({
               operation: input.operation,
               provider: live.session.provider,
-              providerInstanceId: live.session.providerInstanceId ?? live.session.provider,
+              providerInstanceId: liveProviderInstanceId,
               ...(input.allowDisabled !== undefined ? { allowDisabled: input.allowDisabled } : {}),
             });
             return {
@@ -1236,6 +1277,23 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
           );
         }
         const bindingProviderInstanceId = providerInstanceIdFromBinding(binding);
+        if (input.allowDeleted === true) {
+          const exists = yield* providerInstanceExists({
+            operation: input.operation,
+            instanceId: bindingProviderInstanceId,
+            provider: binding.provider,
+          });
+          if (!exists) {
+            const adapter = yield* getAdapterForBinding(binding);
+            const isActive = yield* adapter.hasSession(input.threadId);
+            return {
+              adapter,
+              threadId: input.threadId,
+              providerInstanceId: bindingProviderInstanceId,
+              isActive,
+            } as const;
+          }
+        }
         const resolved = yield* resolveLaunchProviderInstance({
           operation: input.operation,
           ...providerKindConstraint(binding.provider),
@@ -1834,6 +1892,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
           operation: "ProviderService.stopSession",
           allowRecovery: false,
           allowDisabled: true,
+          allowDeleted: true,
         });
         if (routed.isActive) {
           yield* routed.adapter.stopSession(routed.threadId);

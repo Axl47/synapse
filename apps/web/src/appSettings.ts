@@ -51,6 +51,10 @@ import {
 
 const APP_SETTINGS_STORAGE_KEY = "synara:app-settings:v1";
 const SERVER_SETTINGS_MIGRATION_STORAGE_KEY = "t3code:server-settings-migrated:v1";
+
+function hasCompletedServerSettingsMigration(): boolean {
+  return globalThis.localStorage?.getItem(SERVER_SETTINGS_MIGRATION_STORAGE_KEY) === "1";
+}
 const MAX_CUSTOM_MODEL_COUNT = 32;
 export const MAX_CUSTOM_MODEL_LENGTH = 256;
 export const MIN_CHAT_FONT_SIZE_PX = 11;
@@ -1862,20 +1866,28 @@ export function useAppSettings() {
     }
     normalizedStoredSettingsRef.current = true;
 
-    setSettings((previous) => normalizeStoredAppSettings(previous));
+    // Un-migrated profiles may still hold plaintext instance secrets that
+    // buildInitialServerSettingsMigrationPatch must read; keep them until the
+    // migration has shipped them to the server (which then redacts below).
+    setSettings((previous) =>
+      hasCompletedServerSettingsMigration()
+        ? normalizeStoredAppSettings(previous)
+        : normalizeAppSettings(previous),
+    );
   }, [setSettings]);
 
   useEffect(() => {
     if (!serverSettingsQuery.data || serverSettingsMigrationInFlight) {
       return;
     }
-    if (globalThis.localStorage?.getItem(SERVER_SETTINGS_MIGRATION_STORAGE_KEY) === "1") {
+    if (hasCompletedServerSettingsMigration()) {
       return;
     }
 
     const migrationPatch = buildInitialServerSettingsMigrationPatch(localSettings);
     if (isServerSettingsPatchEmpty(migrationPatch)) {
       globalThis.localStorage?.setItem(SERVER_SETTINGS_MIGRATION_STORAGE_KEY, "1");
+      setSettings((previous) => normalizeStoredAppSettings(previous));
       return;
     }
 
@@ -1885,6 +1897,8 @@ export function useAppSettings() {
       .then((nextSettings) => {
         queryClient.setQueryData(serverQueryKeys.settings(), nextSettings);
         globalThis.localStorage?.setItem(SERVER_SETTINGS_MIGRATION_STORAGE_KEY, "1");
+        // The server now owns the migrated secrets; drop the local plaintext.
+        setSettings((previous) => normalizeStoredAppSettings(previous));
       })
       .catch(() => {
         void queryClient.invalidateQueries({ queryKey: serverQueryKeys.settings() });
@@ -1892,18 +1906,23 @@ export function useAppSettings() {
       .finally(() => {
         serverSettingsMigrationInFlight = false;
       });
-  }, [localSettings, queryClient, serverSettingsQuery.data]);
+  }, [localSettings, queryClient, serverSettingsQuery.data, setSettings]);
 
   const updateSettings = useCallback(
     (patch: Partial<AppSettings>) => {
-      // The server patch below carries the live values; state and localStorage
-      // only ever keep the redacted representation of instance secrets.
+      // The server patch below carries the live values; once the initial
+      // migration has shipped stored plaintext to the server, state and
+      // localStorage only ever keep the redacted representation of instance
+      // secrets. Before that, plaintext must survive for the migration patch.
       let providerInstancesBeforePatch: AppSettings["providerInstances"] | undefined;
       setSettings((prev) => {
         if (patch.providerInstances !== undefined) {
           providerInstancesBeforePatch = prev.providerInstances;
         }
-        return redactAppSettingsSecretsForClient(normalizeAppSettings({ ...prev, ...patch }));
+        const next = normalizeAppSettings({ ...prev, ...patch });
+        return hasCompletedServerSettingsMigration()
+          ? redactAppSettingsSecretsForClient(next)
+          : next;
       });
       if (touchesProviderDiscoverySettings(patch)) {
         void queryClient.invalidateQueries({ queryKey: providerDiscoveryQueryKeys.all });
@@ -1925,11 +1944,15 @@ export function useAppSettings() {
           // the previous state instead of a phantom "saved" secret.
           if (providerInstancesBeforePatch !== undefined) {
             const restoredProviderInstances = providerInstancesBeforePatch;
-            setSettings((prev) =>
-              redactAppSettingsSecretsForClient(
-                normalizeAppSettings({ ...prev, providerInstances: restoredProviderInstances }),
-              ),
-            );
+            setSettings((prev) => {
+              const restored = normalizeAppSettings({
+                ...prev,
+                providerInstances: restoredProviderInstances,
+              });
+              return hasCompletedServerSettingsMigration()
+                ? redactAppSettingsSecretsForClient(restored)
+                : restored;
+            });
           }
           void queryClient.invalidateQueries({ queryKey: serverQueryKeys.settings() });
         });
