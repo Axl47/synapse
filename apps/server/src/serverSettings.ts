@@ -648,6 +648,34 @@ const makeServerSettings = Effect.gen(function* () {
       };
     });
 
+  const hasPlaintextProviderInstanceSecrets = (settings: ServerSettings): boolean => {
+    for (const instance of Object.values(settings.providerInstances)) {
+      if (
+        instance.environment?.some(
+          (variable) =>
+            variable.sensitive &&
+            variable.valueRedacted !== true &&
+            (variable.value ?? "").length > 0,
+        )
+      ) {
+        return true;
+      }
+      if (isRecord(instance.config)) {
+        for (const key of SENSITIVE_PROVIDER_INSTANCE_CONFIG_KEYS) {
+          const value = instance.config[key];
+          if (
+            typeof value === "string" &&
+            value.length > 0 &&
+            instance.config[`${key}Redacted`] !== true
+          ) {
+            return true;
+          }
+        }
+      }
+    }
+    return false;
+  };
+
   const loadSettingsFromDisk = Effect.gen(function* () {
     const exists = yield* fs.exists(settingsPath).pipe(
       Effect.mapError(
@@ -680,6 +708,14 @@ const makeServerSettings = Effect.gen(function* () {
         error: decoded.error,
       });
       return DEFAULT_SERVER_SETTINGS;
+    }
+    if (hasPlaintextProviderInstanceSecrets(decoded.value)) {
+      // A previous build (or interrupted migration) left instance secrets in
+      // plaintext on disk. Move them into the secret store and rewrite the
+      // redacted settings file immediately instead of waiting for the next
+      // settings save.
+      const persisted = yield* persistProviderSecrets(decoded.value, decoded.value);
+      yield* writeSettingsAtomically(persisted);
     }
     return yield* materializeProviderSecrets(decoded.value);
   });

@@ -1898,9 +1898,13 @@ export function useAppSettings() {
     (patch: Partial<AppSettings>) => {
       // The server patch below carries the live values; state and localStorage
       // only ever keep the redacted representation of instance secrets.
-      setSettings((prev) =>
-        redactAppSettingsSecretsForClient(normalizeAppSettings({ ...prev, ...patch })),
-      );
+      let providerInstancesBeforePatch: AppSettings["providerInstances"] | undefined;
+      setSettings((prev) => {
+        if (patch.providerInstances !== undefined) {
+          providerInstancesBeforePatch = prev.providerInstances;
+        }
+        return redactAppSettingsSecretsForClient(normalizeAppSettings({ ...prev, ...patch }));
+      });
       if (touchesProviderDiscoverySettings(patch)) {
         void queryClient.invalidateQueries({ queryKey: providerDiscoveryQueryKeys.all });
       }
@@ -1916,6 +1920,17 @@ export function useAppSettings() {
           queryClient.setQueryData(serverQueryKeys.settings(), nextSettings);
         })
         .catch(() => {
+          // The optimistic write already redacted any typed secret; if the
+          // server never stored it, roll the instances back so the user sees
+          // the previous state instead of a phantom "saved" secret.
+          if (providerInstancesBeforePatch !== undefined) {
+            const restoredProviderInstances = providerInstancesBeforePatch;
+            setSettings((prev) =>
+              redactAppSettingsSecretsForClient(
+                normalizeAppSettings({ ...prev, providerInstances: restoredProviderInstances }),
+              ),
+            );
+          }
           void queryClient.invalidateQueries({ queryKey: serverQueryKeys.settings() });
         });
     },
