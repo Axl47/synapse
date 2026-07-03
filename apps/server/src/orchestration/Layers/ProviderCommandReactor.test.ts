@@ -2970,6 +2970,7 @@ describe("ProviderCommandReactor", () => {
         },
       },
     });
+    expect(harness.startSession.mock.calls[1]?.[1]).not.toHaveProperty("resumeCursor");
   });
 
   it("does not inject derived model options when restarting claude on runtime mode changes", async () => {

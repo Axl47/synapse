@@ -1207,6 +1207,14 @@ export function normalizeStoredAppSettings(settings: AppSettings): AppSettings {
   return redactAppSettingsSecretsForClient(normalizeAppSettings(settings));
 }
 
+export function normalizeInitialStoredAppSettingsForServerMigration(
+  settings: AppSettings,
+  migrationCompleted: boolean,
+): AppSettings {
+  const normalized = normalizeAppSettings(settings);
+  return migrationCompleted ? normalizeStoredAppSettings(normalized) : normalized;
+}
+
 export function getCustomModelsForProvider(
   settings: Pick<AppSettings, CustomModelSettingsKey>,
   provider: ProviderKind,
@@ -1884,13 +1892,14 @@ export function useAppSettings() {
 
     setSettings((previous) => {
       const normalized = normalizeAppSettings(previous);
-      if (!hasCompletedServerSettingsMigration()) {
+      const migrationCompleted = hasCompletedServerSettingsMigration();
+      if (!migrationCompleted) {
         pendingServerSettingsMigrationPatchRef.current =
           buildInitialServerSettingsMigrationPatch(normalized);
       }
-      // Keep any plaintext needed for migration in memory only; localStorage
-      // must immediately move to the redacted representation.
-      return normalizeStoredAppSettings(normalized);
+      // Legacy localStorage may be the only remaining plaintext source until
+      // the server confirms migration; redact it immediately after that write.
+      return normalizeInitialStoredAppSettingsForServerMigration(normalized, migrationCompleted);
     });
   }, [setSettings]);
 
