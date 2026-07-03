@@ -422,6 +422,122 @@ describe("ProfileStatsQuery", () => {
     );
   });
 
+  it("attributes provider-less custom instance selections to their session provider", async () => {
+    await runProfileStatsTest(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const statsQuery = yield* ProfileStatsQuery;
+
+        yield* sql`
+          INSERT INTO projection_threads (
+            thread_id,
+            project_id,
+            title,
+            model_selection_json,
+            runtime_mode,
+            interaction_mode,
+            env_mode,
+            created_at,
+            updated_at,
+            deleted_at
+          )
+          VALUES (
+            'thread-claude-work',
+            'project-profile',
+            'Claude Work Thread',
+            '{"instanceId":"work","model":"claude-sonnet-4-6"}',
+            'full-access',
+            'default',
+            'local',
+            '2026-06-13T10:00:00.000Z',
+            '2026-06-13T10:00:00.000Z',
+            NULL
+          )
+        `;
+
+        yield* sql`
+          INSERT INTO projection_thread_sessions (
+            thread_id,
+            status,
+            provider_name,
+            provider_instance_id,
+            updated_at
+          )
+          VALUES (
+            'thread-claude-work',
+            'ready',
+            'claudeAgent',
+            'work',
+            '2026-06-13T10:00:00.000Z'
+          )
+        `;
+
+        yield* sql`
+          INSERT INTO orchestration_events (
+            event_id,
+            aggregate_kind,
+            stream_id,
+            stream_version,
+            event_type,
+            occurred_at,
+            actor_kind,
+            payload_json,
+            metadata_json
+          )
+          VALUES (
+            'event-claude-work',
+            'thread',
+            'thread-claude-work',
+            1,
+            'thread.turn-start-requested',
+            '2026-06-13T10:05:00.000Z',
+            'client',
+            '{"threadId":"thread-claude-work","modelSelection":{"instanceId":"work","model":"claude-sonnet-4-6"}}',
+            '{}'
+          )
+        `;
+
+        yield* sql`
+          INSERT INTO projection_thread_activities (
+            activity_id,
+            thread_id,
+            turn_id,
+            tone,
+            kind,
+            summary,
+            payload_json,
+            sequence,
+            created_at
+          )
+          VALUES (
+            'activity-claude-work',
+            'thread-claude-work',
+            'turn-claude-work',
+            'info',
+            'context-window.updated',
+            'tokens updated',
+            '{"totalProcessedTokens":2500}',
+            1,
+            '2026-06-13T10:06:00.000Z'
+          )
+        `;
+
+        const stats = yield* statsQuery.getProfileStats({ utcOffsetMinutes: 0 });
+        const tokenStats = yield* statsQuery.getProfileTokenStats({ utcOffsetMinutes: 0 });
+
+        expect(stats.insights.topProvider).toBe("claudeAgent");
+        expect(stats.providerModels[0]).toMatchObject({
+          provider: "claudeAgent",
+          instanceId: "work",
+          model: "claude-sonnet-4-6",
+          turnCount: 1,
+        });
+        expect(tokenStats.topProvider).toBe("claudeAgent");
+        expect(tokenStats.providers).toEqual(["claudeAgent"]);
+      }),
+    );
+  });
+
   it("counts slash skill invocations from projected thread message text and groups them with dollar usage", async () => {
     await runProfileStatsTest(
       Effect.gen(function* () {

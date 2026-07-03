@@ -3,10 +3,12 @@
 // Layer: Provider adapter tests
 // Depends on: PiAdapter discovery helpers and Pi model metadata shapes.
 
+import type { AuthStorage, ModelRegistry } from "@earendil-works/pi-coding-agent";
 import type { Api, Model } from "@earendil-works/pi-ai";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   applyPiRuntimeApiKeysFromEnvironment,
+  createPiModelRegistry,
   getPiSupportedThinkingOptions,
   makePiUserInputOptions,
   PLAIN_PI_EXTENSION_THEME,
@@ -69,6 +71,31 @@ describe("getPiSupportedThinkingOptions", () => {
 });
 
 describe("applyPiRuntimeApiKeysFromEnvironment", () => {
+  it("uses the same runtime auth storage for API keys and model registry", () => {
+    const authStorage = {
+      setRuntimeApiKey: vi.fn(),
+    } as unknown as AuthStorage;
+    const registry = {} as ModelRegistry;
+    const piSdk = {
+      AuthStorage: {
+        create: vi.fn(() => authStorage),
+      },
+      ModelRegistry: {
+        create: vi.fn(() => registry),
+      },
+    } as unknown as Parameters<typeof createPiModelRegistry>[1];
+
+    const context = createPiModelRegistry("/agent", piSdk, {
+      OPENAI_API_KEY: "instance-openai-key",
+    });
+
+    expect(piSdk.AuthStorage.create).toHaveBeenCalledWith("/agent/auth.json");
+    expect(authStorage.setRuntimeApiKey).toHaveBeenCalledWith("openai", "instance-openai-key");
+    expect(piSdk.ModelRegistry.create).toHaveBeenCalledWith(authStorage, "/agent/models.json");
+    expect(context.authStorage).toBe(authStorage);
+    expect(context.registry).toBe(registry);
+  });
+
   it("maps Pi provider-instance API keys into runtime auth without mutating process.env", () => {
     const previousOpenAiKey = process.env.OPENAI_API_KEY;
     process.env.OPENAI_API_KEY = "global-openai-key";

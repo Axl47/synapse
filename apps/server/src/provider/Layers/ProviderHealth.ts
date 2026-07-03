@@ -2545,23 +2545,41 @@ export const ProviderHealthLive = Layer.effect(
       };
     });
 
+    const applyVolatileProviderStates = (
+      statuses: ReadonlyArray<ServerProviderStatus>,
+    ): Effect.Effect<ProviderStatuses> =>
+      Effect.forEach(statuses, applyVolatileProviderState, {
+        concurrency: "unbounded",
+      });
+
     const projectStatusesForCurrentSettings = Effect.fn(
       "projectProviderStatusesForCurrentSettings",
     )(function* (statuses: ReadonlyArray<ServerProviderStatus>) {
-      return yield* serverSettings.getSettings.pipe(
-        Effect.map((settings) => projectProviderStatusesForSettings(statuses, settings)),
-        Effect.catch(() => Effect.succeed(statuses)),
-        Effect.flatMap((projected) =>
-          Effect.forEach(projected, applyVolatileProviderState, {
-            concurrency: "unbounded",
-          }),
-        ),
+      const settings = yield* serverSettings.getSettings.pipe(
+        Effect.catch(() => Effect.succeed(null)),
+      );
+      if (!settings) {
+        return yield* applyVolatileProviderStates(statuses);
+      }
+      return yield* applyVolatileProviderStates(
+        projectProviderStatusesForSettings(statuses, settings),
       );
     });
 
     const publishProjectedStatuses = Effect.fn("publishProjectedProviderStatuses")(function* () {
       const rawStatuses = yield* Ref.get(statusesRef);
       const projectedStatuses = yield* projectStatusesForCurrentSettings(rawStatuses);
+      yield* PubSub.publish(changesPubSub, projectedStatuses);
+      return projectedStatuses;
+    });
+
+    const publishProjectedStatusesForSettings = Effect.fn(
+      "publishProjectedProviderStatusesForSettings",
+    )(function* (settings: ServerSettings) {
+      const rawStatuses = yield* Ref.get(statusesRef);
+      const projectedStatuses = yield* applyVolatileProviderStates(
+        projectProviderStatusesForSettings(rawStatuses, settings),
+      );
       yield* PubSub.publish(changesPubSub, projectedStatuses);
       return projectedStatuses;
     });
@@ -2834,16 +2852,21 @@ export const ProviderHealthLive = Layer.effect(
     yield* ensureRefreshFiber;
 
     yield* serverSettings.streamChanges.pipe(
-      Stream.runForEach(() =>
+      Stream.runForEach((settings) =>
         Effect.gen(function* () {
-          // A refresh already in flight may have read the previous settings
-          // before spending time in CLI probes; wait it out, then run a fresh
-          // pass that is guaranteed to observe this change.
-          const inFlight = yield* Ref.get(refreshFiberRef);
-          if (inFlight) {
-            yield* Fiber.join(inFlight).pipe(Effect.asVoid);
-          }
-          yield* ensureRefreshFiber.pipe(Effect.flatMap(Fiber.join), Effect.asVoid);
+          // Settings can change only the projection layer (disabled/deleted/renamed
+          // instances). Publish that immediately from the cached raw probe data,
+          // then run a fresh serialized probe pass for any settings that affect CLI
+          // lookups.
+          yield* publishProjectedStatusesForSettings(settings).pipe(Effect.asVoid);
+          yield* Effect.gen(function* () {
+            const inFlight = yield* Ref.get(refreshFiberRef);
+            if (inFlight) {
+              yield* Fiber.join(inFlight).pipe(Effect.asVoid);
+            }
+            yield* ensureRefreshFiber.pipe(Effect.flatMap(Fiber.join), Effect.asVoid);
+            yield* publishProjectedStatuses().pipe(Effect.asVoid);
+          }).pipe(Effect.forkIn(refreshScope), Effect.asVoid);
         }),
       ),
       Effect.forkIn(refreshScope),

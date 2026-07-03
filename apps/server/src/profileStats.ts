@@ -51,6 +51,7 @@ interface PromptActivityRow extends CountRow {
 
 interface TurnInsightRow extends CountRow {
   readonly provider: string | null;
+  readonly instanceId: string | null;
   readonly model: string | null;
   readonly reasoning: string | null;
 }
@@ -621,6 +622,7 @@ const makeProfileStatsQuery = Effect.gen(function* () {
             a.thread_id AS thread_id,
             STRFTIME('%Y-%m-%d', DATETIME(a.created_at, ${tz})) AS day,
             CASE
+              WHEN s.provider_name IS NOT NULL THEN s.provider_name
               WHEN th.model_selection_json IS NOT NULL AND json_valid(th.model_selection_json)
               THEN COALESCE(
                 json_extract(th.model_selection_json, '$.provider'),
@@ -635,6 +637,7 @@ const makeProfileStatsQuery = Effect.gen(function* () {
             a.activity_id AS activity_id
           FROM projection_thread_activities a
           JOIN projection_threads th ON th.thread_id = a.thread_id
+          LEFT JOIN projection_thread_sessions s ON s.thread_id = th.thread_id
           LEFT JOIN projection_projects p ON p.project_id = th.project_id
           WHERE a.kind = 'context-window.updated'
             AND json_extract(a.payload_json, '$.totalProcessedTokens') IS NOT NULL
@@ -700,17 +703,46 @@ const makeProfileStatsQuery = Effect.gen(function* () {
             CASE
               WHEN json_type(e.payload_json, '$.modelSelection') = 'object'
               THEN COALESCE(
+                json_extract(e.payload_json, '$.modelSelection.provider'),
+                s.provider_name,
+                CASE
+                  WHEN t.model_selection_json IS NOT NULL AND json_valid(t.model_selection_json)
+                  THEN json_extract(t.model_selection_json, '$.provider')
+                END,
+                json_extract(e.payload_json, '$.modelSelection.instanceId')
+              )
+              ELSE CASE
+                WHEN s.provider_name IS NOT NULL THEN s.provider_name
+                WHEN t.model_selection_json IS NOT NULL AND json_valid(t.model_selection_json)
+                THEN COALESCE(
+                  json_extract(t.model_selection_json, '$.provider'),
+                  json_extract(t.model_selection_json, '$.instanceId')
+                )
+              END
+            END AS provider,
+            CASE
+              WHEN json_type(e.payload_json, '$.modelSelection') = 'object'
+              THEN COALESCE(
                 json_extract(e.payload_json, '$.modelSelection.instanceId'),
-                json_extract(e.payload_json, '$.modelSelection.provider')
+                s.provider_instance_id,
+                CASE
+                  WHEN t.model_selection_json IS NOT NULL AND json_valid(t.model_selection_json)
+                  THEN json_extract(t.model_selection_json, '$.instanceId')
+                END,
+                json_extract(e.payload_json, '$.modelSelection.provider'),
+                s.provider_name
               )
               ELSE CASE
                 WHEN t.model_selection_json IS NOT NULL AND json_valid(t.model_selection_json)
                 THEN COALESCE(
                   json_extract(t.model_selection_json, '$.instanceId'),
-                  json_extract(t.model_selection_json, '$.provider')
+                  s.provider_instance_id,
+                  json_extract(t.model_selection_json, '$.provider'),
+                  s.provider_name
                 )
+                ELSE COALESCE(s.provider_instance_id, s.provider_name)
               END
-            END AS provider,
+            END AS instanceId,
             CASE
               WHEN json_type(e.payload_json, '$.modelSelection') = 'object'
               THEN json_extract(e.payload_json, '$.modelSelection.model')
@@ -764,6 +796,7 @@ const makeProfileStatsQuery = Effect.gen(function* () {
           FROM orchestration_events e
           JOIN projection_threads t
             ON t.thread_id = COALESCE(json_extract(e.payload_json, '$.threadId'), e.stream_id)
+          LEFT JOIN projection_thread_sessions s ON s.thread_id = t.thread_id
           LEFT JOIN projection_projects p ON p.project_id = t.project_id
           WHERE e.event_type = 'thread.turn-start-requested'
             AND (
@@ -778,10 +811,10 @@ const makeProfileStatsQuery = Effect.gen(function* () {
             )
             AND p.deleted_at IS NULL
         )
-        SELECT provider, model, reasoning, COUNT(*) AS count
+        SELECT provider, instanceId, model, reasoning, COUNT(*) AS count
         FROM per_turn
-        GROUP BY provider, model, reasoning
-        ORDER BY count DESC, provider ASC, model ASC, reasoning ASC
+        GROUP BY provider, instanceId, model, reasoning
+        ORDER BY count DESC, provider ASC, instanceId ASC, model ASC, reasoning ASC
       `,
     );
 
@@ -962,20 +995,26 @@ const makeProfileStatsQuery = Effect.gen(function* () {
       // ── Provider / model mix ──
       const providerModelCounts = new Map<
         string,
-        { readonly provider: string | null; readonly model: string | null; count: number }
+        {
+          readonly provider: string | null;
+          readonly instanceId: string | null;
+          readonly model: string | null;
+          count: number;
+        }
       >();
       const reasoningCounts = new Map<string, { readonly reasoning: string; count: number }>();
 
       for (const row of turnInsightRows) {
         const count = num(row.count);
         const provider = nonEmptyString(row.provider);
+        const instanceId = nonEmptyString(row.instanceId) ?? provider;
         const model = nonEmptyString(row.model);
-        const providerModelKey = `${provider ?? ""}\u0000${model ?? ""}`;
+        const providerModelKey = `${provider ?? ""}\u0000${instanceId ?? ""}\u0000${model ?? ""}`;
         const existingProviderModel = providerModelCounts.get(providerModelKey);
         if (existingProviderModel) {
           existingProviderModel.count += count;
         } else {
-          providerModelCounts.set(providerModelKey, { provider, model, count });
+          providerModelCounts.set(providerModelKey, { provider, instanceId, model, count });
         }
 
         const reasoning = nonEmptyString(row.reasoning);
@@ -993,6 +1032,7 @@ const makeProfileStatsQuery = Effect.gen(function* () {
         (left, right) =>
           right.count - left.count ||
           compareNullableText(left.provider, right.provider) ||
+          compareNullableText(left.instanceId, right.instanceId) ||
           compareNullableText(left.model, right.model),
       );
       const totalModelTurns = providerModelRows.reduce((sum, row) => sum + num(row.count), 0);
@@ -1000,7 +1040,7 @@ const makeProfileStatsQuery = Effect.gen(function* () {
         const count = num(row.count);
         return {
           provider: normalizeProviderKind(row.provider),
-          instanceId: normalizeProviderInstanceId(row.provider),
+          instanceId: normalizeProviderInstanceId(row.instanceId),
           model: nonEmptyString(row.model) ?? "unknown",
           turnCount: count,
           percent: percent1(count, totalModelTurns),

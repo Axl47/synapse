@@ -32,6 +32,7 @@ import type { FileSystem, Path } from "effect";
 import { Data, Effect, Option } from "effect";
 
 import { resolveThreadWorkspaceCwd } from "../checkpointing/Utils";
+import { buildClaudeProcessEnv } from "../provider/claudeEnvironment";
 import type { OrchestrationEngineShape } from "./Services/OrchestrationEngine";
 import type { ProjectionSnapshotQueryShape } from "./Services/ProjectionSnapshotQuery";
 import type { ProviderAdapterRegistryShape } from "../provider/Services/ProviderAdapterRegistry";
@@ -72,7 +73,7 @@ async function runClaudeSessionQueryInChildProcess<T>(input: {
   readonly method: ClaudeSessionQueryMethod;
   readonly sessionId: string;
   readonly dir: string | undefined;
-  readonly environment: Readonly<Record<string, string>>;
+  readonly environment: NodeJS.ProcessEnv;
 }): Promise<T> {
   const moduleUrl = pathToFileURL(
     createRequire(import.meta.url).resolve("@anthropic-ai/claude-agent-sdk"),
@@ -115,7 +116,7 @@ async function queryClaudeHistoricalSession<T>(input: {
   readonly method: ClaudeSessionQueryMethod;
   readonly sessionId: string;
   readonly dir: string | undefined;
-  readonly environment: Readonly<Record<string, string>> | undefined;
+  readonly environment: NodeJS.ProcessEnv | undefined;
 }): Promise<T> {
   if (input.environment && Object.keys(input.environment).length > 0) {
     return runClaudeSessionQueryInChildProcess<T>({
@@ -133,18 +134,19 @@ async function queryClaudeHistoricalSession<T>(input: {
   ) as Promise<T>;
 }
 
-function claudeHistoricalSessionEnvironment(
+export function claudeHistoricalSessionEnvironment(
   providerOptions: ProviderStartOptions | undefined,
-): Readonly<Record<string, string>> | undefined {
+): NodeJS.ProcessEnv | undefined {
   const claudeOptions = providerOptions?.claudeAgent;
   if (!claudeOptions) {
     return undefined;
   }
-  const environment = {
-    ...(claudeOptions.environment ?? {}),
-    ...(claudeOptions.homePath?.trim() ? { HOME: claudeOptions.homePath.trim() } : {}),
-  };
-  return Object.keys(environment).length > 0 ? environment : undefined;
+  const homePath = claudeOptions.homePath?.trim();
+  const environment = claudeOptions.environment ?? {};
+  if (!homePath && Object.keys(environment).length === 0) {
+    return undefined;
+  }
+  return buildClaudeProcessEnv({ homePath, environment });
 }
 
 function mapProviderSessionStatusToOrchestrationStatus(

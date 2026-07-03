@@ -75,6 +75,10 @@ const PI_DEFAULT_SUPPORTED_THINKING_LEVELS = new Set<ThinkingLevel>([
 type PiModelRegistry = Pick<ModelRegistry, "find" | "getAll" | "getAvailable">;
 type PiCodingAgentModule = typeof import("@earendil-works/pi-coding-agent");
 type PiAgentRuntime = Awaited<ReturnType<PiCodingAgentModule["createAgentSessionRuntime"]>>;
+interface PiModelRegistryContext {
+  readonly authStorage: AuthStorage;
+  readonly registry: ModelRegistry;
+}
 
 let piCodingAgentModulePromise: Promise<PiCodingAgentModule> | undefined;
 
@@ -823,14 +827,11 @@ function piRuntimeApiKeyFingerprint(
 
 // Keep discovery registries isolated so extension provider registrations reflect
 // the current agent dir + project cwd instead of stale state from prior listings.
-function createPiModelRegistry(
+export function createPiModelRegistry(
   agentDir: string,
   piSdk: Pick<PiCodingAgentModule, "AuthStorage" | "ModelRegistry">,
   environment?: Readonly<Record<string, string>>,
-): {
-  readonly authStorage: AuthStorage;
-  readonly registry: ModelRegistry;
-} {
+): PiModelRegistryContext {
   const authStorage = piSdk.AuthStorage.create(path.join(agentDir, "auth.json"));
   // Pi's SDK can read API keys from process.env. Provider-instance keys must stay
   // scoped to this AuthStorage instead, otherwise unrelated server work can inherit them.
@@ -931,7 +932,7 @@ const makePiAdapter = (options?: PiAdapterLiveOptions) =>
     const fileSystem = yield* FileSystem.FileSystem;
     const runtimeEventQueue = yield* Queue.unbounded<ProviderRuntimeEvent>();
     const sessions = new Map<ThreadId, PiSessionContext>();
-    const modelRegistries = new Map<string, ModelRegistry>();
+    const modelRegistryContexts = new Map<string, PiModelRegistryContext>();
     const ownsNativeEventLogger = options?.nativeEventLogger === undefined;
     const nativeEventLogger =
       options?.nativeEventLogger ??
@@ -951,17 +952,17 @@ const makePiAdapter = (options?: PiAdapterLiveOptions) =>
           }),
       });
 
-    const getModelRegistry = async (
+    const getModelRegistryContext = async (
       agentDir: string,
       environment: Readonly<Record<string, string>> | undefined,
       piSdk: Pick<PiCodingAgentModule, "AuthStorage" | "ModelRegistry">,
-    ): Promise<ModelRegistry> => {
+    ): Promise<PiModelRegistryContext> => {
       const cacheKey = `${agentDir}:${piRuntimeApiKeyFingerprint(environment)}`;
-      const existing = modelRegistries.get(cacheKey);
+      const existing = modelRegistryContexts.get(cacheKey);
       if (existing) return existing;
-      const { registry } = createPiModelRegistry(agentDir, piSdk, environment);
-      modelRegistries.set(cacheKey, registry);
-      return registry;
+      const context = createPiModelRegistry(agentDir, piSdk, environment);
+      modelRegistryContexts.set(cacheKey, context);
+      return context;
     };
 
     const makeEventBase = (
@@ -1649,7 +1650,11 @@ const makePiAdapter = (options?: PiAdapterLiveOptions) =>
       modelId?: string;
       thinkingLevel?: ThinkingLevel;
     }) => {
-      const registry = await getModelRegistry(input.agentDir, input.environment, input.sdk);
+      const { authStorage, registry } = await getModelRegistryContext(
+        input.agentDir,
+        input.environment,
+        input.sdk,
+      );
       const createRuntime: CreateAgentSessionRuntimeFactory = async ({
         cwd,
         agentDir,
@@ -1659,6 +1664,7 @@ const makePiAdapter = (options?: PiAdapterLiveOptions) =>
         const services = await input.sdk.createAgentSessionServices({
           cwd,
           agentDir,
+          authStorage,
           modelRegistry: registry,
         });
         const model = findModelInRegistry(services.modelRegistry, input.modelId);
