@@ -1,4 +1,4 @@
-// FILE: 051_ProviderSessionRuntimeInstanceId.test.ts
+// FILE: 052_ProviderSessionRuntimeInstanceId.test.ts
 // Purpose: Verifies legacy runtime payload model selections are canonicalized to
 //          the instance-id shape and provider_instance_id is backfilled.
 // Layer: Persistence migration test
@@ -14,13 +14,13 @@ import * as NodeSqliteClient from "../NodeSqliteClient.ts";
 const layer = it.layer(Layer.mergeAll(NodeSqliteClient.layerMemory()));
 const isModelSelection = Schema.is(ModelSelection);
 
-layer("051_ProviderSessionRuntimeInstanceId", (it) => {
+layer("052_ProviderSessionRuntimeInstanceId", (it) => {
   it.effect("canonicalizes legacy modelSelection payloads and backfills instance ids", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
       const now = "2026-07-02T20:00:00.000Z";
 
-      yield* runMigrations({ toMigrationInclusive: 50 });
+      yield* runMigrations({ toMigrationInclusive: 51 });
 
       yield* sql`
         INSERT INTO provider_session_runtime (
