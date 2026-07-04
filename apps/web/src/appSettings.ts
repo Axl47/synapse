@@ -1369,6 +1369,25 @@ export function getAppModelOptions(
   return options;
 }
 
+type GitTextGenerationDiscoveredProvider = "codex" | "kilo" | "opencode";
+
+function isGitTextGenerationDiscoveredProvider(
+  provider: ProviderKind,
+): provider is GitTextGenerationDiscoveredProvider {
+  return provider === "codex" || provider === "kilo" || provider === "opencode";
+}
+
+export function mapCatalogModelOptionsToAppModelOptions(
+  provider: GitTextGenerationDiscoveredProvider,
+  options: ReadonlyArray<ProviderModelOption & { isCustom?: boolean }>,
+): AppModelOption[] {
+  return options.map((option) => ({
+    ...option,
+    provider,
+    isCustom: option.isCustom ?? false,
+  }));
+}
+
 export function getGitTextGenerationModelOptions(
   settings: Pick<
     AppSettings,
@@ -1379,12 +1398,24 @@ export function getGitTextGenerationModelOptions(
     | "textGenerationModel"
     | "textGenerationProvider"
   >,
+  discoveredOptionsByProvider?: Partial<
+    Record<
+      GitTextGenerationDiscoveredProvider,
+      ReadonlyArray<ProviderModelOption & { isCustom?: boolean }>
+    >
+  >,
 ): AppModelOption[] {
   const options = [
-    ...getAppModelOptions("codex", settings.customCodexModels),
+    ...(discoveredOptionsByProvider?.codex
+      ? mapCatalogModelOptionsToAppModelOptions("codex", discoveredOptionsByProvider.codex)
+      : getAppModelOptions("codex", settings.customCodexModels)),
     ...getAppModelOptions("claudeAgent", settings.customClaudeModels),
-    ...getAppModelOptions("kilo", settings.customKiloModels),
-    ...getAppModelOptions("opencode", settings.customOpenCodeModels),
+    ...(discoveredOptionsByProvider?.kilo
+      ? mapCatalogModelOptionsToAppModelOptions("kilo", discoveredOptionsByProvider.kilo)
+      : getAppModelOptions("kilo", settings.customKiloModels)),
+    ...(discoveredOptionsByProvider?.opencode
+      ? mapCatalogModelOptionsToAppModelOptions("opencode", discoveredOptionsByProvider.opencode)
+      : getAppModelOptions("opencode", settings.customOpenCodeModels)),
   ];
   const deduped: AppModelOption[] = [];
   const seen = new Set<string>();
@@ -1426,6 +1457,12 @@ export function getGitTextGenerationPickerOptions(
     | "textGenerationProvider"
     | "textGenerationProviderInstanceId"
   >,
+  discoveredOptionsByProvider?: Partial<
+    Record<
+      GitTextGenerationDiscoveredProvider,
+      ReadonlyArray<ProviderModelOption & { isCustom?: boolean }>
+    >
+  >,
 ): GitTextGenerationModelPickerOption[] {
   const selectedModel = settings.textGenerationModel?.trim();
   const selectedProvider =
@@ -1447,11 +1484,33 @@ export function getGitTextGenerationPickerOptions(
       instance.instanceId === selectedInstanceId
         ? selectedModel
         : undefined;
-    const options = getAppModelOptions(
-      instance.provider,
-      getCustomModelsForProviderInstance(settings, instance),
-      selectedModelForInstance,
-    );
+    const selectedModelOption = selectedModelForInstance
+      ? getAppModelOptions(instance.provider, [], selectedModelForInstance).find(
+          (option) =>
+            option.slug === normalizeModelSlug(selectedModelForInstance, instance.provider),
+        )
+      : undefined;
+    const catalogOptions = isGitTextGenerationDiscoveredProvider(instance.provider)
+      ? (() => {
+          const discoveredOptions = discoveredOptionsByProvider?.[instance.provider];
+          return discoveredOptions
+            ? mapCatalogModelOptionsToAppModelOptions(instance.provider, discoveredOptions)
+            : null;
+        })()
+      : null;
+    const options = catalogOptions
+      ? [
+          ...catalogOptions,
+          ...(selectedModelOption &&
+          !catalogOptions.some((option) => option.slug === selectedModelOption.slug)
+            ? [selectedModelOption]
+            : []),
+        ]
+      : getAppModelOptions(
+          instance.provider,
+          getCustomModelsForProviderInstance(settings, instance),
+          selectedModelForInstance,
+        );
     for (const option of options) {
       const key = `${instance.instanceId}:${option.provider}:${option.slug}`;
       if (seen.has(key)) {

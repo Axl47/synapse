@@ -68,6 +68,7 @@ import {
 } from "../appSettings";
 import { APP_VERSION } from "../branding";
 import { useDesktopTopBarTrafficLightGutterClassName } from "../hooks/useDesktopTopBarGutter";
+import { useProviderModelCatalog } from "../hooks/useProviderModelCatalog";
 import { ProviderOptionLabel } from "../components/ProviderIcon";
 import {
   Autocomplete,
@@ -144,6 +145,7 @@ import {
 } from "../lib/serverReactQuery";
 import { cn, isMacPlatform } from "../lib/utils";
 import { unarchiveThreadFromClient } from "../lib/threadArchive";
+import { resolveProviderDiscoveryCwd } from "../lib/providerDiscovery";
 import { ensureNativeApi, readNativeApi } from "../nativeApi";
 import {
   buildNotificationSettingsSupportText,
@@ -956,15 +958,11 @@ function SettingsRouteView() {
     return groups;
   }, [managedWorktrees, threadShells]);
 
-  // Builds provider model-option arrays; only the Models panel reads it, so keep the
-  // derived target list tied to the already-memoized provider instance options.
+  // Builds provider model-option arrays; only the Models panel reads it, so keep
+  // provider-instance rows and runtime model discovery tied to this section.
   const providerInstanceOptions = useMemo(() => getProviderInstanceOptions(settings), [settings]);
   const unsupportedProviderInstanceOptions = useMemo(
     () => getUnsupportedProviderInstanceOptions(settings),
-    [settings],
-  );
-  const gitTextGenerationModelOptions = useMemo(
-    () => getGitTextGenerationPickerOptions(settings),
     [settings],
   );
   const currentGitTextGenerationProvider = settings.textGenerationProvider ?? "codex";
@@ -972,6 +970,35 @@ function SettingsRouteView() {
     settings.textGenerationProviderInstanceId ?? currentGitTextGenerationProvider;
   const currentGitTextGenerationModel =
     settings.textGenerationModel ?? DEFAULT_GIT_TEXT_GENERATION_MODEL;
+  const gitWritingModelHintByProvider = useMemo<Partial<Record<ProviderKind, string | null>>>(
+    () => ({ [currentGitTextGenerationProvider]: currentGitTextGenerationModel }),
+    [currentGitTextGenerationModel, currentGitTextGenerationProvider],
+  );
+  const providerModelDiscoveryCwd = resolveProviderDiscoveryCwd({
+    activeThreadWorktreePath: null,
+    activeProjectCwd: null,
+    serverCwd: serverConfigQuery.data?.cwd ?? null,
+  });
+  const { modelOptionsByProvider: gitWritingCatalogOptionsByProvider } = useProviderModelCatalog({
+    selectedProvider: currentGitTextGenerationProvider,
+    discoveryEnabled: activeSection === "models",
+    cwd: providerModelDiscoveryCwd,
+    modelHintByProvider: gitWritingModelHintByProvider,
+  });
+  const gitTextGenerationModelOptions = useMemo(
+    () =>
+      getGitTextGenerationPickerOptions(settings, {
+        codex: gitWritingCatalogOptionsByProvider.codex,
+        kilo: gitWritingCatalogOptionsByProvider.kilo,
+        opencode: gitWritingCatalogOptionsByProvider.opencode,
+      }),
+    [
+      gitWritingCatalogOptionsByProvider.codex,
+      gitWritingCatalogOptionsByProvider.kilo,
+      gitWritingCatalogOptionsByProvider.opencode,
+      settings,
+    ],
+  );
   const currentGitTextGenerationValue = `${currentGitTextGenerationInstanceId}:${currentGitTextGenerationProvider}:${currentGitTextGenerationModel}`;
   const defaultGitTextGenerationProvider = defaults.textGenerationProvider ?? "codex";
   const defaultGitTextGenerationInstanceId =
