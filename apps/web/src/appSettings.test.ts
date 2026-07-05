@@ -5,7 +5,7 @@
 
 import { Schema } from "effect";
 import { describe, expect, it } from "vitest";
-import { ProviderInstanceId } from "@t3tools/contracts";
+import { DEFAULT_SERVER_SETTINGS, ProviderInstanceId } from "@t3tools/contracts";
 import { codexAccountInstanceId } from "@t3tools/shared/providerInstances";
 
 import {
@@ -44,6 +44,7 @@ import {
   resolveAppModelSelection,
   resolveSelectableProviderInstanceId,
   resolveTerminalFontFamilyStack,
+  serverSettingsToAppSettings,
 } from "./appSettings";
 
 describe("normalizeCustomModelSlugs", () => {
@@ -1153,6 +1154,79 @@ describe("getProviderInstanceOptions", () => {
         supported: false,
       },
     ]);
+  });
+});
+
+describe("serverSettingsToAppSettings", () => {
+  it("carries disabled legacy default providers into client provider instances", () => {
+    const appPatch = serverSettingsToAppSettings({
+      ...DEFAULT_SERVER_SETTINGS,
+      providers: {
+        ...DEFAULT_SERVER_SETTINGS.providers,
+        claudeAgent: {
+          ...DEFAULT_SERVER_SETTINGS.providers.claudeAgent,
+          enabled: false,
+        },
+      },
+    });
+    const providerInstances = appPatch.providerInstances ?? {};
+
+    expect(providerInstances.claudeAgent).toEqual({
+      driver: "claudeAgent",
+      enabled: false,
+      config: {},
+    });
+    expect(
+      getProviderInstanceOptions({
+        codexAccounts: [],
+        codexHomePath: "",
+        selectedCodexAccountId: "default",
+        providerInstances,
+      }).find((instance) => instance.instanceId === "claudeAgent")?.enabled,
+    ).toBe(false);
+  });
+
+  it("keeps disabled legacy Codex accounts disabled when they only store custom models", () => {
+    const accountInstanceId = codexAccountInstanceId("work@example.com");
+    const appPatch = serverSettingsToAppSettings({
+      ...DEFAULT_SERVER_SETTINGS,
+      providers: {
+        ...DEFAULT_SERVER_SETTINGS.providers,
+        codex: {
+          ...DEFAULT_SERVER_SETTINGS.providers.codex,
+          enabled: false,
+          accounts: [
+            {
+              id: "work@example.com",
+              label: "Work",
+              homePath: "",
+              shadowHomePath: "",
+            },
+          ],
+        },
+      },
+      providerInstances: {
+        [accountInstanceId]: {
+          driver: "codex",
+          config: { customModels: ["custom/work-model"] },
+        },
+      },
+    });
+    const providerInstances = appPatch.providerInstances ?? {};
+
+    expect(providerInstances[accountInstanceId]).toEqual({
+      driver: "codex",
+      enabled: false,
+      config: { customModels: ["custom/work-model"] },
+    });
+    expect(
+      getProviderInstanceOptions({
+        codexAccounts: appPatch.codexAccounts ?? [],
+        codexHomePath: appPatch.codexHomePath ?? "",
+        selectedCodexAccountId: appPatch.selectedCodexAccountId ?? "default",
+        providerInstances,
+      }).find((instance) => instance.instanceId === accountInstanceId)?.enabled,
+    ).toBe(false);
   });
 });
 

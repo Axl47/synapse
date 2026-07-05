@@ -861,7 +861,60 @@ function normalizeAppSettings(settings: AppSettings): AppSettings {
   };
 }
 
-function serverSettingsToAppSettings(settings: ServerSettings): Partial<AppSettings> {
+function providerInstancesWithLegacyDisabledDefaults(
+  settings: ServerSettings,
+): ProviderInstanceConfigMap {
+  const providerInstances: Record<string, ProviderInstanceConfig> = {
+    ...settings.providerInstances,
+  };
+  let didChange = false;
+  const setDisabledDerivedInstance = (
+    instanceId: ProviderInstanceId,
+    provider: ProviderKind,
+    displayName?: string,
+  ) => {
+    const existing = providerInstances[instanceId];
+    if (existing && existing.driver !== provider) {
+      return;
+    }
+    if (existing?.enabled === true || existing?.enabled === false) {
+      return;
+    }
+    providerInstances[instanceId] = {
+      ...(existing ?? {
+        driver: providerDriverKind(provider),
+        ...(displayName ? { displayName } : {}),
+      }),
+      enabled: false,
+      config: isRecord(existing?.config) ? existing.config : (existing?.config ?? {}),
+    };
+    didChange = true;
+  };
+
+  for (const provider of PROVIDER_INSTANCE_PROVIDER_ORDER) {
+    if (settings.providers[provider].enabled !== false) {
+      continue;
+    }
+    setDisabledDerivedInstance(providerInstanceId(provider), provider);
+    if (provider === "codex") {
+      for (const account of settings.providers.codex.accounts) {
+        const accountId = account.id.trim();
+        if (!accountId || accountId === DEFAULT_CODEX_ACCOUNT_ID) {
+          continue;
+        }
+        setDisabledDerivedInstance(
+          codexAccountInstanceId(accountId),
+          "codex",
+          account.label.trim() || accountId,
+        );
+      }
+    }
+  }
+
+  return didChange ? (providerInstances as ProviderInstanceConfigMap) : settings.providerInstances;
+}
+
+export function serverSettingsToAppSettings(settings: ServerSettings): Partial<AppSettings> {
   const textGenerationInstanceId = settings.textGenerationModelSelection.instanceId;
   const configuredTextGenerationDriver =
     settings.providerInstances[textGenerationInstanceId]?.driver;
@@ -899,7 +952,7 @@ function serverSettingsToAppSettings(settings: ServerSettings): Partial<AppSetti
     customKiloModels: settings.providers.kilo.customModels,
     customOpenCodeModels: settings.providers.opencode.customModels,
     customPiModels: settings.providers.pi.customModels,
-    providerInstances: settings.providerInstances,
+    providerInstances: providerInstancesWithLegacyDisabledDefaults(settings),
     textGenerationProvider,
     textGenerationProviderInstanceId: textGenerationInstanceId,
     textGenerationModel: settings.textGenerationModelSelection.model,

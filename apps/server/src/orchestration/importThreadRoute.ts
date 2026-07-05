@@ -16,6 +16,7 @@ import {
   type ModelSelection,
   type OrchestrationImportThreadInput,
   type ProviderStartOptions,
+  type ServerSettings,
   type ThreadHandoffImportedMessage,
   type ThreadId,
 } from "@t3tools/contracts";
@@ -23,6 +24,7 @@ import {
   providerStartOptionsFromInstance,
   resolveModelSelectionInstanceId,
   resolveProviderInstance,
+  type ResolvedProviderInstance,
 } from "@t3tools/shared/providerInstances";
 import {
   deriveAssociatedWorktreeMetadata,
@@ -173,6 +175,24 @@ function mapProviderSessionStatusToOrchestrationStatus(
     default:
       return "ready";
   }
+}
+
+export function resolveImportedThreadProviderOptionsForSettings(
+  settings: ServerSettings,
+  modelSelection: ModelSelection,
+): {
+  readonly instance: ResolvedProviderInstance;
+  readonly providerOptions: ProviderStartOptions | undefined;
+} {
+  const instanceId = resolveModelSelectionInstanceId(modelSelection);
+  const instance = resolveProviderInstance(settings, { instanceId });
+  if (!instance) {
+    throw importMessagesError(`Unknown provider instance '${instanceId}' for thread import.`);
+  }
+  if (!instance.enabled) {
+    throw importMessagesError(`Provider instance '${instanceId}' is disabled for thread import.`);
+  }
+  return { instance, providerOptions: providerStartOptionsFromInstance(instance) };
 }
 
 export interface ImportThreadHandlerOptions {
@@ -437,14 +457,13 @@ export function makeImportThreadHandler(options: ImportThreadHandlerOptions) {
         ),
       ),
     );
-    const instanceId = resolveModelSelectionInstanceId(input.modelSelection);
-    const instance = resolveProviderInstance(settings, { instanceId });
-    if (!instance) {
-      return yield* Effect.fail(
-        importMessagesError(`Unknown provider instance '${instanceId}' for thread import.`),
-      );
-    }
-    return { instance, providerOptions: providerStartOptionsFromInstance(instance) };
+    return yield* Effect.try({
+      try: () => resolveImportedThreadProviderOptionsForSettings(settings, input.modelSelection),
+      catch: (cause) =>
+        cause instanceof ImportThreadError
+          ? cause
+          : importMessagesError("Failed to resolve provider instance for thread import."),
+    });
   });
 
   return Effect.fnUntraced(function* (body: ImportThreadRequest) {

@@ -1,12 +1,13 @@
 import { homedir } from "node:os";
 import path from "node:path";
 
-import type { ProviderStartOptions } from "@t3tools/contracts";
+import { DEFAULT_SERVER_SETTINGS, type ProviderStartOptions } from "@t3tools/contracts";
 import { describe, expect, it } from "vitest";
 
 import {
   claudeHistoricalSessionChildEnvironment,
   claudeHistoricalSessionEnvironment,
+  resolveImportedThreadProviderOptionsForSettings,
 } from "./importThreadRoute";
 
 describe("claudeHistoricalSessionEnvironment", () => {
@@ -54,5 +55,28 @@ describe("claudeHistoricalSessionEnvironment", () => {
         process.env.ANTHROPIC_API_KEY = original;
       }
     }
+  });
+});
+
+describe("resolveImportedThreadProviderOptionsForSettings", () => {
+  it("rejects disabled provider instances before import preflight can materialize options", () => {
+    expect(() =>
+      resolveImportedThreadProviderOptionsForSettings(
+        {
+          ...DEFAULT_SERVER_SETTINGS,
+          providerInstances: {
+            opencode_disabled: {
+              driver: "opencode",
+              enabled: false,
+              config: {
+                serverUrl: "http://127.0.0.1:4096",
+                serverPassword: "must-not-be-used",
+              },
+            },
+          },
+        },
+        { instanceId: "opencode_disabled", model: "opencode/model" },
+      ),
+    ).toThrow(/disabled for thread import/);
   });
 });
