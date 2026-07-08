@@ -44,6 +44,7 @@ import { NetService } from "@t3tools/shared/Net";
 import { RotatingFileSink } from "@t3tools/shared/logging";
 import { isBackendReadinessAborted, waitForHttpReady } from "./backendReadiness";
 import { resolveBackendNodeArgs } from "./backendNodeOptions";
+import { BackendRestartBackoff } from "./backendRestartBackoff";
 import { waitForBackendStartupReady } from "./backendStartupReadiness";
 import { showDesktopConfirmDialog } from "./confirmDialog";
 import {
@@ -213,7 +214,7 @@ let backendWsUrl = "";
 let backendReadinessAbortController: AbortController | null = null;
 let backendInitialWindowOpenInFlight: Promise<void> | null = null;
 let backendListeningDetector: ServerListeningDetector | null = null;
-let restartAttempt = 0;
+const backendRestartBackoff = new BackendRestartBackoff();
 let restartTimer: ReturnType<typeof setTimeout> | null = null;
 let isQuitting = false;
 let isUpdaterInstallPreparing = false;
@@ -1969,8 +1970,7 @@ function backendEnv(): NodeJS.ProcessEnv {
 function scheduleBackendRestart(reason: string): void {
   if (isQuitting || restartTimer) return;
 
-  const delayMs = Math.min(500 * 2 ** restartAttempt, 10_000);
-  restartAttempt += 1;
+  const delayMs = backendRestartBackoff.nextDelayMs();
   safeConsoleError(`[desktop] backend exited unexpectedly (${reason}); restarting in ${delayMs}ms`);
 
   restartTimer = setTimeout(() => {
@@ -2021,6 +2021,7 @@ function startBackend(): void {
   const listeningDetector = new ServerListeningDetector();
   backendListeningDetector = listeningDetector;
   backendProcess = child;
+  const backendStartedAtMs = Date.now();
   let backendSessionClosed = false;
   const closeBackendSession = (details: string) => {
     if (backendSessionClosed) return;
@@ -2033,9 +2034,14 @@ function startBackend(): void {
   );
   captureBackendOutput(child);
 
-  child.once("spawn", () => {
-    restartAttempt = 0;
-  });
+  void listeningDetector.promise.then(
+    () => {
+      if (backendProcess === child) {
+        backendRestartBackoff.reset();
+      }
+    },
+    () => undefined,
+  );
 
   child.on("error", (error) => {
     if (backendListeningDetector === listeningDetector) {
@@ -2046,6 +2052,7 @@ function startBackend(): void {
       backendProcess = null;
     }
     closeBackendSession(`pid=${child.pid ?? "unknown"} error=${error.message}`);
+    backendRestartBackoff.resetAfterStableRun(Date.now() - backendStartedAtMs);
     scheduleBackendRestart(error.message);
   });
 
@@ -2065,6 +2072,7 @@ function startBackend(): void {
       `pid=${child.pid ?? "unknown"} code=${code ?? "null"} signal=${signal ?? "null"}`,
     );
     if (isQuitting) return;
+    backendRestartBackoff.resetAfterStableRun(Date.now() - backendStartedAtMs);
     const reason = `code=${code ?? "null"} signal=${signal ?? "null"}`;
     scheduleBackendRestart(reason);
   });
