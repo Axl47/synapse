@@ -17,6 +17,7 @@ import {
   type ProviderReadPluginResult,
   type ProviderListSkillsResult,
   type ProviderRuntimeEvent,
+  type ProviderInstanceId,
   type ProviderSession,
   type ServerVoiceTranscriptionResult,
   type ThreadTokenUsageSnapshot,
@@ -1926,10 +1927,17 @@ const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
 
     const listGeneratedImageHomePaths: NonNullable<
       CodexAdapterShape["listGeneratedImageHomePaths"]
-    > = () =>
+    > = (input) =>
       Effect.sync(() => {
         const homePaths = new Map<string, CodexGeneratedImageHomeCandidate>();
         for (const session of manager.listSessions()) {
+          const instanceId = session.providerInstanceId ?? (PROVIDER as ProviderInstanceId);
+          if (
+            input?.enabledProviderInstanceIds &&
+            !input.enabledProviderInstanceIds.has(instanceId)
+          ) {
+            continue;
+          }
           const candidate = manager.getSessionCodexOptions(session.threadId);
           if (!candidate) {
             continue;

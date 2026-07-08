@@ -10,6 +10,7 @@ import {
   CODEX_GENERATED_IMAGE_ARTIFACT_KIND,
   type CodexGeneratedImageArtifact,
   type ProviderRuntimeEvent,
+  type ProviderInstanceId,
   type ServerSettings,
   type ThreadId,
 } from "@t3tools/contracts";
@@ -192,6 +193,16 @@ export function codexConfiguredHomePathsFromSettings(
     addCandidate(codexOptions ?? (instance.isDefault ? {} : undefined));
   }
   return [...candidates.values()];
+}
+
+export function enabledCodexProviderInstanceIdsFromSettings(
+  settings: ServerSettings,
+): ReadonlySet<ProviderInstanceId> {
+  return new Set(
+    deriveProviderInstances(settings)
+      .filter((instance) => instance.driver === "codex" && instance.enabled)
+      .map((instance) => instance.instanceId),
+  );
 }
 
 export function resolveCodexGeneratedImagesRoots(
