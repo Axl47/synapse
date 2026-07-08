@@ -73,6 +73,7 @@ import Migration0052 from "./Migrations/051_ProjectionThreadSessionProviderInsta
 import Migration0053 from "./Migrations/052_ProviderSessionRuntimeInstanceId.ts";
 import Migration0054 from "./Migrations/054_ProfileStatsDeletedTurnsProviderInstance.ts";
 import Migration0055 from "./Migrations/055_ProfileStatsDeletedTokensProviderInstance.ts";
+import Migration0056 from "./Migrations/056_ClearAutomationDefinitionProviderOptions.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -140,6 +141,7 @@ export const migrationEntries = [
   [53, "ProviderSessionRuntimeInstanceId", Migration0053],
   [54, "ProfileStatsDeletedTurnsProviderInstance", Migration0054],
   [55, "ProfileStatsDeletedTokensProviderInstance", Migration0055],
+  [56, "ClearAutomationDefinitionProviderOptions", Migration0056],
 ] as const;
 
 export const makeMigrationLoader = (throughId?: number) =>

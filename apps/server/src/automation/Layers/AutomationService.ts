@@ -366,6 +366,16 @@ function hasOwn<T extends object, K extends PropertyKey>(
   return Object.prototype.hasOwnProperty.call(value, key);
 }
 
+// Instance-backed automations resolve launch options from current server settings.
+// Client-supplied snapshots can be stale or contain secrets, so they never belong
+// in the persisted definition or any definition event sent back to clients.
+function withoutAutomationProviderOptions<
+  T extends { readonly providerOptions?: ProviderStartOptions },
+>(value: T): Omit<T, "providerOptions"> {
+  const { providerOptions: _providerOptions, ...withoutProviderOptions } = value;
+  return withoutProviderOptions;
+}
+
 function allowedCapabilitiesFor(definition: AutomationDefinition): AutomationAllowedCapability[] {
   const capabilities: AutomationAllowedCapability[] = ["send-turn"];
   if (definition.worktreeMode !== "local") {
@@ -521,7 +531,6 @@ function mergeDefinitionUpdate(
       : input.schedule
         ? safeComputeNextRunAt(schedule, now, current.nextRunAt)
         : (current.nextRunAt ?? safeComputeNextRunAt(schedule, now, null));
-  const providerOptions = input.providerOptions ?? current.providerOptions;
   const mode = input.mode ?? current.mode;
   const currentCompletionPolicy = completionPolicyForDefinition(current);
   const completionPolicy =
@@ -575,7 +584,7 @@ function mergeDefinitionUpdate(
     updatedAt: now,
   };
 
-  return providerOptions ? { ...nextDefinition, providerOptions } : nextDefinition;
+  return withoutAutomationProviderOptions(nextDefinition);
 }
 
 function makeAutomationBranchName(definition: AutomationDefinition, runId: AutomationRunId) {
@@ -2023,8 +2032,14 @@ export const AutomationServiceLive = Layer.effect(
           targetThreadId: input.targetThreadId ?? null,
         });
         const initialNextRunAt = computeNextAutomationRunAt(input.schedule, now);
+        const persistenceInput = withoutAutomationProviderOptions(input);
         const definition = yield* automationRepository
-          .createDefinition({ id: makeAutomationId(), input, now, nextRunAt: initialNextRunAt })
+          .createDefinition({
+            id: makeAutomationId(),
+            input: persistenceInput,
+            now,
+            nextRunAt: initialNextRunAt,
+          })
           .pipe(Effect.mapError(toServiceError("Failed to create automation.")));
         const normalized = yield* normalizeCreatedDefinitionSchedule(definition, now).pipe(
           Effect.mapError(toServiceError("Failed to initialize automation schedule.")),
