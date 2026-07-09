@@ -6,7 +6,7 @@
  */
 import * as Effect from "effect/Effect";
 
-import ReconcileLegacyT3SchemaImport from "./032_ReconcileLegacyT3SchemaImport.ts";
+import ReconcileImportedSchemaLineage from "./032_ReconcileImportedSchemaLineage.ts";
 import ProjectionThreadsSidechatSource from "./033_ProjectionThreadsSidechatSource.ts";
 import ProjectionThreadsPinned from "./036_ProjectionThreadsPinned.ts";
 import ProjectionThreadsPinnedMessagesNotes from "./040_ProjectionThreadsPinnedMessagesNotes.ts";
@@ -14,7 +14,7 @@ import ProjectionProjectsPinned from "./041_ProjectionProjectsPinned.ts";
 import ProjectionThreadsMarkers from "./042_ProjectionThreadsMarkers.ts";
 
 export default Effect.gen(function* () {
-  yield* ReconcileLegacyT3SchemaImport;
+  yield* ReconcileImportedSchemaLineage;
   yield* ProjectionThreadsSidechatSource;
   yield* ProjectionThreadsPinned;
   yield* ProjectionThreadsPinnedMessagesNotes;
