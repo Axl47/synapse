@@ -20,6 +20,7 @@ import {
 } from "./automation";
 import { OpenInEditorInput } from "./editor";
 import { FilesystemBrowseInput, FilesystemBrowseResult } from "./filesystem";
+import { StudioListThreadOutputsInput, StudioListThreadOutputsResult } from "./studio";
 import {
   GitCheckoutInput,
   GitActionProgressEvent,
@@ -39,6 +40,8 @@ import {
   GitPreparePullRequestThreadResult,
   GitPullInput,
   GitPullRequestRefInput,
+  GitPullRequestSnapshotInput,
+  GitPullRequestSnapshotResult,
   GitPullResult,
   GitReadWorkingTreeDiffInput,
   GitReadWorkingTreeDiffResult,
@@ -341,6 +344,12 @@ export const WsSubscribeProjectDevServerEventsRpc = Rpc.make(
   },
 );
 
+export const WsStudioListThreadOutputsRpc = Rpc.make(WS_METHODS.studioListThreadOutputs, {
+  payload: StudioListThreadOutputsInput,
+  success: StudioListThreadOutputsResult,
+  error: WsRpcError,
+});
+
 export const WsFilesystemBrowseRpc = Rpc.make(WS_METHODS.filesystemBrowse, {
   payload: FilesystemBrowseInput,
   success: FilesystemBrowseResult,
@@ -393,6 +402,12 @@ export const WsGitRunStackedActionRpc = Rpc.make(WS_METHODS.gitRunStackedAction,
 export const WsGitResolvePullRequestRpc = Rpc.make(WS_METHODS.gitResolvePullRequest, {
   payload: GitPullRequestRefInput,
   success: GitResolvePullRequestResult,
+  error: WsRpcError,
+});
+
+export const WsGitPullRequestSnapshotRpc = Rpc.make(WS_METHODS.gitPullRequestSnapshot, {
+  payload: GitPullRequestSnapshotInput,
+  success: GitPullRequestSnapshotResult,
   error: WsRpcError,
 });
 
@@ -839,6 +854,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsProjectsStopDevServerRpc,
   WsProjectsListDevServersRpc,
   WsSubscribeProjectDevServerEventsRpc,
+  WsStudioListThreadOutputsRpc,
   WsFilesystemBrowseRpc,
   WsShellOpenInEditorRpc,
   WsServerGetDesktopContextRpc,
@@ -850,6 +866,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsGitPullRpc,
   WsGitRunStackedActionRpc,
   WsGitResolvePullRequestRpc,
+  WsGitPullRequestSnapshotRpc,
   WsGitPreparePullRequestThreadRpc,
   WsGitListBranchesRpc,
   WsGitCreateWorktreeRpc,

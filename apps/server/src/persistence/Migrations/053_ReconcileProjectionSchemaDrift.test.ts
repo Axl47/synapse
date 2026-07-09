@@ -12,7 +12,7 @@ const columnNames = (sql: SqlClient.SqlClient, tableName: string) =>
     SELECT name FROM pragma_table_info(${tableName})
   `.pipe(Effect.map((rows) => new Set(rows.map((row) => row.name))));
 
-layer("050_ReconcileProjectionSchemaDrift", (it) => {
+layer("053_ReconcileProjectionSchemaDrift", (it) => {
   it.effect("heals projection columns when the tracker already claims 17-42 ran", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;

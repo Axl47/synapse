@@ -94,6 +94,7 @@ import {
 import {
   getGitInvalidationThreadIdForEvent,
   getProjectFileInvalidationThreadIdForEvent,
+  getStudioOutputInvalidationThreadIdForEvent,
   resolveGitInvalidationCwdForThreadId,
   shouldInvalidateGitQueriesForEvent,
   shouldInvalidateProviderQueriesForEvent,
@@ -850,6 +851,7 @@ function EventRouter() {
     let needsBroadGitInvalidation = false;
     let pendingGitInvalidationThreadIds = new Set<ThreadId>();
     let pendingProjectFileInvalidationThreadIds = new Set<ThreadId>();
+    let pendingStudioOutputInvalidationThreadIds = new Set<ThreadId>();
     let pendingDomainEvents: OrchestrationEvent[] = [];
     const immediatelyFlushedAssistantMessageIds = new Set<string>();
     let providerDiscoveryInvalidationFingerprint: string | null = null;
@@ -1050,6 +1052,15 @@ function EventRouter() {
           void queryClient.invalidateQueries({ queryKey: projectQueryKeys.all });
         }
       }
+      if (pendingStudioOutputInvalidationThreadIds.size > 0) {
+        // File-change activities cover non-Git Studio chats; finalized checkpoints cover Git.
+        for (const threadId of pendingStudioOutputInvalidationThreadIds) {
+          void queryClient.invalidateQueries({
+            queryKey: serverQueryKeys.studioThreadOutputs(threadId),
+          });
+        }
+        pendingStudioOutputInvalidationThreadIds = new Set();
+      }
       if (needsBroadGitInvalidation) {
         needsBroadGitInvalidation = false;
         pendingGitInvalidationThreadIds = new Set();
@@ -1083,6 +1094,10 @@ function EventRouter() {
       const projectFileThreadId = getProjectFileInvalidationThreadIdForEvent(event);
       if (projectFileThreadId) {
         pendingProjectFileInvalidationThreadIds.add(projectFileThreadId);
+      }
+      const studioOutputThreadId = getStudioOutputInvalidationThreadIdForEvent(event);
+      if (studioOutputThreadId) {
+        pendingStudioOutputInvalidationThreadIds.add(studioOutputThreadId);
       }
       if (shouldInvalidateGitQueriesForEvent(event)) {
         const threadId = getGitInvalidationThreadIdForEvent(event);
@@ -1267,6 +1282,7 @@ function EventRouter() {
         setServerWorkspacePaths({
           homeDir: payload.homeDir,
           chatWorkspaceRoot: payload.chatWorkspaceRoot,
+          studioWorkspaceRoot: payload.studioWorkspaceRoot,
         });
         await ensureScopedSubscriptions();
         if (disposed) {
@@ -1409,6 +1425,7 @@ function EventRouter() {
       needsProviderInvalidation = false;
       needsBroadGitInvalidation = false;
       pendingGitInvalidationThreadIds = new Set();
+      pendingStudioOutputInvalidationThreadIds = new Set();
       domainEventFlushThrottler.cancel();
       reconcileThreadSubscriptionsRef.current = null;
       void api.orchestration.unsubscribeShell().catch(() => undefined);

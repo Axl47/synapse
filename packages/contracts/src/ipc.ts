@@ -40,6 +40,8 @@ import type {
   GitPreparePullRequestThreadInput,
   GitPreparePullRequestThreadResult,
   GitPullRequestRefInput,
+  GitPullRequestSnapshotInput,
+  GitPullRequestSnapshotResult,
   GitCreateWorktreeInput,
   GitCreateWorktreeResult,
   GitInitInput,
@@ -90,6 +92,7 @@ import type {
   ProjectWriteFileResult,
 } from "./project";
 import type { FilesystemBrowseInput, FilesystemBrowseResult } from "./filesystem";
+import type { StudioListThreadOutputsInput, StudioListThreadOutputsResult } from "./studio";
 import type {
   ServerConfig,
   ServerDesktopContext,
@@ -440,6 +443,11 @@ export interface NativeApi {
   filesystem: {
     browse: (input: FilesystemBrowseInput) => Promise<FilesystemBrowseResult>;
   };
+  studio: {
+    listThreadOutputs: (
+      input: StudioListThreadOutputsInput,
+    ) => Promise<StudioListThreadOutputsResult>;
+  };
   shell: {
     openInEditor: (cwd: string, editor: EditorId) => Promise<void>;
     openExternal: (url: string) => Promise<void>;
@@ -465,6 +473,9 @@ export interface NativeApi {
     unstageFiles: (input: GitUnstageFilesInput) => Promise<GitUnstageFilesResult>;
     handoffThread: (input: GitHandoffThreadInput) => Promise<GitHandoffThreadResult>;
     resolvePullRequest: (input: GitPullRequestRefInput) => Promise<GitResolvePullRequestResult>;
+    pullRequestSnapshot: (
+      input: GitPullRequestSnapshotInput,
+    ) => Promise<GitPullRequestSnapshotResult>;
     preparePullRequestThread: (
       input: GitPreparePullRequestThreadInput,
     ) => Promise<GitPreparePullRequestThreadResult>;

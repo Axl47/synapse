@@ -266,6 +266,7 @@ async function dispatchKanbanDraftThreadOnce(
           createdAt: draftThread?.createdAt ?? createdAt,
         },
         api,
+        { force: true },
       );
       if (promotion === "unavailable") {
         kanbanUi.clearOptimisticDispatch(threadId);

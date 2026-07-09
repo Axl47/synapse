@@ -788,6 +788,7 @@ export const ChatHeader = memo(function ChatHeader({
             keybindings={keybindings}
             preferredScriptId={preferredScriptId}
             openAddActionNonce={openAddActionNonce}
+            hideInlineLabel={compact}
             onRunScript={onRunProjectScript}
             onAddScript={onAddProjectScript}
             onUpdateScript={onUpdateProjectScript}
@@ -842,7 +843,7 @@ export const ChatHeader = memo(function ChatHeader({
         ) : (
           <>
             {/* Open in editor: dedicated split-button with an editor switcher; the project
-                "Add action" entry lives at the bottom of that same menu. */}
+                action control now lives beside Hand off as its own project command surface. */}
             {activeProjectName ? (
               <OpenInPicker
                 keybindings={keybindings}

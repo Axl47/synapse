@@ -1,5 +1,111 @@
 # Changelog
 
+## 0.4.1 - 2026-07-09
+
+### Added
+
+- Added Studio: a dedicated workspace for long-running, agent-led work, with its own projects, threads, routes, sidebar entries, and empty-state entry points.
+- Added a Studio outputs surface in the Environment panel for agent-produced files, generated images, and related activity.
+- Added visible project worktree setup steps so workspace preparation and setup failures are easier to understand.
+- Added focused coverage for Studio routing, output projection, worktree setup, restore behavior, project metadata, and transcript/workspace handoffs.
+
+### Changed
+
+- Refined chat and Studio creation, routing, and restore flows to use canonical containers, wait for hydration when needed, and avoid overlapping fresh-chat creation.
+- Refined session orchestration and transcript rendering so active work, sidebar visibility, and worktree setup remain predictable across streaming, reconnects, and segment switches.
+- Refined Studio scaffolding and project ownership rules to preserve clear workspace boundaries during retries, restores, and partial creation states.
+- Bumped Synara release package versions to `0.4.1` across the server, desktop, web, and contracts packages, and refreshed `bun.lock` workspace metadata.
+
+### Fixed
+
+- Fixed cross-kind project reuse so regular chats and Studio threads cannot accidentally share an incompatible container or workspace root.
+- Fixed several restore and route edge cases involving archived threads, hidden segments, draft targets, startup hydration, and unclassifiable thread kinds.
+- Fixed Codex startup ordering by preparing the authentication overlay before dependent paths, and fixed the Codex launcher path on Windows.
+- Fixed Studio output display and projection edge cases so generated images and output activity remain discoverable in the Environment panel.
+
+### Verification
+
+- `bun run fmt:check` passed.
+- `bun run lint` passed with existing warnings and no errors.
+- `bun run typecheck` passed across all 8 packages (with existing TS44 informational JSON/schema-preference messages).
+- `bun run release:smoke` passed.
+- `bun run build` passed (with existing Astro, tsdown/plugin-timing, desktop module-type, and large Vite chunk warnings).
+- `bun run test` passed.
+
+## 0.4.0 - 2026-07-06
+
+### Added
+
+- Added richer pull request snapshot data in the Environment panel, including review/check preview handling and merged-state awareness.
+- Added prompt-history navigation support that preserves the current draft's file/image attachments while browsing previous prompts.
+- Added graceful Claude usage/rate-limit handling so provider usage limits show as a recoverable user-facing state instead of a generic failure.
+- Added focused release coverage around PR snapshot edge cases, prompt-history navigation, provider usage parsing, and desktop restart stderr handling.
+
+### Changed
+
+- Bumped Synara release package versions to `0.4.0` across the server, desktop, web, and contracts packages, and refreshed `bun.lock` workspace metadata.
+- Refined prompt history navigation so stale navigation state resets cleanly and optimistic prompt-history entries do not duplicate after sends.
+- Refined PR snapshot loading to dedupe GitHub field lists, format merge-head details more consistently, and keep long review previews readable.
+- Refined provider usage type handling around Claude summaries and rate-limit responses.
+
+### Fixed
+
+- Fixed prompt-history browsing losing draft attachments while moving through previous prompts.
+- Fixed duplicate optimistic prompt-history entries and stale prompt-history navigation state after related sends.
+- Fixed desktop restart handling for broken stderr pipes, including the EPIPE path from restarted child processes.
+- Fixed PR snapshot follow-up issues around merged PR state, truncated review previews, and merge-head formatting.
+- Fixed automation migration lineage assertions and provider usage summary type narrowing uncovered by the recent release work.
+
+### Verification
+
+- `bun run fmt:check` passed across 1535 files.
+- `bun run lint` passed with 168 warnings, 0 errors.
+- `bun run typecheck` passed across all 8 packages in 18.277s with the existing TS44 informational JSON/schema-preference messages.
+- `bun run release:smoke` passed and refreshed install/lockfile state. It noted an available newer `@pierre/diffs@1.2.12` while keeping the current dependency range unchanged.
+- `bun run build` passed: 6 tasks successful in 16.479s. The build still reports existing Astro `transformWithEsbuild`, tsdown/plugin timing, desktop typeless-module, Rolldown/Babel plugin timing, and large Vite chunk warnings.
+- Full `bun run test` passed: 10 tasks successful in 6m35.477s. `@t3tools/web` passed 194 files / 2352 tests, and `t3` passed 145 files with 1 skipped file, 1593 passed tests, and 6 skipped tests.
+- `bun install` refreshed `bun.lock` after the package-version bump and reported no dependency changes.
+- Website changelog mirror checks passed in `/Users/emanueledipietro/Developer/dpcode-website`: `npm run build` prerendered `/changelog/v0.4.0`, and `npm run lint` passed.
+
+## 0.3.9 - 2026-07-05
+
+### Added
+
+- Added the app-level `/export` slash command for saved, idle threads, producing a streamed ZIP archive with `thread.json` and `transcript.md`.
+- Added full-history export hydration, shared export eligibility checks, blocked-export reasons, desktop CORS/error handling, and command-menu support for `/export`.
+- Added profile stats archival for purged threads, including migration `050_ProfileStatsArchive`, retained command receipts, checkpoint ref cleanup safeguards, and retention cleanup coverage.
+- Added a stable active-turn "Working for" transcript header while preserving the existing pending-setup shimmer row.
+- Added a dedicated terminal process-tree killer with SIGTERM-to-SIGKILL escalation and disposal timing coverage.
+- Added runtime-discovered OpenCode/Kilo model support for Git writing settings, plus contract/query coverage for selected text-generation backends.
+
+### Changed
+
+- Bumped Synara release package versions to `0.3.9` across the server, desktop, web, and contracts packages, and refreshed `bun.lock` workspace metadata.
+- Refined `/export` to stream archive entries incrementally, deflate large entries without buffering the whole ZIP, and avoid offering export while a turn is running or still streaming.
+- Refined thread purge behavior so archived profile aggregates continue contributing to profile queries after thread rows are removed.
+- Refined terminal shutdown so disposal waits for kill escalation instead of returning while stubborn process trees may still be alive.
+- Refined Git action text-generation selection so commit messages, diff summaries, and PR text route through the configured Git-writing provider/model.
+
+### Fixed
+
+- Fixed `/export` menu selections falling through silently and local draft threads offering an export path that would 404.
+- Fixed very large thread exports being capped by the UI thread-detail message limit.
+- Fixed ACP resumed sessions reusing fallback assistant message IDs across runtime restarts, which could overwrite earlier assistant transcript segments.
+- Fixed OpenCode/Kilo Git-writing model selections failing to reach Git actions and falling back to the wrong backend.
+- Fixed archived profile stats being lost when thread cleanup purged the underlying messages and command receipts.
+- Fixed terminal shutdown paths that could leave stubborn subprocess trees alive after disposal.
+
+### Verification
+
+- `bun run fmt:check` passed across 1528 files.
+- `bun run lint` passed with 168 warnings, 0 errors.
+- `bun run typecheck` passed across all 8 packages with the existing TS44 informational JSON/schema-preference messages.
+- `bun run release:smoke` passed and refreshed install/lockfile state. It noted an available newer `@pierre/diffs@1.2.12` while keeping the current dependency range unchanged.
+- `bun run build` passed: 6 tasks successful in 18.768s. The build still reports existing Astro `transformWithEsbuild`, tsdown/plugin timing, desktop typeless-module, Rolldown/Babel plugin timing, and large Vite chunk warnings.
+- Full `bun run test` passed: 10 tasks successful in 6m35.955s. `@t3tools/web` passed 193 files / 2316 tests, and `t3` passed 144 files with 1 skipped file, 1575 passed tests, and 6 skipped tests.
+- `bun install` refreshed `bun.lock` after the package-version bump and reported no dependency changes.
+- Website changelog mirror checks passed in `/Users/emanueledipietro/Developer/dpcode-website`: `npm run build` prerendered `/changelog/v0.3.9`, and `npm run lint` passed.
+
 ## 0.3.8 - 2026-07-03
 
 ### Added

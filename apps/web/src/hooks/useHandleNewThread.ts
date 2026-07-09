@@ -181,6 +181,7 @@ export function useHandleNewThread() {
             createdAt: new Date().toISOString(),
           },
           api,
+          { force: true },
         );
       };
       if (bootstrapPlan.kind === "stored") {

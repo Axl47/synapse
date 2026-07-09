@@ -282,6 +282,9 @@ export class WsTransport {
   }
 
   private async getClient(): Promise<RpcClientInstance> {
+    if (this.reconnectPromise) {
+      return this.reconnectPromise;
+    }
     try {
       return await this.clientPromise;
     } catch {

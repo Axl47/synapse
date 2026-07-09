@@ -22,6 +22,160 @@ import type { WhatsNewEntry } from "./logic";
 
 export const WHATS_NEW_ENTRIES: readonly WhatsNewEntry[] = [
   {
+    version: "0.4.1",
+    date: "Jul 9",
+    features: [
+      {
+        id: "studio-workspace",
+        title: "A dedicated Studio workspace for agent-led work",
+        description:
+          "Studio gives long-running, agent-led work its own focused space, keeping it distinct from your regular chats while making it quick to start or revisit.",
+        details:
+          "Studio projects, threads, routing, sidebar rows, empty-state entry points, and restore behavior now share a clear workspace boundary. The release also hardens cross-kind project ownership so a regular chat and a Studio thread cannot accidentally reuse the same container.",
+      },
+      {
+        id: "studio-outputs",
+        title: "Studio outputs are collected where you need them",
+        description:
+          "Files, generated images, and other agent outputs from Studio are surfaced in the Environment panel so finished work is easier to find and open.",
+        details:
+          "The server records Studio output activity and generated-image metadata, then projects it into a dedicated Environment section with resilient display helpers and targeted coverage for output ordering and presentation.",
+      },
+      {
+        id: "worktree-setup",
+        title: "Starting work in a worktree is more transparent",
+        description:
+          "Project actions now make worktree setup visible, so you can understand what is being prepared before a new workspace-backed thread starts.",
+        details:
+          "New setup steps and timeline states expose progress and failure more clearly, while the underlying scaffold path self-heals and keeps project/worktree ownership consistent through retries and restores.",
+      },
+      {
+        id: "restore-and-routing-reliability",
+        title: "Returning to a chat or Studio is more reliable",
+        description:
+          "Synara is more careful about restoring the right destination after reloads, segment switches, reconnects, and partially completed project creation.",
+        details:
+          "Routing now prefers canonical containers, waits for snapshot hydration where needed, fails closed on ambiguous thread kinds, and guards against overlapping fresh-chat creation so drafts and active work land in the intended surface.",
+      },
+      {
+        id: "steadier-live-transcripts",
+        title: "Live transcripts stay steadier during active work",
+        description:
+          "Transcript rendering and active-turn behavior have been refined to keep ongoing agent work easier to follow without needless scroll or layout churn.",
+        details:
+          "The session orchestration and timeline paths were refactored with focused coverage for worktree setup, transcript rows, sidebar visibility, and workspace handoffs, preserving predictable behavior as sessions stream and reconnect.",
+      },
+      {
+        id: "provider-and-windows-hardening",
+        title: "Safer provider startup and Windows launching",
+        description:
+          "Authentication preparation and provider launch handling are more robust, including a fix for launching Codex on Windows.",
+        details:
+          "The release prepares the Codex auth overlay before dependent startup paths run, hardens process environment handling, and includes the Windows launcher repair alongside broader orchestration and projection reliability work.",
+      },
+    ],
+  },
+  {
+    version: "0.4.0",
+    date: "Jul 6",
+    features: [
+      {
+        id: "prompt-history-attachments",
+        title: "Prompt history keeps drafts and attachments together",
+        description:
+          "Browsing your previous prompts no longer strips the attachments from the draft you are building, so history navigation is safer for image- and file-heavy follow-ups.",
+        details:
+          "Composer draft history now preserves attachment state while you move through previous prompts, resets stale navigation state more carefully, and avoids duplicate optimistic history entries after sends.",
+      },
+      {
+        id: "pr-environment-panel",
+        title: "Pull request context is clearer in the Environment panel",
+        description:
+          "Threads attached to GitHub pull requests now surface richer PR context, including merged-state handling and more readable review/check previews.",
+        details:
+          "The PR snapshot path now captures pull request data for the Environment panel, handles merged PRs more predictably, trims long review previews, dedupes GitHub field requests, and tightens merge-head formatting.",
+      },
+      {
+        id: "claude-rate-limits",
+        title: "Claude rate limits fail more gracefully",
+        description:
+          "When Claude reports usage or rate-limit trouble, Synara now presents the condition more calmly instead of turning it into a generic provider failure.",
+        details:
+          "Provider usage handling now narrows usage summary types more safely and treats Claude usage limit responses as a recoverable, user-facing state with focused parser and resilience coverage.",
+      },
+      {
+        id: "desktop-stderr-resilience",
+        title: "Desktop restarts handle broken stderr pipes",
+        description:
+          "The desktop app is less likely to crash or get noisy when a restarted child process loses its stderr pipe during shutdown or relaunch.",
+        details:
+          "Desktop process restart handling now tolerates broken stderr writes, including the EPIPE path that could appear while the app was restarting provider or server processes.",
+      },
+      {
+        id: "release-polish",
+        title: "Small reliability fixes across agents and PR flows",
+        description:
+          "This release rounds off recent agent-session and pull-request work with tighter assertions, safer formatting, and cleaner edge-case behavior.",
+        details:
+          "The release includes automation migration lineage assertion fixes, PR snapshot review follow-up fixes, provider usage type narrowing, and general cleanup from the prompt-history and PR environment-panel review loops.",
+      },
+    ],
+  },
+  {
+    version: "0.3.9",
+    date: "Jul 5",
+    features: [
+      {
+        id: "thread-export-zip",
+        title: "Export a thread as a ZIP",
+        description:
+          "Type `/export` in a saved, idle chat to download a portable archive with the full thread projection and a readable Markdown transcript.",
+        details:
+          "The export route streams `thread.json` and `transcript.md` through the server with shared eligibility checks, desktop-friendly CORS/error handling, large-thread history hydration, and browser download support from both typed slash commands and the command menu.",
+      },
+      {
+        id: "archived-profile-stats",
+        title: "Archived stats survive cleanup",
+        description:
+          "Deleting or purging old threads no longer erases their lifetime contribution to profile stats, so cleanup keeps your usage history intact.",
+        details:
+          "Thread deletion now snapshots profile aggregates before purging rows, merges archived stats back into profile queries, preserves command receipts, cleans checkpoint refs carefully, and includes a migration plus purge/retention regression coverage.",
+      },
+      {
+        id: "active-turn-working-header",
+        title: "Active turns show steady work timing",
+        description:
+          "While an agent is working, the transcript now keeps a stable 'Working for' header at the top of the active turn instead of relying only on a transient shimmer row.",
+        details:
+          "MessagesTimeline now inserts a stable active-turn header for duration display while preserving the existing setup shimmer, making live turns easier to scan and less jumpy during layout updates.",
+      },
+      {
+        id: "terminal-shutdown-escalation",
+        title: "Terminal shutdown is more reliable",
+        description:
+          "Synara is better at shutting down stubborn terminal process trees without returning early while child processes are still alive.",
+        details:
+          "TerminalManager now routes shutdown through a dedicated process-tree killer with SIGTERM-to-SIGKILL escalation, cancellation when processes exit cleanly, nested process activity coverage, and tests for disposal timing.",
+      },
+      {
+        id: "acp-resume-message-ids",
+        title: "Resumed ACP replies stay distinct",
+        description:
+          "ACP-backed sessions are less likely to lose assistant replies after a restart or resume because fallback assistant message IDs no longer collide across runtime instances.",
+        details:
+          "A per-runtime instance ID is included in fallback ACP assistant item IDs, preventing resumed sessions with the same provider session ID and segment index from overwriting earlier transcript messages.",
+      },
+      {
+        id: "git-writing-model-picker",
+        title: "Git writing respects OpenCode and Kilo models",
+        description:
+          "Git commit, diff summary, and PR text generation now honor runtime-discovered OpenCode and Kilo model selections from Settings.",
+        details:
+          "Settings now persists discovered Git-writing model options, git actions pass the chosen provider/model through the shared contracts, and query cache keys include the text-generation selection so generated commit/PR text routes to the intended backend.",
+      },
+    ],
+  },
+  {
     version: "0.3.8",
     date: "Jul 3",
     features: [

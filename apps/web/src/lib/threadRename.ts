@@ -70,6 +70,7 @@ export async function dispatchThreadRename(input: {
         createdAt: input.createIfMissing.createdAt,
       },
       api,
+      { force: true },
     );
     if (promotionResult === "exists") {
       await api.orchestration.dispatchCommand({

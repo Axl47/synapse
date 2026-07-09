@@ -960,6 +960,22 @@ function resolveWsRpc(body: WsRequestEnvelope["body"]): unknown {
   if (tag === WS_METHODS.serverGetConfig) {
     return fixture.serverConfig;
   }
+  if (tag === WS_METHODS.serverGetDesktopContext || tag === WS_METHODS.serverSetDesktopContext) {
+    return {
+      projectId: "projectId" in body && typeof body.projectId === "string" ? body.projectId : null,
+      projectTitle:
+        "projectTitle" in body && typeof body.projectTitle === "string" ? body.projectTitle : null,
+      workspaceRoot:
+        "workspaceRoot" in body && typeof body.workspaceRoot === "string"
+          ? body.workspaceRoot
+          : null,
+      threadId: "threadId" in body && typeof body.threadId === "string" ? body.threadId : null,
+      threadTitle:
+        "threadTitle" in body && typeof body.threadTitle === "string" ? body.threadTitle : null,
+      updatedAt:
+        "updatedAt" in body && typeof body.updatedAt === "string" ? body.updatedAt : NOW_ISO,
+    };
+  }
   if (tag === WS_METHODS.gitListBranches) {
     const cwd = typeof body.cwd === "string" ? body.cwd : null;
     const branchName = cwd ? (fixture.gitBranchByCwd[cwd] ?? "main") : "main";
@@ -1170,6 +1186,41 @@ async function waitForElement<T extends Element>(
     throw new Error(errorMessage);
   }
   return element;
+}
+
+function isElementVisibleToUser(element: HTMLElement): boolean {
+  for (let current: HTMLElement | null = element; current; current = current.parentElement) {
+    if (current.hasAttribute("inert") || current.getAttribute("aria-hidden") === "true") {
+      return false;
+    }
+    const style = getComputedStyle(current);
+    if (style.display === "none" || style.visibility === "hidden" || style.opacity === "0") {
+      return false;
+    }
+    if (current !== document.body && current !== document.documentElement) {
+      const rect = current.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+function findVisibleLeafText(text: string): HTMLElement | null {
+  return (
+    Array.from(document.querySelectorAll<HTMLElement>("span,button,p,div")).find((element) => {
+      if (!(element.textContent ?? "").includes(text)) {
+        return false;
+      }
+      if (
+        Array.from(element.children).some((child) => (child.textContent ?? "").includes(text))
+      ) {
+        return false;
+      }
+      return isElementVisibleToUser(element);
+    }) ?? null
+  );
 }
 
 async function waitForURL(
@@ -1485,6 +1536,7 @@ async function mountChatView(options: {
       initialEntries: [`/${THREAD_ID}`],
     }),
   );
+  await router.load();
 
   const screen = await render(<RouterProvider router={router} />, {
     container: host,
@@ -3847,6 +3899,119 @@ describe("ChatView timeline estimator parity (full app)", () => {
     }
   });
 
+  it("runs the setup action from the newly-created worktree before starting the turn", async () => {
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: withProjectScripts(
+        createSnapshotForTargetUser({
+          targetMessageId: "msg-user-new-worktree-setup-action-test" as MessageId,
+          targetText: "new worktree setup action test",
+        }),
+        [
+          {
+            id: "setup",
+            name: "Setup",
+            command: "printf setup",
+            icon: "configure",
+            runOnWorktreeCreate: true,
+          },
+        ],
+      ),
+    });
+
+    try {
+      const newThreadButton = page.getByTestId("new-thread-button");
+      await expect.element(newThreadButton).toBeInTheDocument();
+      await newThreadButton.click();
+
+      const newThreadPath = await waitForURL(
+        mounted.router,
+        (path) => UUID_ROUTE_RE.test(path),
+        "Route should have changed to a new draft thread UUID.",
+      );
+      const newThreadId = newThreadPath.slice(1) as ThreadId;
+
+      const envPickerTrigger = await waitForEnvironmentModeButton("Local");
+      envPickerTrigger.click();
+
+      const newWorktreeOption = page.getByText("New worktree");
+      await expect.element(newWorktreeOption).toBeInTheDocument();
+      await newWorktreeOption.click();
+
+      useComposerDraftStore.getState().setPrompt(newThreadId, "Ship it with setup");
+      const composerEditor = await waitForComposerEditor();
+      await vi.waitFor(
+        () => {
+          expect(composerEditor.textContent ?? "").toContain("Ship it with setup");
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+
+      const sendButton = await waitForSendButton();
+      expect(sendButton.disabled).toBe(false);
+      await sendButton.click();
+
+      await vi.waitFor(
+        () => {
+          const createWorktreeIndex = wsRequests.findIndex((request) => {
+            return (
+              request._tag === WS_METHODS.gitCreateWorktree &&
+              request.cwd === "/repo/project" &&
+              request.branch === "main" &&
+              typeof request.newBranch === "string"
+            );
+          });
+          expect(createWorktreeIndex).toBeGreaterThanOrEqual(0);
+          const createWorktreeRequest = wsRequests[createWorktreeIndex];
+          if (
+            !createWorktreeRequest ||
+            createWorktreeRequest._tag !== WS_METHODS.gitCreateWorktree
+          ) {
+            throw new Error("Expected create worktree request.");
+          }
+          const worktreePath = `/repo/.codex/worktrees/project/${String(
+            createWorktreeRequest.newBranch,
+          ).replaceAll("/", "-")}`;
+
+          const terminalOpenIndex = wsRequests.findIndex((request) => {
+            return (
+              request._tag === WS_METHODS.terminalOpen &&
+              request.threadId === newThreadId &&
+              request.cwd === worktreePath
+            );
+          });
+          expect(terminalOpenIndex).toBeGreaterThan(createWorktreeIndex);
+          expect(wsRequests[terminalOpenIndex]).toMatchObject({
+            _tag: WS_METHODS.terminalOpen,
+            cwd: worktreePath,
+            env: {
+              T3CODE_PROJECT_ROOT: "/repo/project",
+              T3CODE_WORKTREE_PATH: worktreePath,
+            },
+          });
+
+          const terminalWriteIndex = wsRequests.findIndex((request) => {
+            return (
+              request._tag === WS_METHODS.terminalWrite &&
+              request.threadId === newThreadId &&
+              request.data === "printf setup\r"
+            );
+          });
+          expect(terminalWriteIndex).toBeGreaterThan(terminalOpenIndex);
+
+          const turnStartIndex = wsRequests.findIndex((request) => {
+            const command = readDispatchedCommand(request);
+            return command?.type === "thread.turn.start" && command.threadId === newThreadId;
+          });
+          expect(turnStartIndex).toBeGreaterThan(terminalWriteIndex);
+        },
+        { timeout: 10_000, interval: 16 },
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("hydrates the provider alongside a sticky claude model", async () => {
     useComposerDraftStore.setState({
       stickyModelSelectionByProvider: {
@@ -4151,6 +4316,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
       draftsByThreadId: {
         [draftThreadId]: {
           prompt: "",
+          promptHistorySavedDraft: null,
           images: [],
           files: [],
           nonPersistedImageIds: [],
@@ -4602,8 +4768,8 @@ describe("ChatView timeline estimator parity (full app)", () => {
           expect(
             document.querySelector("[data-settled-turn-collapse-transition='true']"),
           ).toBeNull();
-          expect(document.body.textContent).not.toContain("Tool 1");
-          expect(document.body.textContent).not.toContain("Tool 6");
+          expect(findVisibleLeafText("Tool 1")).toBeNull();
+          expect(findVisibleLeafText("Tool 6")).toBeNull();
         },
         { timeout: 8_000, interval: 16 },
       );

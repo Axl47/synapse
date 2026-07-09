@@ -65,7 +65,10 @@ import Migration0046 from "./Migrations/046_AutomationCompletionPolicy.ts";
 import Migration0047 from "./Migrations/047_AutomationCompletionPolicyVersion.ts";
 import Migration0048 from "./Migrations/048_AutomationCompletionEvaluationBacklog.ts";
 import Migration0049 from "./Migrations/049_ProjectionThreadMessagesDispatchOrigin.ts";
-import Migration0050 from "./Migrations/050_ReconcileProjectionSchemaDrift.ts";
+import Migration0050 from "./Migrations/050_ProfileStatsArchive.ts";
+import Migration0051 from "./Migrations/051_ProfileStatsDeletedTokensModel.ts";
+import Migration0052 from "./Migrations/052_ProjectionThreadUserMessageSummaryIndex.ts";
+import Migration0053 from "./Migrations/053_ReconcileProjectionSchemaDrift.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -127,7 +130,10 @@ export const migrationEntries = [
   [47, "AutomationCompletionPolicyVersion", Migration0047],
   [48, "AutomationCompletionEvaluationBacklog", Migration0048],
   [49, "ProjectionThreadMessagesDispatchOrigin", Migration0049],
-  [50, "ReconcileProjectionSchemaDrift", Migration0050],
+  [50, "ProfileStatsArchive", Migration0050],
+  [51, "ProfileStatsDeletedTokensModel", Migration0051],
+  [52, "ProjectionThreadUserMessageSummaryIndex", Migration0052],
+  [53, "ReconcileProjectionSchemaDrift", Migration0053],
 ] as const;
 
 export const makeMigrationLoader = (throughId?: number) =>
