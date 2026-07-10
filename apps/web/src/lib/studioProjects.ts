@@ -250,5 +250,7 @@ export async function ensureStudioProject(paths: ServerWorkspacePaths): Promise<
 }
 
 export function prewarmStudioProject(paths: ServerWorkspacePaths): void {
-  void ensureStudioProject(paths);
+  // Prewarming is opportunistic and has no caller that can act on a rejection.
+  // Interactive creation still awaits ensureStudioProject and surfaces failures.
+  void ensureStudioProject(paths).catch(() => undefined);
 }

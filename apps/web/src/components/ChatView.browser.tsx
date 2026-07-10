@@ -1431,7 +1431,7 @@ async function triggerThreadShortcutUntilPath(
 }
 
 async function waitForNewThreadShortcutLabel(): Promise<void> {
-  const newThreadButton = page.getByTestId("new-thread-button");
+  const newThreadButton = page.getByLabelText("Create new thread in Project");
   await expect.element(newThreadButton).toBeInTheDocument();
   await waitForLayout();
 }
@@ -3869,7 +3869,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
     });
 
     try {
-      const newThreadButton = page.getByTestId("new-thread-button");
+      const newThreadButton = page.getByLabelText("Create new thread in Project");
       await expect.element(newThreadButton).toBeInTheDocument();
 
       await newThreadButton.click();
@@ -3908,7 +3908,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
     });
 
     try {
-      const newThreadButton = page.getByTestId("new-thread-button");
+      const newThreadButton = page.getByLabelText("Create new thread in Project");
       await expect.element(newThreadButton).toBeInTheDocument();
       await newThreadButton.click();
 
@@ -3949,7 +3949,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
     });
 
     try {
-      const newThreadButton = page.getByTestId("new-thread-button");
+      const newThreadButton = page.getByLabelText("Create new thread in Project");
       await expect.element(newThreadButton).toBeInTheDocument();
       await newThreadButton.click();
 
@@ -4042,7 +4042,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
     });
 
     try {
-      const newThreadButton = page.getByTestId("new-thread-button");
+      const newThreadButton = page.getByLabelText("Create new thread in Project");
       await expect.element(newThreadButton).toBeInTheDocument();
       await newThreadButton.click();
 
@@ -4158,7 +4158,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
     });
 
     try {
-      const newThreadButton = page.getByTestId("new-thread-button");
+      const newThreadButton = page.getByLabelText("Create new thread in Project");
       await expect.element(newThreadButton).toBeInTheDocument();
 
       await newThreadButton.click();
@@ -4198,7 +4198,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
     });
 
     try {
-      const newThreadButton = page.getByTestId("new-thread-button");
+      const newThreadButton = page.getByLabelText("Create new thread in Project");
       await expect.element(newThreadButton).toBeInTheDocument();
 
       await newThreadButton.click();
@@ -4240,7 +4240,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
     });
 
     try {
-      const newThreadButton = page.getByTestId("new-thread-button");
+      const newThreadButton = page.getByLabelText("Create new thread in Project");
       await expect.element(newThreadButton).toBeInTheDocument();
 
       await newThreadButton.click();
@@ -4646,7 +4646,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
     });
 
     try {
-      const newThreadButton = page.getByTestId("new-thread-button");
+      const newThreadButton = page.getByLabelText("Create new thread in Project");
       await expect.element(newThreadButton).toBeInTheDocument();
       await waitForNewThreadShortcutLabel();
       await waitForServerConfigToApply();
