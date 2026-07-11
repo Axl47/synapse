@@ -66,6 +66,9 @@ function makeFakeCodexBinary(dir: string) {
         '  if [ "$1" = "--skip-git-repo-check" ]; then',
         '    seen_skip_git_repo_check="1"',
         "  fi",
+        '  if [ "$1" = "--ignore-user-config" ]; then',
+        '    seen_ignore_user_config="1"',
+        "  fi",
         '  if [ "$1" = "--config" ]; then',
         "    shift",
         '    if [ "$1" = "approval_policy=\\"never\\"" ]; then',
@@ -91,6 +94,10 @@ function makeFakeCodexBinary(dir: string) {
         'if [ "$SYNARA_FAKE_CODEX_REQUIRE_APPROVAL_NEVER" = "1" ] && [ "$seen_approval_never" != "1" ]; then',
         '  printf "%s\\n" "missing approval_policy=never" >&2',
         "  exit 10",
+        "fi",
+        'if [ "$SYNARA_FAKE_CODEX_REQUIRE_IGNORE_USER_CONFIG" = "1" ] && [ "$seen_ignore_user_config" != "1" ]; then',
+        '  printf "%s\\n" "missing --ignore-user-config" >&2',
+        "  exit 12",
         "fi",
         'if [ -n "$SYNARA_FAKE_CODEX_STDIN_MUST_CONTAIN" ]; then',
         '  printf "%s" "$stdin_content" | grep -F -- "$SYNARA_FAKE_CODEX_STDIN_MUST_CONTAIN" >/dev/null || {',
@@ -131,6 +138,9 @@ function makeFakeCodexBinary(dir: string) {
         'if [ -n "$SYNARA_FAKE_CODEX_STDERR" ]; then',
         '  printf "%s\\n" "$SYNARA_FAKE_CODEX_STDERR" >&2',
         "fi",
+        'if [ -n "$SYNARA_FAKE_CODEX_ROTATED_AUTH" ]; then',
+        '  printf "%s" "$SYNARA_FAKE_CODEX_ROTATED_AUTH" > "$CODEX_HOME/auth.json"',
+        "fi",
         'if [ -n "$output_path" ]; then',
         '  node -e \'const fs=require("node:fs"); const value=process.argv[2] ?? ""; fs.writeFileSync(process.argv[1], Buffer.from(value, "base64"));\' "$output_path" "${SYNARA_FAKE_CODEX_OUTPUT_B64:-e30=}"',
         "fi",
@@ -156,6 +166,8 @@ function withFakeCodexEnv<A, E, R>(
     forbidAuthJson?: boolean;
     requireSkipGitRepoCheck?: boolean;
     requireApprovalNever?: boolean;
+    requireIgnoreUserConfig?: boolean;
+    rotatedAuth?: string;
     codexHomeConfigMustContain?: string;
     codexHomeConfigMustNotContain?: string;
   },
@@ -180,6 +192,9 @@ function withFakeCodexEnv<A, E, R>(
       const previousRequireSkipGitRepoCheck =
         process.env.SYNARA_FAKE_CODEX_REQUIRE_SKIP_GIT_REPO_CHECK;
       const previousRequireApprovalNever = process.env.SYNARA_FAKE_CODEX_REQUIRE_APPROVAL_NEVER;
+      const previousRequireIgnoreUserConfig =
+        process.env.SYNARA_FAKE_CODEX_REQUIRE_IGNORE_USER_CONFIG;
+      const previousRotatedAuth = process.env.SYNARA_FAKE_CODEX_ROTATED_AUTH;
       const previousForbidAuthJson = process.env.SYNARA_FAKE_CODEX_FORBID_AUTH_JSON;
       const previousCodexHomeConfigMustContain =
         process.env.SYNARA_FAKE_CODEX_CODEX_HOME_CONFIG_MUST_CONTAIN;
@@ -252,6 +267,17 @@ function withFakeCodexEnv<A, E, R>(
           delete process.env.SYNARA_FAKE_CODEX_REQUIRE_APPROVAL_NEVER;
         }
 
+        if (input.requireIgnoreUserConfig) {
+          process.env.SYNARA_FAKE_CODEX_REQUIRE_IGNORE_USER_CONFIG = "1";
+        } else {
+          delete process.env.SYNARA_FAKE_CODEX_REQUIRE_IGNORE_USER_CONFIG;
+        }
+        if (input.rotatedAuth !== undefined) {
+          process.env.SYNARA_FAKE_CODEX_ROTATED_AUTH = input.rotatedAuth;
+        } else {
+          delete process.env.SYNARA_FAKE_CODEX_ROTATED_AUTH;
+        }
+
         if (input.codexHomeConfigMustContain !== undefined) {
           process.env.SYNARA_FAKE_CODEX_CODEX_HOME_CONFIG_MUST_CONTAIN =
             input.codexHomeConfigMustContain;
@@ -281,6 +307,8 @@ function withFakeCodexEnv<A, E, R>(
         previousForbidAuthJson,
         previousRequireSkipGitRepoCheck,
         previousRequireApprovalNever,
+        previousRequireIgnoreUserConfig,
+        previousRotatedAuth,
         previousCodexHomeConfigMustContain,
         previousCodexHomeConfigMustNotContain,
         releaseLock,
@@ -362,6 +390,18 @@ function withFakeCodexEnv<A, E, R>(
         } else {
           process.env.SYNARA_FAKE_CODEX_REQUIRE_APPROVAL_NEVER =
             previous.previousRequireApprovalNever;
+        }
+
+        if (previous.previousRequireIgnoreUserConfig === undefined) {
+          delete process.env.SYNARA_FAKE_CODEX_REQUIRE_IGNORE_USER_CONFIG;
+        } else {
+          process.env.SYNARA_FAKE_CODEX_REQUIRE_IGNORE_USER_CONFIG =
+            previous.previousRequireIgnoreUserConfig;
+        }
+        if (previous.previousRotatedAuth === undefined) {
+          delete process.env.SYNARA_FAKE_CODEX_ROTATED_AUTH;
+        } else {
+          process.env.SYNARA_FAKE_CODEX_ROTATED_AUTH = previous.previousRotatedAuth;
         }
 
         if (previous.previousCodexHomeConfigMustContain === undefined) {
@@ -732,7 +772,7 @@ it.layer(CodexTextGenerationTestLayer)("CodexTextGenerationLive", (it) => {
     ),
   );
 
-  it.effect("uses the provided codexHomePath and strips local skills config", () =>
+  it.effect("uses account-owned auth while ignoring user config", () =>
     withFakeCodexEnv(
       {
         output: JSON.stringify({
@@ -741,8 +781,7 @@ it.layer(CodexTextGenerationTestLayer)("CodexTextGenerationLive", (it) => {
         }),
         requireCodexHome: true,
         requireAuthJson: true,
-        codexHomeConfigMustContain: 'model_provider = "azure"',
-        codexHomeConfigMustNotContain: "[[skills.config]]",
+        requireIgnoreUserConfig: true,
       },
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
@@ -814,6 +853,55 @@ it.layer(CodexTextGenerationTestLayer)("CodexTextGenerationLive", (it) => {
       }),
     ),
   );
+
+  it.effect("persists Codex auth rotation in the authoritative account home", () => {
+    const rotatedAuth = JSON.stringify({
+      auth_mode: "chatgpt",
+      tokens: {
+        account_id: "workspace-1",
+        access_token: "access-2",
+        refresh_token: "refresh-2",
+      },
+    });
+    return withFakeCodexEnv(
+      {
+        output: JSON.stringify({ subject: "Add important change", body: "" }),
+        requireAuthJson: true,
+        requireIgnoreUserConfig: true,
+        rotatedAuth,
+      },
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const accountHome = yield* fs.makeTempDirectoryScoped({
+          prefix: "synara-authoritative-codex-",
+        });
+        const authPath = path.join(accountHome, "auth.json");
+        yield* fs.writeFileString(
+          authPath,
+          JSON.stringify({
+            auth_mode: "chatgpt",
+            tokens: {
+              account_id: "workspace-1",
+              access_token: "access-1",
+              refresh_token: "refresh-1",
+            },
+          }),
+        );
+
+        const textGeneration = yield* TextGeneration;
+        yield* textGeneration.generateCommitMessage({
+          cwd: process.cwd(),
+          branch: "feature/codex-auth-rotation",
+          stagedSummary: "M README.md",
+          stagedPatch: "diff --git a/README.md b/README.md",
+          providerOptions: { codex: { homePath: accountHome } },
+        });
+
+        expect(yield* fs.readFileString(authPath)).toBe(rotatedAuth);
+      }),
+    );
+  });
 
   it.effect("rejects unobservable Codex auth stores before isolated text generation", () =>
     withFakeCodexEnv(
@@ -1075,17 +1163,19 @@ it.layer(CodexTextGenerationTestLayer)("CodexTextGenerationLive", (it) => {
         symlinkSync(path.join(sharedCodexHome, "auth.json"), path.join(shadowHome, "auth.json"));
 
         const textGeneration = yield* TextGeneration;
-        const generated = yield* textGeneration.generateCommitMessage({
-          cwd: process.cwd(),
-          branch: "feature/codex-account",
-          stagedSummary: "M README.md",
-          stagedPatch: "diff --git a/README.md b/README.md",
-          providerOptions: {
-            codex: { homePath: sharedCodexHome, shadowHomePath: shadowHome },
-          },
-        });
+        const error = yield* textGeneration
+          .generateCommitMessage({
+            cwd: process.cwd(),
+            branch: "feature/codex-account",
+            stagedSummary: "M README.md",
+            stagedPatch: "diff --git a/README.md b/README.md",
+            providerOptions: {
+              codex: { homePath: sharedCodexHome, shadowHomePath: shadowHome },
+            },
+          })
+          .pipe(Effect.flip);
 
-        expect(generated.subject).toBe("Add important change");
+        expect(error.message).toMatch(/private state.*symlink/i);
       }),
     ),
   );
@@ -1121,17 +1211,19 @@ it.layer(CodexTextGenerationTestLayer)("CodexTextGenerationLive", (it) => {
         symlinkSync(shadowTarget, shadowAlias);
 
         const textGeneration = yield* TextGeneration;
-        const generated = yield* textGeneration.generateCommitMessage({
-          cwd: process.cwd(),
-          branch: "feature/codex-account",
-          stagedSummary: "M README.md",
-          stagedPatch: "diff --git a/README.md b/README.md",
-          providerOptions: {
-            codex: { homePath: sharedCodexHome, shadowHomePath: shadowAlias },
-          },
-        });
+        const error = yield* textGeneration
+          .generateCommitMessage({
+            cwd: process.cwd(),
+            branch: "feature/codex-account",
+            stagedSummary: "M README.md",
+            stagedPatch: "diff --git a/README.md b/README.md",
+            providerOptions: {
+              codex: { homePath: sharedCodexHome, shadowHomePath: shadowAlias },
+            },
+          })
+          .pipe(Effect.flip);
 
-        expect(generated.subject).toBe("Add important change");
+        expect(error.message).toMatch(/shadow home.*symlink/i);
       }),
     ),
   );
@@ -1163,17 +1255,19 @@ it.layer(CodexTextGenerationTestLayer)("CodexTextGenerationLive", (it) => {
         symlinkSync(defaultParent, parentAlias, "dir");
 
         const textGeneration = yield* TextGeneration;
-        const generated = yield* textGeneration.generateCommitMessage({
-          cwd: process.cwd(),
-          branch: "feature/codex-account",
-          stagedSummary: "M README.md",
-          stagedPatch: "diff --git a/README.md b/README.md",
-          providerOptions: {
-            codex: { homePath: sharedCodexHome, shadowHomePath: aliasedShadowHome },
-          },
-        });
+        const error = yield* textGeneration
+          .generateCommitMessage({
+            cwd: process.cwd(),
+            branch: "feature/codex-account",
+            stagedSummary: "M README.md",
+            stagedPatch: "diff --git a/README.md b/README.md",
+            providerOptions: {
+              codex: { homePath: sharedCodexHome, shadowHomePath: aliasedShadowHome },
+            },
+          })
+          .pipe(Effect.flip);
 
-        expect(generated.subject).toBe("Add important change");
+        expect(error.message).toMatch(/shadow home must be different/i);
       }),
     ),
   );

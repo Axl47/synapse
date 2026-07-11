@@ -55,6 +55,7 @@ import {
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
 import { AnalyticsService } from "../../telemetry/Services/AnalyticsService.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
+import { providerContinuationIdentity } from "../continuationIdentity.ts";
 
 export interface ProviderServiceLiveOptions {
   readonly canonicalEventLogPath?: string;
@@ -155,6 +156,16 @@ function toRuntimePayloadFromSession(
         )
       : undefined;
   const providerInstanceId = session.providerInstanceId ?? extra?.providerInstanceId;
+  const continuationIdentity =
+    Schema.is(ProviderKind)(session.provider) &&
+    (extra?.launchOptionsAuthoritative === true || extra?.providerOptions !== undefined)
+      ? providerContinuationIdentity(
+          session.provider,
+          Schema.is(ProviderStartOptions)(extra?.providerOptions)
+            ? extra.providerOptions
+            : undefined,
+        )
+      : undefined;
   return {
     cwd: session.cwd ?? null,
     model: session.model ?? null,
@@ -172,6 +183,12 @@ function toRuntimePayloadFromSession(
       : extra?.launchOptionsAuthoritative
         ? { providerOptionsCredentialsFingerprint: null }
         : {}),
+    ...(continuationIdentity !== undefined
+      ? { continuationIdentity }
+      : extra?.launchOptionsAuthoritative
+        ? { continuationIdentity: null }
+        : {}),
+    ...(extra?.launchOptionsAuthoritative ? { continuationResetRequested: null } : {}),
     ...(extra?.lastRuntimeEvent !== undefined ? { lastRuntimeEvent: extra.lastRuntimeEvent } : {}),
     ...(extra?.lastRuntimeEventAt !== undefined
       ? { lastRuntimeEventAt: extra.lastRuntimeEventAt }
@@ -285,6 +302,28 @@ function readPersistedCredentialsFingerprint(
   return typeof raw === "string" && raw.length > 0 ? raw : undefined;
 }
 
+function readPersistedContinuationIdentity(
+  runtimePayload: ProviderRuntimeBinding["runtimePayload"],
+): string | undefined {
+  if (!runtimePayload || typeof runtimePayload !== "object" || Array.isArray(runtimePayload)) {
+    return undefined;
+  }
+  const raw = "continuationIdentity" in runtimePayload ? runtimePayload.continuationIdentity : null;
+  return typeof raw === "string" && raw.length > 0 ? raw : undefined;
+}
+
+function readPersistedContinuationResetRequested(
+  runtimePayload: ProviderRuntimeBinding["runtimePayload"],
+): boolean {
+  return Boolean(
+    runtimePayload &&
+    typeof runtimePayload === "object" &&
+    !Array.isArray(runtimePayload) &&
+    "continuationResetRequested" in runtimePayload &&
+    runtimePayload.continuationResetRequested === true,
+  );
+}
+
 function providerStartOptionsEqualForProvider(
   provider: ProviderKind,
   credentialsFingerprintKey: Uint8Array,
@@ -302,6 +341,64 @@ function providerStartOptionsEqualForProvider(
     persisted.credentialsFingerprint ===
       credentialsFingerprintForProvider(provider, current, credentialsFingerprintKey)
   );
+}
+
+function providerUsesProtectedNativeContinuation(provider: string): boolean {
+  return provider === "codex" || provider === "claudeAgent";
+}
+
+function persistedLaunchMatchesExactly(input: {
+  readonly binding: ProviderRuntimeBinding;
+  readonly provider: ProviderKind;
+  readonly providerInstanceId: ProviderInstanceId;
+  readonly providerOptions: ProviderStartOptions | undefined;
+  readonly credentialsFingerprintKey: Uint8Array;
+}): boolean {
+  return (
+    input.binding.provider === input.provider &&
+    providerInstanceIdFromBinding(input.binding) === input.providerInstanceId &&
+    providerStartOptionsEqualForProvider(
+      input.provider,
+      input.credentialsFingerprintKey,
+      {
+        options: readPersistedProviderOptions(input.binding.runtimePayload),
+        credentialsFingerprint: readPersistedCredentialsFingerprint(input.binding.runtimePayload),
+      },
+      input.providerOptions,
+    )
+  );
+}
+
+function persistedContinuationMatchesLaunch(input: {
+  readonly binding: ProviderRuntimeBinding;
+  readonly provider: ProviderKind;
+  readonly providerInstanceId: ProviderInstanceId;
+  readonly providerOptions: ProviderStartOptions | undefined;
+  readonly credentialsFingerprintKey: Uint8Array;
+}): boolean {
+  if (input.binding.provider !== input.provider) {
+    return false;
+  }
+  const persistedIdentity = readPersistedContinuationIdentity(input.binding.runtimePayload);
+  if (persistedIdentity !== undefined) {
+    return (
+      persistedIdentity === providerContinuationIdentity(input.provider, input.providerOptions)
+    );
+  }
+
+  // Legacy bindings predate continuation identities. Only exact launch
+  // equivalence is safe until one successful resume persists the new identity.
+  return persistedLaunchMatchesExactly(input);
+}
+
+function incompatibleContinuationMessage(input: {
+  readonly threadId: ThreadId;
+  readonly previousProvider: string;
+  readonly previousInstanceId: string;
+  readonly nextProvider: ProviderKind;
+  readonly nextInstanceId: string;
+}): string {
+  return `Cannot continue thread '${input.threadId}' from provider instance '${input.previousInstanceId}' (${input.previousProvider}) with '${input.nextInstanceId}' (${input.nextProvider}) because their native session storage is incompatible. Start a new thread or restore the original provider home.`;
 }
 
 function readPersistedProviderInstanceId(
@@ -1122,17 +1219,29 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
         });
         const canReusePersistedResumeCursor =
           hasPersistedResumeCursor &&
-          providerStartOptionsEqualForProvider(
-            resolved.instance.driver,
+          persistedContinuationMatchesLaunch({
+            binding: input.binding,
+            provider: resolved.instance.driver,
+            providerInstanceId: resolved.instance.instanceId,
+            providerOptions: resolved.providerOptions,
             credentialsFingerprintKey,
-            {
-              options: persistedProviderOptions,
-              credentialsFingerprint: readPersistedCredentialsFingerprint(
-                input.binding.runtimePayload,
-              ),
-            },
-            resolved.providerOptions,
+          });
+        if (
+          hasPersistedResumeCursor &&
+          providerUsesProtectedNativeContinuation(resolved.instance.driver) &&
+          !canReusePersistedResumeCursor
+        ) {
+          return yield* toValidationError(
+            input.operation,
+            incompatibleContinuationMessage({
+              threadId: input.binding.threadId,
+              previousProvider: input.binding.provider,
+              previousInstanceId: providerInstanceIdFromBinding(input.binding),
+              nextProvider: resolved.instance.driver,
+              nextInstanceId: resolved.instance.instanceId,
+            }),
           );
+        }
         const adapter = yield* getAdapterForInstance(resolved.instance);
         const providerAdapter = yield* registry.getByProvider(resolved.instance.driver);
         const activeSessions = yield* providerAdapter.listSessions();
@@ -1521,26 +1630,54 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
           ...(input.modelSelection ? { modelSelection: input.modelSelection } : {}),
           ...(input.providerOptions ? { providerOptions: input.providerOptions } : {}),
         });
-        const persistedProviderOptions =
-          persistedBinding?.provider === resolved.instance.driver &&
-          persistedBinding.providerInstanceId === resolved.instance.instanceId
-            ? readPersistedProviderOptions(persistedBinding.runtimePayload)
-            : undefined;
         const effectiveProviderOptions = resolved.providerOptions;
-        const canReusePersistedResumeCursor =
-          persistedBinding?.provider === resolved.instance.driver &&
-          persistedBinding.providerInstanceId === resolved.instance.instanceId &&
-          providerStartOptionsEqualForProvider(
-            resolved.instance.driver,
+        const exactPersistedLaunchMatch =
+          persistedBinding !== undefined &&
+          persistedLaunchMatchesExactly({
+            binding: persistedBinding,
+            provider: resolved.instance.driver,
+            providerInstanceId: resolved.instance.instanceId,
+            providerOptions: effectiveProviderOptions,
             credentialsFingerprintKey,
-            {
-              options: persistedProviderOptions,
-              credentialsFingerprint: readPersistedCredentialsFingerprint(
-                persistedBinding.runtimePayload,
-              ),
-            },
-            effectiveProviderOptions,
+          });
+        const continuationCompatible =
+          persistedBinding !== undefined &&
+          persistedContinuationMatchesLaunch({
+            binding: persistedBinding,
+            provider: resolved.instance.driver,
+            providerInstanceId: resolved.instance.instanceId,
+            providerOptions: effectiveProviderOptions,
+            credentialsFingerprintKey,
+          });
+        const hasAvailableResumeCursor =
+          input.resumeCursor !== undefined || hasResumeCursor(persistedBinding?.resumeCursor);
+        const continuationResetRequested =
+          persistedBinding !== undefined &&
+          readPersistedContinuationResetRequested(persistedBinding.runtimePayload);
+        const canReusePersistedResumeCursor =
+          persistedBinding !== undefined &&
+          hasResumeCursor(persistedBinding.resumeCursor) &&
+          continuationCompatible;
+        if (
+          persistedBinding !== undefined &&
+          !continuationResetRequested &&
+          !exactPersistedLaunchMatch &&
+          (!hasAvailableResumeCursor || !continuationCompatible) &&
+          (providerUsesProtectedNativeContinuation(persistedBinding.provider) ||
+            providerUsesProtectedNativeContinuation(resolved.instance.driver))
+        ) {
+          yield* Effect.sync(() => scheduleRuntimeIdleStop(threadId));
+          return yield* toValidationError(
+            "ProviderService.startSession",
+            incompatibleContinuationMessage({
+              threadId,
+              previousProvider: persistedBinding.provider,
+              previousInstanceId: providerInstanceIdFromBinding(persistedBinding),
+              nextProvider: resolved.instance.driver,
+              nextInstanceId: resolved.instance.instanceId,
+            }),
           );
+        }
         const effectiveResumeCursor =
           input.resumeCursor ??
           (canReusePersistedResumeCursor ? persistedBinding?.resumeCursor : undefined);
@@ -2237,7 +2374,10 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
           ...(binding.runtimeMode !== undefined ? { runtimeMode: binding.runtimeMode } : {}),
           status: "stopped",
           resumeCursor: null,
-          runtimePayload: binding.runtimePayload,
+          runtimePayload: {
+            ...runtimePayloadRecord(binding.runtimePayload),
+            continuationResetRequested: true,
+          },
         });
         yield* analytics.record("provider.session.resume_cursor_cleared", {
           provider: binding.provider,

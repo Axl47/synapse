@@ -943,10 +943,14 @@ describe("startSession", () => {
     expect(cwd).toContain(`${path.sep}synara-codex-workspaces${path.sep}thread-1`);
   });
 
-  it("evicts a live app-server session when auth.json changes on disk", () => {
+  it("evicts a live app-server session when the ChatGPT account changes", () => {
     const authHome = mkdtempSync(path.join(os.tmpdir(), "synara-codex-auth-fingerprint-"));
     const authPath = path.join(authHome, "auth.json");
-    writeFileSync(authPath, '{"account":"first"}', "utf8");
+    writeFileSync(
+      authPath,
+      '{"auth_mode":"chatgpt","tokens":{"account_id":"workspace-first","access_token":"access-1","refresh_token":"refresh-1"}}',
+      "utf8",
+    );
     const manager = new CodexAppServerManager();
     const threadId = asThreadId("thread-auth-refresh");
     const kill = vi.fn();
@@ -981,12 +985,74 @@ describe("startSession", () => {
       }
     ).sessions.set(threadId, context);
 
-    writeFileSync(authPath, '{"account":"second"}', "utf8");
+    writeFileSync(
+      authPath,
+      '{"auth_mode":"chatgpt","tokens":{"account_id":"workspace-second","access_token":"access-2","refresh_token":"refresh-2"}}',
+      "utf8",
+    );
 
     expect(manager.listSessions()).toEqual([]);
     expect(kill).toHaveBeenCalledTimes(1);
     expect(close).toHaveBeenCalledTimes(1);
     rmSync(authHome, { recursive: true, force: true });
+  });
+
+  it("reuses a live app-server session after same-account token rotation", () => {
+    const authHome = mkdtempSync(path.join(os.tmpdir(), "synara-codex-auth-rotation-"));
+    const authPath = path.join(authHome, "auth.json");
+    const auth = (accessToken: string, refreshToken: string) =>
+      JSON.stringify({
+        auth_mode: "chatgpt",
+        tokens: {
+          account_id: "workspace-stable",
+          access_token: accessToken,
+          refresh_token: refreshToken,
+        },
+      });
+    writeFileSync(authPath, auth("access-1", "refresh-1"), "utf8");
+    const manager = new CodexAppServerManager();
+    const threadId = asThreadId("thread-auth-same-account-rotation");
+    const kill = vi.fn();
+    const close = vi.fn();
+    const session = {
+      provider: "codex" as const,
+      status: "ready" as const,
+      threadId,
+      runtimeMode: "full-access" as const,
+      model: "gpt-5.5",
+      createdAt: "2026-07-11T00:00:00.000Z",
+      updatedAt: "2026-07-11T00:00:00.000Z",
+    };
+    (
+      manager as unknown as {
+        sessions: Map<ThreadId, unknown>;
+      }
+    ).sessions.set(threadId, {
+      session,
+      account: { type: "unknown", planType: null, sparkEnabled: true },
+      child: { killed: false, kill },
+      output: { close },
+      pending: new Map(),
+      pendingApprovals: new Map(),
+      pendingUserInputs: new Map(),
+      collabReceiverTurns: new Map(),
+      collabReceiverParents: new Map(),
+      reviewTurnIds: new Set(),
+      nextRequestId: 1,
+      stopping: false,
+      authHomePath: authHome,
+      authFingerprint: readCodexAuthFileFingerprint(authHome),
+    });
+
+    try {
+      writeFileSync(authPath, auth("access-2", "refresh-2"), "utf8");
+      expect(manager.listSessions()).toEqual([session]);
+      expect(kill).not.toHaveBeenCalled();
+      expect(close).not.toHaveBeenCalled();
+    } finally {
+      manager.stopAll();
+      rmSync(authHome, { recursive: true, force: true });
+    }
   });
 
   it("evicts a live session when copied overlay auth diverges from its source", () => {
@@ -1622,14 +1688,23 @@ describe("steerTurn", () => {
 });
 
 describe("CodexAppServerManager discovery", () => {
-  it("invalidates discovery on source auth changes and clears copied auth after logout", async () => {
+  it("reuses discovery across token rotation but invalidates account swaps and logout", async () => {
     const root = mkdtempSync(path.join(os.tmpdir(), "synara-codex-discovery-auth-"));
     const homePath = path.join(root, "codex-home");
     const runtimeHome = path.join(root, "runtime");
     mkdirSync(homePath, { recursive: true });
     writeFileSync(path.join(homePath, "config.toml"), 'model = "gpt-5.5"\n', "utf8");
     const authPath = path.join(homePath, "auth.json");
-    writeFileSync(authPath, '{"account":"first"}', "utf8");
+    const auth = (accountId: string, token: string) =>
+      JSON.stringify({
+        auth_mode: "chatgpt",
+        tokens: {
+          account_id: accountId,
+          access_token: `access-${token}`,
+          refresh_token: `refresh-${token}`,
+        },
+      });
+    writeFileSync(authPath, auth("workspace-first", "1"), "utf8");
     const launch = buildCodexProcessLaunchContext({
       env: { ...process.env, SYNARA_HOME: runtimeHome },
       homePath,
@@ -1688,15 +1763,19 @@ describe("CodexAppServerManager discovery", () => {
       await manager.listModels(input);
       expect(sendRequest).toHaveBeenCalledTimes(1);
 
-      writeFileSync(authPath, '{"account":"second"}', "utf8");
+      writeFileSync(authPath, auth("workspace-first", "2"), "utf8");
+      await manager.listModels(input);
+      expect(sendRequest).toHaveBeenCalledTimes(1);
+
+      writeFileSync(authPath, auth("workspace-second", "3"), "utf8");
       await manager.listModels(input);
       expect(sendRequest).toHaveBeenCalledTimes(2);
-      expect(readFileSync(overlayAuthPath, "utf8")).toBe('{"account":"first"}');
+      expect(readFileSync(overlayAuthPath, "utf8")).toBe(auth("workspace-first", "1"));
 
       unlinkSync(authPath);
       await manager.listModels(input);
       expect(sendRequest).toHaveBeenCalledTimes(3);
-      expect(readFileSync(overlayAuthPath, "utf8")).toBe('{"account":"first"}');
+      expect(readFileSync(overlayAuthPath, "utf8")).toBe(auth("workspace-first", "1"));
 
       buildCodexProcessEnv({
         env: { ...process.env, SYNARA_HOME: runtimeHome },

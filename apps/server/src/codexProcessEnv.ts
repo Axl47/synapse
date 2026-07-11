@@ -365,6 +365,144 @@ function readFileFingerprint(filePath: string): string {
   }
 }
 
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+function nonEmptyString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+function secretSafeHash(value: string): string {
+  return `sha256:${createHash("sha256").update(value).digest("hex")}`;
+}
+
+function readJwtClaims(value: unknown): Record<string, unknown> | undefined {
+  const token = nonEmptyString(value);
+  const payload = token?.split(".")[1];
+  if (!payload) {
+    return undefined;
+  }
+  try {
+    return asRecord(JSON.parse(Buffer.from(payload, "base64url").toString("utf8")));
+  } catch {
+    return undefined;
+  }
+}
+
+function firstString(records: readonly (Record<string, unknown> | undefined)[], keys: string[]) {
+  for (const record of records) {
+    if (!record) continue;
+    for (const key of keys) {
+      const value = nonEmptyString(record[key]);
+      if (value) return value;
+    }
+  }
+  return undefined;
+}
+
+type CodexAuthFileIdentity =
+  | { readonly state: "missing" | "unreadable" }
+  | {
+      readonly state: "present";
+      readonly authMode: "api-key" | "chatgpt" | "unknown";
+      readonly identity: string;
+      readonly fallback?: true;
+    };
+
+function readCodexAuthFileIdentity(authFilePath: string): CodexAuthFileIdentity {
+  let content: Buffer;
+  try {
+    content = readFileSync(authFilePath);
+  } catch (error) {
+    const code =
+      typeof error === "object" && error !== null && "code" in error
+        ? String((error as { code?: unknown }).code ?? "")
+        : "";
+    return { state: code === "ENOENT" ? "missing" : "unreadable" };
+  }
+
+  const contentIdentity = secretSafeHash(content.toString("base64"));
+  try {
+    const auth = asRecord(JSON.parse(content.toString("utf8")));
+    if (!auth) {
+      return { state: "present", authMode: "unknown", identity: contentIdentity, fallback: true };
+    }
+    const tokens = asRecord(auth.tokens);
+    const idTokenClaims = readJwtClaims(tokens?.id_token ?? tokens?.idToken);
+    const rawMode = nonEmptyString(auth.auth_mode ?? auth.authMode)?.toLowerCase();
+    const apiKey = nonEmptyString(auth.OPENAI_API_KEY ?? auth.openai_api_key ?? auth.apiKey);
+    if (rawMode === "apikey" || rawMode === "api-key" || (apiKey && !tokens)) {
+      return {
+        state: "present",
+        authMode: "api-key",
+        identity: secretSafeHash(apiKey ?? content.toString("base64")),
+        ...(apiKey ? {} : { fallback: true as const }),
+      };
+    }
+
+    if (tokens || rawMode === "chatgpt" || rawMode === "chatgptauthtokens") {
+      const workspaceId = firstString(
+        [tokens, idTokenClaims, auth],
+        [
+          "account_id",
+          "accountId",
+          "chatgpt_account_id",
+          "chatgptAccountId",
+          "https://api.openai.com/auth/chatgpt_account_id",
+        ],
+      );
+      const userId = firstString(
+        [idTokenClaims, tokens, auth],
+        [
+          "chatgpt_user_id",
+          "chatgptUserId",
+          "user_id",
+          "userId",
+          "https://api.openai.com/auth/user_id",
+          "sub",
+        ],
+      );
+      if (workspaceId || userId) {
+        return {
+          state: "present",
+          authMode: "chatgpt",
+          identity: secretSafeHash(
+            JSON.stringify({ workspaceId: workspaceId ?? null, userId: userId ?? null }),
+          ),
+        };
+      }
+      // Older/foreign auth payloads without a stable account claim fail
+      // conservatively: any byte change invalidates the owning runtime.
+      return { state: "present", authMode: "chatgpt", identity: contentIdentity, fallback: true };
+    }
+  } catch {
+    // Malformed auth must still have a deterministic, secret-safe identity so
+    // repairing or replacing it invalidates stale runtimes.
+  }
+  return { state: "present", authMode: "unknown", identity: contentIdentity, fallback: true };
+}
+
+export function readCodexAuthFileIdentityFingerprint(input: {
+  readonly authFilePath: string;
+  readonly configPath?: string;
+}): string {
+  let sourceConfig = "";
+  if (input.configPath) {
+    try {
+      sourceConfig = readFileSync(input.configPath, "utf8");
+    } catch {
+      // Missing config uses Codex's file-backed default.
+    }
+  }
+  return JSON.stringify({
+    storeMode: readEffectiveCodexAuthCredentialsStoreMode(sourceConfig),
+    auth: readCodexAuthFileIdentity(input.authFilePath),
+  });
+}
+
 export function readCodexAuthTrackingFingerprint(tracking: CodexAuthTracking): string {
   let sourceConfig = "";
   try {
@@ -373,16 +511,18 @@ export function readCodexAuthTrackingFingerprint(tracking: CodexAuthTracking): s
     // Missing config uses Codex's file-backed default.
   }
   const storeMode = readEffectiveCodexAuthCredentialsStoreMode(sourceConfig);
-  const authoritative = readFileFingerprint(tracking.authoritativeAuthFilePath);
+  const authoritative = readCodexAuthFileIdentity(tracking.authoritativeAuthFilePath);
   const effective = tracking.effectiveAuthFilePath
-    ? readFileFingerprint(tracking.effectiveAuthFilePath)
+    ? readCodexAuthFileIdentity(tracking.effectiveAuthFilePath)
     : undefined;
   // Before first launch the effective overlay may not exist yet. Once it is
   // linked/copied it normally has the same bytes as the authoritative source;
   // omit that redundant state. The authoritative role is never suppressed:
   // deleting/logging out of the source must invalidate a stale copied overlay.
   const normalizedEffective =
-    effective === authoritative || (authoritative.startsWith("sha256:") && effective === "missing")
+    effective === undefined ||
+    JSON.stringify(effective) === JSON.stringify(authoritative) ||
+    (authoritative.state === "present" && effective.state === "missing")
       ? undefined
       : effective;
   return JSON.stringify({

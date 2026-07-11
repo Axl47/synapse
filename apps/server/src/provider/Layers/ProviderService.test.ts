@@ -1006,7 +1006,7 @@ routing.layer("ProviderServiceLive routing", (it) => {
     }),
   );
 
-  it.effect("does not reuse a persisted instance id when starting another provider", () =>
+  it.effect("rejects a provider switch that would discard native continuation", () =>
     Effect.gen(function* () {
       const provider = yield* ProviderService;
       const serverSettings = yield* ServerSettingsService;
@@ -1028,16 +1028,177 @@ routing.layer("ProviderServiceLive routing", (it) => {
       });
       routing.codex.startSession.mockClear();
 
-      const session = yield* provider.startSession(threadId, {
+      const result = yield* Effect.result(
+        provider.startSession(threadId, {
+          provider: "codex",
+          threadId,
+          runtimeMode: "full-access",
+        }),
+      );
+
+      assert.equal(result._tag, "Failure");
+      if (result._tag === "Failure") {
+        assert.match(String(result.failure), /native session storage is incompatible/);
+      }
+      assert.equal(routing.codex.startSession.mock.calls.length, 0);
+    }),
+  );
+
+  it.effect("reuses Codex continuation across account options sharing one session home", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService;
+      const threadId = asThreadId("thread-codex-shared-continuation-home");
+      const initial = yield* provider.startSession(threadId, {
         provider: "codex",
+        threadId,
+        providerOptions: {
+          codex: {
+            homePath: "/tmp/codex-shared-home",
+            shadowHomePath: "/tmp/codex-personal-auth",
+            accountId: "personal",
+          },
+        },
+        runtimeMode: "full-access",
+      });
+      routing.codex.startSession.mockClear();
+      routing.codex.stopSession.mockClear();
+
+      yield* provider.startSession(threadId, {
+        provider: "codex",
+        threadId,
+        providerOptions: {
+          codex: {
+            homePath: "/tmp/codex-shared-home",
+            shadowHomePath: "/tmp/codex-work-auth",
+            accountId: "work",
+          },
+        },
+        runtimeMode: "full-access",
+      });
+
+      assert.equal(routing.codex.stopSession.mock.calls.length, 0);
+      assert.equal(routing.codex.startSession.mock.calls.length, 1);
+      assert.deepEqual(
+        routing.codex.startSession.mock.calls[0]?.[0].resumeCursor,
+        initial.resumeCursor,
+      );
+    }),
+  );
+
+  it.effect("reuses stopped Codex continuation when switching instances on a shared home", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService;
+      const serverSettings = yield* ServerSettingsService;
+      const threadId = asThreadId("thread-codex-stopped-shared-home");
+      yield* serverSettings.updateSettings({
+        providerInstances: {
+          codex_personal: {
+            driver: "codex",
+            config: {
+              homePath: "/tmp/codex-shared-instance-home",
+              shadowHomePath: "/tmp/codex-personal-instance-auth",
+              accountId: "personal",
+            },
+          },
+          codex_work: {
+            driver: "codex",
+            config: {
+              homePath: "/tmp/codex-shared-instance-home",
+              shadowHomePath: "/tmp/codex-work-instance-auth",
+              accountId: "work",
+            },
+          },
+        },
+      });
+      const initial = yield* provider.startSession(threadId, {
+        provider: "codex",
+        providerInstanceId: "codex_personal",
+        threadId,
+        runtimeMode: "full-access",
+      });
+      assert.equal(typeof provider.stopRuntimeSession, "function");
+      if (!provider.stopRuntimeSession) return;
+      yield* provider.stopRuntimeSession({ threadId });
+      routing.codex.startSession.mockClear();
+
+      yield* provider.startSession(threadId, {
+        provider: "codex",
+        providerInstanceId: "codex_work",
         threadId,
         runtimeMode: "full-access",
       });
 
-      assert.equal(session.provider, "codex");
-      assert.equal(session.providerInstanceId, "codex");
       assert.equal(routing.codex.startSession.mock.calls.length, 1);
-      assert.equal(routing.codex.startSession.mock.calls[0]?.[0].providerInstanceId, "codex");
+      assert.equal(routing.codex.startSession.mock.calls[0]?.[0].providerInstanceId, "codex_work");
+      assert.deepEqual(
+        routing.codex.startSession.mock.calls[0]?.[0].resumeCursor,
+        initial.resumeCursor,
+      );
+    }),
+  );
+
+  it.effect("rejects incompatible live Claude home changes before stopping the runtime", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService;
+      const directory = yield* ProviderSessionDirectory;
+      const threadId = asThreadId("thread-claude-live-home-boundary");
+      yield* provider.startSession(threadId, {
+        provider: "claudeAgent",
+        threadId,
+        providerOptions: { claudeAgent: { homePath: "/tmp/claude-home-a" } },
+        runtimeMode: "full-access",
+      });
+      const binding = Option.getOrUndefined(yield* directory.getBinding(threadId));
+      assert.ok(binding);
+      yield* directory.upsert({ ...binding, resumeCursor: null });
+      routing.claude.updateSession(threadId, (session) => {
+        const { resumeCursor: _resumeCursor, ...withoutResumeCursor } = session;
+        return withoutResumeCursor;
+      });
+      routing.claude.startSession.mockClear();
+      routing.claude.stopSession.mockClear();
+
+      const result = yield* Effect.result(
+        provider.startSession(threadId, {
+          provider: "claudeAgent",
+          threadId,
+          providerOptions: { claudeAgent: { homePath: "/tmp/claude-home-b" } },
+          runtimeMode: "full-access",
+        }),
+      );
+
+      assert.equal(result._tag, "Failure");
+      assert.equal(routing.claude.stopSession.mock.calls.length, 0);
+      assert.equal(routing.claude.startSession.mock.calls.length, 0);
+    }),
+  );
+
+  it.effect("rejects incompatible stopped Claude home changes", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService;
+      const threadId = asThreadId("thread-claude-stopped-home-boundary");
+      yield* provider.startSession(threadId, {
+        provider: "claudeAgent",
+        threadId,
+        providerOptions: { claudeAgent: { homePath: "/tmp/claude-stopped-home-a" } },
+        runtimeMode: "full-access",
+      });
+      assert.equal(typeof provider.stopRuntimeSession, "function");
+      if (!provider.stopRuntimeSession) return;
+      yield* provider.stopRuntimeSession({ threadId });
+      routing.claude.startSession.mockClear();
+
+      const result = yield* Effect.result(
+        provider.startSession(threadId, {
+          provider: "claudeAgent",
+          threadId,
+          providerOptions: { claudeAgent: { homePath: "/tmp/claude-stopped-home-b" } },
+          runtimeMode: "full-access",
+        }),
+      );
+
+      assert.equal(result._tag, "Failure");
+      assert.equal(routing.claude.startSession.mock.calls.length, 0);
     }),
   );
 
@@ -2121,7 +2282,7 @@ routing.layer("ProviderServiceLive routing", (it) => {
         assert.deepEqual(startPayload.providerOptions, {
           codex: { homePath: "/tmp/codex-work", accountId: "codex_work" },
         });
-        assert.equal(startPayload.resumeCursor, undefined);
+        assert.deepEqual(startPayload.resumeCursor, initial.resumeCursor);
       }
 
       fs.rmSync(tempDir, { recursive: true, force: true });
@@ -2360,7 +2521,7 @@ routing.layer("ProviderServiceLive routing", (it) => {
           resumeCursor?: unknown;
         };
         assert.equal(startPayload.providerOptions, undefined);
-        assert.equal(startPayload.resumeCursor, undefined);
+        assert.deepEqual(startPayload.resumeCursor, initial.resumeCursor);
       }
 
       fs.rmSync(tempDir, { recursive: true, force: true });

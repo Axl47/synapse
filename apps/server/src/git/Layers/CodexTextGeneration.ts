@@ -1,9 +1,8 @@
 // FILE: CodexTextGeneration.ts
-// Purpose: Runs schema-constrained Codex CLI text generation in an isolated, account-safe home.
+// Purpose: Runs schema-constrained Codex CLI text generation against account-owned auth.
 // Layer: Git and orchestration text-generation service.
 
 import { randomUUID } from "node:crypto";
-import { lstat } from "node:fs/promises";
 
 import { Effect, FileSystem, Layer, Option, Path, Schema, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
@@ -14,13 +13,7 @@ import { sanitizeBranchFragment, sanitizeFeatureBranchName } from "@synara/share
 import { prepareWindowsSafeProcess } from "@synara/shared/windowsProcess";
 
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
-import {
-  resolveBaseCodexHomePath,
-  resolveCodexHomeOverlayAccountSegment,
-  resolveSynaraCodexHomeOverlayPath,
-} from "../../codexHomePaths.ts";
-import { buildCodexProcessEnv, resolveCodexAuthTracking } from "../../codexProcessEnv.ts";
-import { codexPathsReferenceSameLocation } from "../../codexPathIdentity.ts";
+import { buildCodexProcessLaunchContext } from "../../codexProcessEnv.ts";
 import { ServerConfig } from "../../config.ts";
 import { TextGenerationError } from "../Errors.ts";
 import {
@@ -92,39 +85,6 @@ function normalizeCodexError(
   });
 }
 
-function sanitizeCodexConfigForTextGeneration(content: string): string {
-  const lines = content.split(/\r?\n/g);
-  const sanitized: string[] = [];
-  let skippingSkillsConfig = false;
-
-  for (const line of lines) {
-    const trimmed = line.trim();
-
-    if (trimmed.startsWith("[[")) {
-      if (trimmed === "[[skills.config]]") {
-        skippingSkillsConfig = true;
-        continue;
-      }
-
-      skippingSkillsConfig = false;
-      sanitized.push(line);
-      continue;
-    }
-
-    if (trimmed.startsWith("[")) {
-      skippingSkillsConfig = false;
-      sanitized.push(line);
-      continue;
-    }
-
-    if (!skippingSkillsConfig) {
-      sanitized.push(line);
-    }
-  }
-
-  return sanitized.join("\n").trimEnd();
-}
-
 const makeCodexTextGeneration = Effect.gen(function* () {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -176,188 +136,6 @@ const makeCodexTextGeneration = Effect.gen(function* () {
 
   const safeUnlink = (filePath: string): Effect.Effect<void, never> =>
     fileSystem.remove(filePath).pipe(Effect.catch(() => Effect.void));
-
-  const safeRemoveDirectory = (directoryPath: string): Effect.Effect<void, never> =>
-    fileSystem.remove(directoryPath, { recursive: true }).pipe(Effect.catch(() => Effect.void));
-
-  const readRealAuthFile = (
-    authFilePath: string,
-    forbiddenHomePaths: readonly string[] = [],
-  ): Effect.Effect<string | null, never> =>
-    Effect.gen(function* () {
-      const authHomePath = path.dirname(authFilePath);
-      if (
-        forbiddenHomePaths.some((forbidden) =>
-          codexPathsReferenceSameLocation(authHomePath, forbidden),
-        )
-      ) {
-        return null;
-      }
-      const [homeInfo, fileInfo] = yield* Effect.promise(async () => {
-        try {
-          return await Promise.all([lstat(path.dirname(authFilePath)), lstat(authFilePath)]);
-        } catch {
-          return [null, null] as const;
-        }
-      });
-      // Checking the immediate auth home closes the parent-directory symlink
-      // bypass where `<shadow> -> <default>` makes auth.json itself look real.
-      if (
-        !homeInfo ||
-        homeInfo.isSymbolicLink() ||
-        !fileInfo ||
-        fileInfo.isSymbolicLink() ||
-        !fileInfo.isFile()
-      ) {
-        return null;
-      }
-      return yield* fileSystem
-        .readFileString(authFilePath)
-        .pipe(Effect.catch(() => Effect.succeed(null)));
-    });
-
-  const prepareIsolatedCodexHome = (
-    operation: TextGenerationOperation,
-    sourceHomePath?: string,
-    authHomePath?: string,
-    accountId?: string,
-    // Sessions launch with the instance environment layered over the server's,
-    // which can relocate the env-derived home and the account overlay root
-    // (SYNARA_HOME/CODEX_HOME); auth lookup must see the same view.
-    launchEnv: NodeJS.ProcessEnv = process.env,
-  ): Effect.Effect<{ readonly homePath: string }, TextGenerationError> =>
-    Effect.gen(function* () {
-      const sourceCodexHome = resolveBaseCodexHomePath(launchEnv, sourceHomePath);
-      const sourceAuthHome = authHomePath?.trim()
-        ? resolveBaseCodexHomePath(launchEnv, authHomePath)
-        : undefined;
-      yield* Effect.try({
-        try: () =>
-          resolveCodexAuthTracking({
-            env: launchEnv,
-            ...(sourceHomePath ? { homePath: sourceHomePath } : {}),
-            ...(authHomePath ? { shadowHomePath: authHomePath } : {}),
-            ...(accountId ? { accountId } : {}),
-          }),
-        catch: (cause) =>
-          new TextGenerationError({
-            operation,
-            detail:
-              cause instanceof Error
-                ? cause.message
-                : "Codex authentication storage cannot be safely isolated.",
-            cause,
-          }),
-      });
-      // Accounts read auth from their shadow home or their own dedicated home;
-      // accounts routed at the shared env-derived home keep their login inside
-      // Synara's account overlay, so copy from there instead of the default
-      // account's credentials.
-      const defaultCodexHome = resolveBaseCodexHomePath(launchEnv);
-      const hasDedicatedAccountHome = Boolean(
-        sourceHomePath?.trim() &&
-        !codexPathsReferenceSameLocation(sourceCodexHome, defaultCodexHome),
-      );
-      const trimmedAccountId = accountId?.trim();
-      const accountOverlayAuthHome = (() => {
-        if (!trimmedAccountId || sourceAuthHome) {
-          return undefined;
-        }
-        const accountSegment = resolveCodexHomeOverlayAccountSegment({
-          homePath: sourceCodexHome,
-          accountId: trimmedAccountId,
-        });
-        return accountSegment
-          ? resolveSynaraCodexHomeOverlayPath(launchEnv, sourceCodexHome, accountSegment)
-          : undefined;
-      })();
-      const isolatedHomePath = path.join(
-        tempDir,
-        `synara-codex-home-${process.pid}-${randomUUID()}`,
-      );
-
-      yield* fileSystem.makeDirectory(isolatedHomePath, { recursive: true }).pipe(
-        Effect.mapError(
-          (cause) =>
-            new TextGenerationError({
-              operation,
-              detail: `Failed to create isolated Codex home at ${isolatedHomePath}.`,
-              cause,
-            }),
-        ),
-      );
-
-      const sourceConfig = yield* fileSystem
-        .readFileString(path.join(sourceCodexHome, "config.toml"))
-        .pipe(Effect.catch(() => Effect.succeed(null)));
-      yield* fileSystem
-        .writeFileString(
-          path.join(isolatedHomePath, "config.toml"),
-          sanitizeCodexConfigForTextGeneration(sourceConfig ?? ""),
-        )
-        .pipe(
-          Effect.mapError(
-            (cause) =>
-              new TextGenerationError({
-                operation,
-                detail: "Failed to copy Codex config for isolated text generation.",
-                cause,
-              }),
-          ),
-        );
-
-      {
-        // A shadow auth home is authoritative: missing or rejected auth there
-        // must never fall back to the shared/default account. Without a shadow,
-        // use only the selected account's dedicated home or managed overlay.
-        const authHomeCandidates: ReadonlyArray<{
-          readonly homePath: string;
-          readonly forbiddenHomePaths?: readonly string[];
-        }> = sourceAuthHome
-          ? [
-              {
-                homePath: sourceAuthHome,
-                forbiddenHomePaths: [sourceCodexHome, defaultCodexHome],
-              },
-            ]
-          : trimmedAccountId
-            ? [
-                ...(hasDedicatedAccountHome ? [{ homePath: sourceCodexHome }] : []),
-                ...(accountOverlayAuthHome
-                  ? [{ homePath: accountOverlayAuthHome, forbiddenHomePaths: [defaultCodexHome] }]
-                  : []),
-              ]
-            : [{ homePath: sourceCodexHome }];
-        const sourceAuth = yield* Effect.gen(function* () {
-          for (const authHome of authHomeCandidates) {
-            const content = yield* readRealAuthFile(
-              path.join(authHome.homePath, "auth.json"),
-              authHome.forbiddenHomePaths,
-            );
-            if (content !== null) {
-              return content;
-            }
-          }
-          return null;
-        });
-        if (sourceAuth !== null) {
-          yield* fileSystem
-            .writeFileString(path.join(isolatedHomePath, "auth.json"), sourceAuth)
-            .pipe(
-              Effect.mapError(
-                (cause) =>
-                  new TextGenerationError({
-                    operation,
-                    detail: "Failed to copy Codex auth for isolated text generation.",
-                    cause,
-                  }),
-              ),
-            );
-        }
-      }
-
-      return { homePath: isolatedHomePath };
-    });
 
   const materializeImageAttachments = (
     _operation: TextGenerationOperation,
@@ -429,27 +207,38 @@ const makeCodexTextGeneration = Effect.gen(function* () {
       const instanceLaunchEnv = providerOptions?.codex?.environment
         ? { ...process.env, ...providerOptions.codex.environment }
         : process.env;
-      const isolatedCodexHome = yield* prepareIsolatedCodexHome(
-        operation,
-        resolvedCodexHomePath,
-        resolvedCodexAuthHomePath,
-        resolvedCodexAccountId,
-        instanceLaunchEnv,
-      );
+      const processLaunch = yield* Effect.try({
+        try: () =>
+          buildCodexProcessLaunchContext({
+            env: instanceLaunchEnv,
+            ...(resolvedCodexHomePath ? { homePath: resolvedCodexHomePath } : {}),
+            ...(resolvedCodexAuthHomePath ? { shadowHomePath: resolvedCodexAuthHomePath } : {}),
+            ...(resolvedCodexAccountId ? { accountId: resolvedCodexAccountId } : {}),
+          }),
+        catch: (cause) =>
+          new TextGenerationError({
+            operation,
+            detail:
+              cause instanceof Error
+                ? cause.message
+                : "Codex authentication storage cannot be resolved safely.",
+            cause,
+          }),
+      });
 
       const runCodexCommand = Effect.gen(function* () {
-        // Keep Synara's config-suppression overlay inside the per-call home so
-        // account auth stays isolated and cleanup removes every generated file.
-        const env = buildCodexProcessEnv({
-          env: {
-            ...instanceLaunchEnv,
-            SYNARA_HOME: isolatedCodexHome.homePath,
-          },
-          homePath: isolatedCodexHome.homePath,
-        });
+        // `--ignore-user-config` suppresses skills/plugins while explicitly
+        // retaining CODEX_HOME auth. Point that home at the selected account's
+        // authoritative file instead of cloning a rotating refresh token into
+        // disposable state.
+        const env = {
+          ...processLaunch.env,
+          CODEX_HOME: path.dirname(processLaunch.authTracking.authoritativeAuthFilePath),
+        };
         const args = [
           "exec",
           "--ephemeral",
+          "--ignore-user-config",
           "--skip-git-repo-check",
           "--config",
           'approval_policy="never"',
@@ -526,7 +315,6 @@ const makeCodexTextGeneration = Effect.gen(function* () {
         [
           safeUnlink(schemaPath),
           safeUnlink(outputPath),
-          safeRemoveDirectory(isolatedCodexHome.homePath),
           ...cleanupPaths.map((filePath) => safeUnlink(filePath)),
         ],
         {

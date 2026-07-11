@@ -21,6 +21,7 @@ import { afterEach, assert, describe, it } from "@effect/vitest";
 import { expect, vi } from "vitest";
 
 import {
+  buildCodexProcessLaunchContext,
   buildCodexProcessEnv,
   linkOrCopyCodexOverlayEntry,
   prioritizeCodexOverlayEntries,
@@ -607,6 +608,45 @@ describe("buildCodexProcessEnv account overlays", () => {
     });
     assert.match(sharedAccountTracking.authoritativeAuthFilePath, /codex-home-overlay/);
     assert.strictEqual(sharedAccountTracking.effectiveAuthFilePath, undefined);
+  });
+
+  it("keeps auth identity stable when a fallback copy rotates for the same account", () => {
+    const fixture = makeAccountFixture({ shadowAuth: "missing" });
+    const sharedEnv = { ...fixture.env, CODEX_HOME: fixture.homePath };
+    const sourceAuthPath = path.join(fixture.homePath, "auth.json");
+    const auth = (accountId: string, token: string) =>
+      JSON.stringify({
+        auth_mode: "chatgpt",
+        tokens: {
+          account_id: accountId,
+          access_token: `access-${token}`,
+          refresh_token: `refresh-${token}`,
+        },
+      });
+    writeFileSync(sourceAuthPath, auth("workspace-1", "source"), "utf8");
+    const copyOnlyLinker = {
+      symlink: vi.fn(() => {
+        throw new Error("symlinks unavailable");
+      }),
+      copyFile: copyFileSync,
+    };
+    const launch = buildCodexProcessLaunchContext({
+      env: sharedEnv,
+      platform: "win32",
+      overlayEntryLinker: copyOnlyLinker,
+    });
+    const effectiveAuthFilePath = launch.authTracking.effectiveAuthFilePath;
+    assert.ok(effectiveAuthFilePath);
+    const initialFingerprint = readCodexAuthTrackingFingerprint(launch.authTracking);
+
+    writeFileSync(effectiveAuthFilePath, auth("workspace-1", "rotated"), "utf8");
+    assert.strictEqual(readCodexAuthTrackingFingerprint(launch.authTracking), initialFingerprint);
+
+    writeFileSync(effectiveAuthFilePath, auth("workspace-2", "swapped"), "utf8");
+    assert.notStrictEqual(
+      readCodexAuthTrackingFingerprint(launch.authTracking),
+      initialFingerprint,
+    );
   });
 
   it("removes an unchanged fallback copy when the authoritative account logs out", () => {

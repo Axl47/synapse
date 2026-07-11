@@ -54,6 +54,7 @@ import { isNonFatalCodexErrorMessage } from "./codexErrorClassification.ts";
 import {
   buildCodexProcessEnv,
   buildCodexProcessLaunchContext,
+  readCodexAuthFileIdentityFingerprint,
   readCodexAuthTrackingFingerprint,
   resolveCodexAuthTracking,
   type CodexAuthTracking,
@@ -829,17 +830,10 @@ export function readCodexAuthFileFingerprint(codexHomePath: string | undefined):
   if (!codexHomePath?.trim()) {
     return "missing-home";
   }
-  try {
-    return `sha256:${createHash("sha256")
-      .update(readFileSync(path.join(codexHomePath, "auth.json")))
-      .digest("hex")}`;
-  } catch (error) {
-    const code =
-      typeof error === "object" && error !== null && "code" in error
-        ? String((error as { code?: unknown }).code ?? "")
-        : "";
-    return code === "ENOENT" ? "missing" : "unreadable";
-  }
+  return readCodexAuthFileIdentityFingerprint({
+    authFilePath: path.join(codexHomePath, "auth.json"),
+    configPath: path.join(codexHomePath, "config.toml"),
+  });
 }
 
 function codexProcessEnvInputForOptions(
