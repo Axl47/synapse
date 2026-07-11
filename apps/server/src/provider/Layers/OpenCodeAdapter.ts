@@ -3694,7 +3694,7 @@ export function makeOpenCodeAdapterLive(options?: OpenCodeAdapterLiveOptions) {
             ...(serverUrl ? { serverUrl } : {}),
             ...(serverPassword ? { serverPassword } : {}),
             ...(experimentalWebSockets !== undefined ? { experimentalWebSockets } : {}),
-            ...(environment ? { environment } : {}),
+            ...(environment !== undefined ? { environment } : {}),
           });
           const resumeDirectory = extractResumeCwd(input.resumeCursor);
           const directory = input.cwd ?? resumeDirectory ?? serverConfig.cwd;
@@ -3722,11 +3722,13 @@ export function makeOpenCodeAdapterLive(options?: OpenCodeAdapterLiveOptions) {
                   binaryPath,
                   cliSpec: adapterConfig.cliSpec,
                   cwd: directory,
+                  isolationRootDir: serverConfig.stateDir,
+                  homeDir: serverConfig.homeDir,
                   ...(input.providerInstanceId !== undefined
                     ? { instanceId: input.providerInstanceId }
                     : {}),
                   ...(serverUrl ? { serverUrl } : {}),
-                  ...(environment ? { environment } : {}),
+                  ...(environment !== undefined ? { environment } : {}),
                   ...(provider === "opencode" && experimentalWebSockets
                     ? { experimentalWebSockets: true }
                     : {}),
@@ -4163,8 +4165,13 @@ export function makeOpenCodeAdapterLive(options?: OpenCodeAdapterLiveOptions) {
                 binaryPath,
                 cliSpec: adapterConfig.cliSpec,
                 cwd: directory,
+                isolationRootDir: serverConfig.stateDir,
+                homeDir: serverConfig.homeDir,
                 ...(serverUrl ? { serverUrl } : {}),
-                ...(environment ? { environment } : {}),
+                ...(input.providerInstanceId !== undefined
+                  ? { instanceId: input.providerInstanceId }
+                  : {}),
+                ...(environment !== undefined ? { environment } : {}),
                 ...(provider === "opencode" && experimentalWebSockets
                   ? { experimentalWebSockets: true }
                   : {}),
@@ -4302,9 +4309,11 @@ export function makeOpenCodeAdapterLive(options?: OpenCodeAdapterLiveOptions) {
                     binaryPath,
                     cliSpec: adapterConfig.cliSpec,
                     cwd: sourceDirectory,
+                    isolationRootDir: serverConfig.stateDir,
+                    homeDir: serverConfig.homeDir,
                     ...(providerInstanceId !== undefined ? { instanceId: providerInstanceId } : {}),
                     ...(serverUrl ? { serverUrl } : {}),
-                    ...(environment ? { environment } : {}),
+                    ...(environment !== undefined ? { environment } : {}),
                     ...(provider === "opencode" && experimentalWebSockets
                       ? { experimentalWebSockets: true }
                       : {}),
@@ -4401,9 +4410,11 @@ export function makeOpenCodeAdapterLive(options?: OpenCodeAdapterLiveOptions) {
                   binaryPath: input.binaryPath?.trim() || adapterConfig.defaultBinaryPath,
                   cliSpec: adapterConfig.cliSpec,
                   cwd: input.cwd?.trim() || serverConfig.cwd,
-                  ...(input.instanceId ? { instanceId: input.instanceId } : {}),
+                  isolationRootDir: serverConfig.stateDir,
+                  homeDir: serverConfig.homeDir,
+                  ...(typeof input.instanceId === "string" ? { instanceId: input.instanceId } : {}),
                   ...(serverUrl ? { serverUrl } : {}),
-                  ...(input.environment ? { environment: input.environment } : {}),
+                  ...(input.environment !== undefined ? { environment: input.environment } : {}),
                   ...(provider === "opencode" && input.experimentalWebSockets
                     ? { experimentalWebSockets: true }
                     : {}),
@@ -4475,7 +4486,9 @@ export function makeOpenCodeAdapterLive(options?: OpenCodeAdapterLiveOptions) {
               cliSpec: adapterConfig.cliSpec,
               ...(input.instanceId !== undefined ? { instanceId: input.instanceId } : {}),
               ...(input.cwd ? { cwd: input.cwd } : {}),
-              ...(input.environment ? { environment: input.environment } : {}),
+              homeDir: serverConfig.homeDir,
+              isolationRootDir: serverConfig.stateDir,
+              ...(input.environment !== undefined ? { environment: input.environment } : {}),
             })
             .pipe(
               Effect.catch((error) =>
@@ -4495,7 +4508,7 @@ export function makeOpenCodeAdapterLive(options?: OpenCodeAdapterLiveOptions) {
               ...(input.experimentalWebSockets !== undefined
                 ? { experimentalWebSockets: input.experimentalWebSockets }
                 : {}),
-              ...(input.environment ? { environment: input.environment } : {}),
+              ...(input.environment !== undefined ? { environment: input.environment } : {}),
             },
             ({ inventory, credentialProviderIDs }) =>
               Effect.succeed({
@@ -4594,7 +4607,7 @@ export function makeOpenCodeAdapterLive(options?: OpenCodeAdapterLiveOptions) {
             ...(input.experimentalWebSockets !== undefined
               ? { experimentalWebSockets: input.experimentalWebSockets }
               : {}),
-            ...(input.environment ? { environment: input.environment } : {}),
+            ...(input.environment !== undefined ? { environment: input.environment } : {}),
           },
           ({ inventory }) =>
             Effect.succeed({

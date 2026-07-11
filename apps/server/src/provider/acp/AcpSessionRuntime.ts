@@ -40,6 +40,8 @@ export interface AcpSpawnInput {
     readonly driver: ProviderProcessEnvDriver;
     readonly instanceId?: string | undefined;
     readonly environment?: Readonly<Record<string, string>> | undefined;
+    readonly homeDir?: string | undefined;
+    readonly isolationRootDir?: string | undefined;
   };
 }
 
@@ -53,6 +55,12 @@ export function buildAcpSpawnProcessEnv(
       ...spawn.providerEnvironment,
       env,
       platform,
+      ...(spawn.providerEnvironment.homeDir !== undefined
+        ? { homeDir: spawn.providerEnvironment.homeDir }
+        : {}),
+      ...(spawn.providerEnvironment.isolationRootDir !== undefined
+        ? { isolationRootDir: spawn.providerEnvironment.isolationRootDir }
+        : {}),
       ...(spawn.env !== undefined ? { overlay: spawn.env } : {}),
     });
   }

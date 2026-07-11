@@ -743,14 +743,20 @@ const makeProviderProbeEnv = (
   driver: ProviderProcessEnvDriver,
   environment?: Readonly<Record<string, string>>,
   instanceId?: string,
+  paths?: { readonly homeDir: string; readonly isolationRootDir: string },
 ): NodeJS.ProcessEnv =>
   buildProviderProcessEnv({
     driver,
     ...(environment !== undefined ? { environment } : {}),
     ...(instanceId !== undefined ? { instanceId } : {}),
+    ...(paths?.homeDir !== undefined ? { homeDir: paths.homeDir } : {}),
+    ...(paths?.isolationRootDir !== undefined ? { isolationRootDir: paths.isolationRootDir } : {}),
   });
 
-export const makeProviderUpdateEnv = (instance: ResolvedProviderInstance): NodeJS.ProcessEnv => {
+export const makeProviderUpdateEnv = (
+  instance: ResolvedProviderInstance,
+  paths?: { readonly homeDir: string; readonly isolationRootDir: string },
+): NodeJS.ProcessEnv => {
   const environment =
     instance.raw.environment !== undefined || Object.keys(instance.environment).length > 0
       ? instance.environment
@@ -765,6 +771,10 @@ export const makeProviderUpdateEnv = (instance: ResolvedProviderInstance): NodeJ
       return buildProviderProcessEnv({
         driver: instance.driver,
         instanceId: instance.instanceId,
+        ...(paths?.homeDir !== undefined ? { homeDir: paths.homeDir } : {}),
+        ...(paths?.isolationRootDir !== undefined
+          ? { isolationRootDir: paths.isolationRootDir }
+          : {}),
         ...(environment !== undefined ? { environment } : {}),
       });
     case "codex":
@@ -1397,11 +1407,12 @@ export const makeCheckGeminiProviderStatus = (
   binaryPath?: string,
   environment?: Readonly<Record<string, string>>,
   instanceId?: string,
+  paths?: { readonly homeDir: string; readonly isolationRootDir: string },
 ): Effect.Effect<ServerProviderStatus, never, ChildProcessSpawner.ChildProcessSpawner> =>
   Effect.gen(function* () {
     const checkedAt = new Date().toISOString();
     const executable = nonEmptyTrimmed(binaryPath) ?? "gemini";
-    const probeEnv = makeProviderProbeEnv(GEMINI_PROVIDER, environment, instanceId);
+    const probeEnv = makeProviderProbeEnv(GEMINI_PROVIDER, environment, instanceId, paths);
 
     const versionProbe = yield* runGeminiCommand(["--version"], executable, probeEnv).pipe(
       Effect.timeoutOption(DEFAULT_TIMEOUT_MS),
@@ -1460,6 +1471,7 @@ export const makeCheckGeminiProviderStatus = (
       cwd: OS.homedir(),
       ...(instanceId !== undefined ? { instanceId } : {}),
       ...(environment !== undefined ? { environment } : {}),
+      ...(paths ? { homeDir: paths.homeDir, isolationRootDir: paths.isolationRootDir } : {}),
     }).pipe(Effect.result);
 
     if (Result.isFailure(capabilityProbe)) {
@@ -1502,11 +1514,12 @@ export const makeCheckGrokProviderStatus = (
   binaryPath?: string,
   environment?: Readonly<Record<string, string>>,
   instanceId?: string,
+  paths?: { readonly homeDir: string; readonly isolationRootDir: string },
 ): Effect.Effect<ServerProviderStatus, never, ChildProcessSpawner.ChildProcessSpawner> =>
   Effect.gen(function* () {
     const checkedAt = new Date().toISOString();
     const executable = nonEmptyTrimmed(binaryPath) ?? "grok";
-    const probeEnv = makeProviderProbeEnv(GROK_PROVIDER, environment, instanceId);
+    const probeEnv = makeProviderProbeEnv(GROK_PROVIDER, environment, instanceId, paths);
 
     const versionProbe = yield* runGrokCommand(["--version"], executable, probeEnv).pipe(
       Effect.timeoutOption(DEFAULT_TIMEOUT_MS),
@@ -1630,6 +1643,7 @@ export const makeCheckOpenCodeProviderStatus = (
     readonly experimentalWebSockets?: boolean | undefined;
   },
   instanceId?: string,
+  paths?: { readonly homeDir: string; readonly isolationRootDir: string },
 ): Effect.Effect<ServerProviderStatus, never, ChildProcessSpawner.ChildProcessSpawner> =>
   Effect.gen(function* () {
     const checkedAt = new Date().toISOString();
@@ -1645,7 +1659,7 @@ export const makeCheckOpenCodeProviderStatus = (
     }
 
     const executable = nonEmptyTrimmed(binaryPath) ?? "opencode";
-    const probeEnv = makeProviderProbeEnv(OPENCODE_PROVIDER, environment, instanceId);
+    const probeEnv = makeProviderProbeEnv(OPENCODE_PROVIDER, environment, instanceId, paths);
 
     const versionProbe = yield* runOpenCodeCommand(["--version"], executable, probeEnv).pipe(
       Effect.timeoutOption(OPENCODE_HEALTH_TIMEOUT_MS),
@@ -1725,6 +1739,7 @@ export const makeCheckKiloProviderStatus = (
     readonly serverPassword?: string | undefined;
   },
   instanceId?: string,
+  paths?: { readonly homeDir: string; readonly isolationRootDir: string },
 ): Effect.Effect<ServerProviderStatus, never, ChildProcessSpawner.ChildProcessSpawner> =>
   Effect.gen(function* () {
     const checkedAt = new Date().toISOString();
@@ -1739,7 +1754,7 @@ export const makeCheckKiloProviderStatus = (
     }
 
     const executable = nonEmptyTrimmed(binaryPath) ?? "kilo";
-    const probeEnv = makeProviderProbeEnv(KILO_PROVIDER, environment, instanceId);
+    const probeEnv = makeProviderProbeEnv(KILO_PROVIDER, environment, instanceId, paths);
 
     const versionProbe = yield* runKiloCommand(["--version"], executable, probeEnv).pipe(
       Effect.timeoutOption(DEFAULT_TIMEOUT_MS),
@@ -1815,11 +1830,12 @@ export const checkPiProviderStatus = (
   binaryPath?: string,
   environment?: Readonly<Record<string, string>>,
   instanceId?: string,
+  paths?: { readonly homeDir: string; readonly isolationRootDir: string },
 ): Effect.Effect<ServerProviderStatus, never, ChildProcessSpawner.ChildProcessSpawner> =>
   Effect.gen(function* () {
     const checkedAt = new Date().toISOString();
     const executable = nonEmptyTrimmed(binaryPath) ?? "pi";
-    const probeEnv = makeProviderProbeEnv(PI_PROVIDER, environment, instanceId);
+    const probeEnv = makeProviderProbeEnv(PI_PROVIDER, environment, instanceId, paths);
 
     const versionProbe = yield* runPiCommand(["--version"], executable, probeEnv).pipe(
       Effect.timeoutOption(DEFAULT_TIMEOUT_MS),
@@ -1898,11 +1914,12 @@ export const makeCheckCursorProviderStatus = (
   binaryPath?: string,
   environment?: Readonly<Record<string, string>>,
   instanceId?: string,
+  paths?: { readonly homeDir: string; readonly isolationRootDir: string },
 ): Effect.Effect<ServerProviderStatus, never, ChildProcessSpawner.ChildProcessSpawner> =>
   Effect.gen(function* () {
     const checkedAt = new Date().toISOString();
     const executable = resolveCursorAgentBinaryPath(nonEmptyTrimmed(binaryPath));
-    const probeEnv = makeProviderProbeEnv(CURSOR_PROVIDER, environment, instanceId);
+    const probeEnv = makeProviderProbeEnv(CURSOR_PROVIDER, environment, instanceId, paths);
 
     const versionProbe = yield* runCursorCommand(["--version"], executable, probeEnv).pipe(
       Effect.timeoutOption(DEFAULT_TIMEOUT_MS),
@@ -2846,6 +2863,7 @@ export const ProviderHealthLive = Layer.effect(
               binaryPath,
               cursorOptions?.environment,
               instance.instanceId,
+              { homeDir: serverConfig.homeDir, isolationRootDir: serverConfig.stateDir },
             ),
           );
         }
@@ -2857,6 +2875,7 @@ export const ProviderHealthLive = Layer.effect(
               binaryPath,
               geminiOptions?.environment,
               instance.instanceId,
+              { homeDir: serverConfig.homeDir, isolationRootDir: serverConfig.stateDir },
             ),
           );
         }
@@ -2864,7 +2883,10 @@ export const ProviderHealthLive = Layer.effect(
           const grokOptions = providerStartOptionsFromInstance(instance)?.grok;
           return checkProviderInstanceWhenEnabled(
             instance,
-            makeCheckGrokProviderStatus(binaryPath, grokOptions?.environment, instance.instanceId),
+            makeCheckGrokProviderStatus(binaryPath, grokOptions?.environment, instance.instanceId, {
+              homeDir: serverConfig.homeDir,
+              isolationRootDir: serverConfig.stateDir,
+            }),
           );
         }
         case "kilo": {
@@ -2879,6 +2901,7 @@ export const ProviderHealthLive = Layer.effect(
                 serverPassword: readInstanceConfigString(instance, "serverPassword"),
               },
               instance.instanceId,
+              { homeDir: serverConfig.homeDir, isolationRootDir: serverConfig.stateDir },
             ),
           );
         }
@@ -2898,6 +2921,7 @@ export const ProviderHealthLive = Layer.effect(
                 ),
               },
               instance.instanceId,
+              { homeDir: serverConfig.homeDir, isolationRootDir: serverConfig.stateDir },
             ),
           );
         }
@@ -2910,6 +2934,7 @@ export const ProviderHealthLive = Layer.effect(
               binaryPath,
               piOptions?.environment,
               instance.instanceId,
+              { homeDir: serverConfig.homeDir, isolationRootDir: serverConfig.stateDir },
             ),
           );
         }
@@ -3150,7 +3175,10 @@ export const ProviderHealthLive = Layer.effect(
         const commandResult = yield* runUpdateCommand({
           command: update.executable,
           args: update.args,
-          env: makeProviderUpdateEnv(instance),
+          env: makeProviderUpdateEnv(instance, {
+            homeDir: serverConfig.homeDir,
+            isolationRootDir: serverConfig.stateDir,
+          }),
         }).pipe(
           Effect.scoped,
           Effect.timeoutOption(Duration.millis(UPDATE_TIMEOUT_MS)),

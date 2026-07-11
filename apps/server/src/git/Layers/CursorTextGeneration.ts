@@ -1,5 +1,6 @@
 import { Effect, Layer, Option, Ref, Schema } from "effect";
 import { ChildProcessSpawner } from "effect/unstable/process";
+import { ServerConfig } from "../../config.ts";
 
 import type { CursorModelOptions, ModelSelection, ProviderStartOptions } from "@synara/contracts";
 import { sanitizeGeneratedThreadTitle } from "@synara/shared/chatThreads";
@@ -91,18 +92,24 @@ function cursorModelOptionsFromSelection(
 
 function resolveCursorSettings(
   providerOptions: ProviderStartOptions | undefined,
+  serverConfig: { readonly homeDir: string; readonly stateDir: string },
+  instanceId?: string,
 ): CursorAcpRuntimeCursorSettings | undefined {
   const cursorOptions = providerOptions?.cursor;
   if (!cursorOptions) return undefined;
   return {
+    homeDir: serverConfig.homeDir,
+    isolationRootDir: serverConfig.stateDir,
+    ...(instanceId !== undefined ? { instanceId } : {}),
     ...(cursorOptions.binaryPath ? { binaryPath: cursorOptions.binaryPath } : {}),
     ...(cursorOptions.apiEndpoint ? { apiEndpoint: cursorOptions.apiEndpoint } : {}),
-    ...(cursorOptions.environment ? { environment: cursorOptions.environment } : {}),
+    ...(cursorOptions.environment !== undefined ? { environment: cursorOptions.environment } : {}),
   };
 }
 
 const makeCursorTextGeneration = Effect.gen(function* () {
   const commandSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+  const serverConfig = yield* ServerConfig;
 
   const runCursorJson = <S extends Schema.Top>({
     operation,
@@ -124,7 +131,11 @@ const makeCursorTextGeneration = Effect.gen(function* () {
     Effect.gen(function* () {
       const outputRef = yield* Ref.make("");
       const runtime = yield* makeCursorAcpRuntime({
-        cursorSettings: resolveCursorSettings(providerOptions),
+        cursorSettings: resolveCursorSettings(
+          providerOptions,
+          serverConfig,
+          modelSelection.instanceId,
+        ),
         childProcessSpawner: commandSpawner,
         cwd,
         clientInfo: { name: "synara-git-text", version: "0.0.0" },

@@ -724,6 +724,8 @@ export function makeCursorAdapter(
           });
           const providerCursorOptions = input.providerOptions?.cursor;
           const effectiveCursorSettings: CursorAcpRuntimeCursorSettings = {
+            homeDir: serverConfig.homeDir,
+            isolationRootDir: serverConfig.stateDir,
             ...(input.providerInstanceId !== undefined
               ? { instanceId: input.providerInstanceId }
               : {}),
@@ -1517,6 +1519,8 @@ export function makeCursorAdapter(
       const apiEndpoint = input.apiEndpoint?.trim();
       const childEnv = buildProviderProcessEnv({
         driver: PROVIDER,
+        homeDir: serverConfig.homeDir,
+        isolationRootDir: serverConfig.stateDir,
         ...(input.instanceId !== undefined ? { instanceId: input.instanceId } : {}),
         ...(input.environment !== undefined ? { environment: input.environment } : {}),
       });
@@ -1587,6 +1591,8 @@ export function makeCursorAdapter(
       // fast) — data the flat `cursor-agent models` CLI list cannot provide.
       const effectiveAcpSettings: CursorAcpRuntimeCursorSettings = {
         binaryPath: effectiveBinaryPath,
+        homeDir: serverConfig.homeDir,
+        isolationRootDir: serverConfig.stateDir,
         ...(effectiveApiEndpoint ? { apiEndpoint: effectiveApiEndpoint } : {}),
         ...(input.instanceId !== undefined ? { instanceId: input.instanceId } : {}),
         ...(input.environment !== undefined ? { environment: input.environment } : {}),

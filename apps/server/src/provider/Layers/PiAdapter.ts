@@ -50,6 +50,7 @@ import { classifyPiTurnFailure } from "../piTurnFailure.ts";
 import {
   buildProviderProcessEnv,
   MODEL_PROVIDER_API_KEY_ENV_MAPPINGS,
+  providerIsolatedHomePath,
 } from "../providerProcessEnv.ts";
 import { clampUsagePercent, nonNegativeFiniteNumber, positiveFiniteNumber } from "../tokenUsage.ts";
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
@@ -762,11 +763,43 @@ function mapMessageHistory(session: PiAgentSession): unknown[] {
   return items;
 }
 
-function makeAgentDir(
-  agentDir: string | undefined,
-  piSdk: Pick<PiCodingAgentModule, "getAgentDir">,
-): string {
-  return trimToUndefined(agentDir) ?? piSdk.getAgentDir();
+export function makePiStoragePaths(input: {
+  readonly agentDir?: string | undefined;
+  readonly environment?: Readonly<Record<string, string>> | undefined;
+  readonly instanceId?: string | undefined;
+  readonly stateDir: string;
+  readonly homeDir: string;
+  readonly sdkAgentDir: string;
+}): { readonly agentDir: string; readonly sessionDir?: string } {
+  const boundary =
+    input.environment !== undefined ||
+    (input.instanceId !== undefined && input.instanceId !== PROVIDER);
+  const selectedHome = trimToUndefined(input.environment?.HOME);
+  const expandHome = (value: string) =>
+    value === "~" || value.startsWith("~/")
+      ? path.join(selectedHome ?? input.homeDir, value.slice(value === "~" ? 1 : 2))
+      : value;
+  const configuredAgentDir = trimToUndefined(input.agentDir);
+  const selectedAgentDir = trimToUndefined(input.environment?.PI_CODING_AGENT_DIR);
+  if (!boundary && !configuredAgentDir && !selectedAgentDir) {
+    return { agentDir: input.sdkAgentDir };
+  }
+  const isolatedHome = providerIsolatedHomePath({
+    driver: PROVIDER,
+    instanceId: input.instanceId,
+    homeDir: input.homeDir,
+    isolationRootDir: input.stateDir,
+  });
+  const agentDir = expandHome(
+    configuredAgentDir ??
+      selectedAgentDir ??
+      path.join(selectedHome ?? isolatedHome, ".pi", "agent"),
+  );
+  const selectedSessionDir = trimToUndefined(input.environment?.PI_CODING_AGENT_SESSION_DIR);
+  return {
+    agentDir,
+    sessionDir: expandHome(selectedSessionDir ?? path.join(agentDir, "sessions")),
+  };
 }
 
 function readPiRuntimeApiKeyOverrides(
@@ -869,11 +902,15 @@ interface PiModelRegistryInternals {
 
 function buildPiSelectedEnvironment(
   environment: Readonly<Record<string, string>>,
+  instanceId?: string,
+  paths?: { readonly stateDir: string; readonly homeDir: string },
 ): NodeJS.ProcessEnv {
   return buildProviderProcessEnv({
     driver: PROVIDER,
     env: {},
     environment,
+    ...(instanceId !== undefined ? { instanceId } : {}),
+    ...(paths ? { isolationRootDir: paths.stateDir, homeDir: paths.homeDir } : {}),
   });
 }
 
@@ -1083,6 +1120,33 @@ function isolatePiModelRegistryFromAmbientEnvironment(
 
   registry.getApiKeyAndHeaders = async (model) => {
     try {
+      if (model.provider.startsWith("cloudflare-")) {
+        const mutableModel = model as Model<Api> & { baseUrl: string };
+        mutableModel.baseUrl = mutableModel.baseUrl.replace(
+          /\$\{?(CLOUDFLARE_(?:ACCOUNT|GATEWAY)_ID)\}?/gu,
+          (_match, name: string) => configResolver.selectedValue(name) ?? _match,
+        );
+        if (/\$\{?CLOUDFLARE_(?:ACCOUNT|GATEWAY)_ID\}?/u.test(mutableModel.baseUrl)) {
+          return {
+            ok: false,
+            error: `Missing isolated Cloudflare routing value for ${model.provider}`,
+          };
+        }
+      }
+      if (model.provider === "amazon-bedrock") {
+        return {
+          ok: false,
+          error:
+            "Amazon Bedrock is disabled for isolated Pi accounts because the SDK falls back to the ambient AWS credential chain.",
+        };
+      }
+      if (model.provider === "azure-openai-responses") {
+        return {
+          ok: false,
+          error:
+            "Azure OpenAI is disabled for isolated Pi accounts because the SDK reads process-level Azure routing.",
+        };
+      }
       const providerConfig = providerRequestConfig(model.provider);
       const authResolution = await configResolver.resolveAuth(model.provider);
       const storedApiKey = authResolution.status === "resolved" ? authResolution.apiKey : undefined;
@@ -1094,6 +1158,13 @@ function isolatePiModelRegistryFromAmbientEnvironment(
               `API key for provider "${model.provider}"`,
             )
           : undefined);
+      if (model.provider === "google-vertex" && (!apiKey || apiKey === "gcp-vertex-credentials")) {
+        return {
+          ok: false,
+          error:
+            "Vertex ADC is disabled for isolated Pi accounts; configure a real instance-scoped API key.",
+        };
+      }
       if (
         !apiKey &&
         (authResolution.status === "failedStoredAuth" ||
@@ -1113,6 +1184,31 @@ function isolatePiModelRegistryFromAmbientEnvironment(
         model.headers || providerHeaders || perModelHeaders
           ? { ...model.headers, ...providerHeaders, ...perModelHeaders }
           : undefined;
+      const api = (model as { readonly api?: string }).api;
+      if (api?.startsWith("openai-")) {
+        headers = {
+          ...headers,
+          "OpenAI-Organization":
+            configResolver.selectedValue("OPENAI_ORG_ID") ??
+            configResolver.selectedValue("OPENAI_ORGANIZATION") ??
+            null,
+          "OpenAI-Project":
+            configResolver.selectedValue("OPENAI_PROJECT_ID") ??
+            configResolver.selectedValue("OPENAI_PROJECT") ??
+            null,
+        } as unknown as Record<string, string>;
+      }
+      if (
+        api === "anthropic-messages" &&
+        !String(apiKey ?? "").startsWith("sk-ant-oat") &&
+        headers?.Authorization === undefined
+      ) {
+        const authToken = configResolver.selectedValue("ANTHROPIC_AUTH_TOKEN");
+        headers = {
+          ...headers,
+          Authorization: authToken ? `Bearer ${authToken}` : null,
+        } as unknown as Record<string, string>;
+      }
       if (providerConfig?.authHeader) {
         if (!apiKey) {
           return { ok: false, error: `No API key found for "${model.provider}"` };
@@ -1160,13 +1256,15 @@ function isolatePiModelRegistryFromAmbientEnvironment(
 
 function piRuntimeEnvironmentFingerprint(
   environment: Readonly<Record<string, string>> | undefined,
+  instanceId?: string,
+  paths?: { readonly stateDir: string; readonly homeDir: string },
 ): string {
   if (environment === undefined) {
     return "ambient";
   }
-  const normalized = Object.entries(buildPiSelectedEnvironment(environment)).toSorted(
-    ([left], [right]) => left.localeCompare(right),
-  );
+  const normalized = Object.entries(
+    buildPiSelectedEnvironment(environment, instanceId, paths),
+  ).toSorted(([left], [right]) => left.localeCompare(right));
   return `isolated:${crypto
     .createHash("sha256")
     .update(JSON.stringify(normalized))
@@ -1181,6 +1279,7 @@ export function createPiModelRegistry(
   piSdk: PiModelRegistrySdk,
   environment?: Readonly<Record<string, string>>,
   instanceId?: string,
+  paths?: { readonly stateDir: string; readonly homeDir: string },
 ): PiModelRegistryContext {
   const authStorage = piSdk.AuthStorage.create(path.join(agentDir, "auth.json"));
   // Pi's SDK can read API keys from process.env. Provider-instance keys must stay
@@ -1188,7 +1287,7 @@ export function createPiModelRegistry(
   const hasAccountBoundary =
     environment !== undefined || (instanceId !== undefined && instanceId !== PROVIDER);
   const runtimeEnvironment = hasAccountBoundary
-    ? buildPiSelectedEnvironment(environment ?? {})
+    ? buildPiSelectedEnvironment(environment ?? {}, instanceId, paths)
     : environment;
   let configResolver: PiInstanceResolver | undefined;
   if (hasAccountBoundary) {
@@ -1325,10 +1424,11 @@ const makePiAdapter = (options?: PiAdapterLiveOptions) =>
       instanceId: string | undefined,
       piSdk: PiModelRegistrySdk,
     ): Promise<PiModelRegistryContext> => {
-      const cacheKey = `${agentDir}:${instanceId ?? PROVIDER}:${piRuntimeEnvironmentFingerprint(environment)}`;
+      const paths = { stateDir: serverConfig.stateDir, homeDir: serverConfig.homeDir };
+      const cacheKey = `${agentDir}:${instanceId ?? PROVIDER}:${piRuntimeEnvironmentFingerprint(environment, instanceId, paths)}`;
       const existing = modelRegistryContexts.get(cacheKey);
       if (existing) return existing;
-      const context = createPiModelRegistry(agentDir, piSdk, environment, instanceId);
+      const context = createPiModelRegistry(agentDir, piSdk, environment, instanceId, paths);
       modelRegistryContexts.set(cacheKey, context);
       return context;
     };
@@ -2093,10 +2193,18 @@ const makePiAdapter = (options?: PiAdapterLiveOptions) =>
         }
         const { runtime, modelRegistry } = yield* Effect.tryPromise({
           try: () => {
-            const agentDir = makeAgentDir(piOptions?.agentDir, piSdk);
+            const storagePaths = makePiStoragePaths({
+              agentDir: piOptions?.agentDir,
+              environment: piEnvironment,
+              instanceId: input.providerInstanceId,
+              stateDir: serverConfig.stateDir,
+              homeDir: serverConfig.homeDir,
+              sdkAgentDir: piSdk.getAgentDir(),
+            });
+            const agentDir = storagePaths.agentDir;
             const sessionManager = sessionFile
               ? piSdk.SessionManager.open(sessionFile, undefined, cwd)
-              : piSdk.SessionManager.create(cwd);
+              : piSdk.SessionManager.create(cwd, storagePaths.sessionDir);
             return createSdkRuntime({
               sdk: piSdk,
               cwd,
@@ -2104,7 +2212,7 @@ const makePiAdapter = (options?: PiAdapterLiveOptions) =>
               ...(input.providerInstanceId !== undefined
                 ? { instanceId: input.providerInstanceId }
                 : {}),
-              ...(piEnvironment ? { environment: piEnvironment } : {}),
+              ...(piEnvironment !== undefined ? { environment: piEnvironment } : {}),
               sessionManager,
               ...(modelId ? { modelId } : {}),
               ...(thinkingLevel ? { thinkingLevel } : {}),
@@ -2575,13 +2683,21 @@ const makePiAdapter = (options?: PiAdapterLiveOptions) =>
       Effect.tryPromise({
         try: async () => {
           const piSdk = await loadPiCodingAgentModule();
-          const agentDir = makeAgentDir(input.agentDir, piSdk);
+          const { agentDir } = makePiStoragePaths({
+            agentDir: input.agentDir,
+            environment: input.environment,
+            instanceId: input.instanceId,
+            stateDir: serverConfig.stateDir,
+            homeDir: serverConfig.homeDir,
+            sdkAgentDir: piSdk.getAgentDir(),
+          });
           const cwd = trimToUndefined(input.cwd) ?? serverConfig.cwd;
           const { authStorage, registry } = createPiModelRegistry(
             agentDir,
             piSdk,
             input.environment,
             input.instanceId,
+            { stateDir: serverConfig.stateDir, homeDir: serverConfig.homeDir },
           );
           const services = await piSdk.createAgentSessionServices({
             cwd,
@@ -2643,12 +2759,20 @@ const makePiAdapter = (options?: PiAdapterLiveOptions) =>
             | undefined;
           if (!loader) {
             const piSdk = await loadPiCodingAgentModule();
-            const agentDir = makeAgentDir(input.agentDir, piSdk);
+            const { agentDir } = makePiStoragePaths({
+              agentDir: input.agentDir,
+              environment: input.environment,
+              instanceId: input.instanceId,
+              stateDir: serverConfig.stateDir,
+              homeDir: serverConfig.homeDir,
+              sdkAgentDir: piSdk.getAgentDir(),
+            });
             const { authStorage, registry } = createPiModelRegistry(
               agentDir,
               piSdk,
               input.environment,
               input.instanceId,
+              { stateDir: serverConfig.stateDir, homeDir: serverConfig.homeDir },
             );
             services = await piSdk.createAgentSessionServices({
               cwd: input.cwd,
@@ -2726,12 +2850,20 @@ const makePiAdapter = (options?: PiAdapterLiveOptions) =>
             } satisfies ProviderListCommandsResult;
           }
           const piSdk = await loadPiCodingAgentModule();
-          const agentDir = makeAgentDir(input.agentDir, piSdk);
+          const { agentDir } = makePiStoragePaths({
+            agentDir: input.agentDir,
+            environment: input.environment,
+            instanceId: input.instanceId,
+            stateDir: serverConfig.stateDir,
+            homeDir: serverConfig.homeDir,
+            sdkAgentDir: piSdk.getAgentDir(),
+          });
           const { authStorage, registry } = createPiModelRegistry(
             agentDir,
             piSdk,
             input.environment,
             input.instanceId,
+            { stateDir: serverConfig.stateDir, homeDir: serverConfig.homeDir },
           );
           const services = await piSdk.createAgentSessionServices({
             cwd: input.cwd,

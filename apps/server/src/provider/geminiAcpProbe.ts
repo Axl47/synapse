@@ -238,6 +238,8 @@ export const probeGeminiCapabilities = (input: {
   readonly cwd: string;
   readonly environment?: Readonly<Record<string, string>>;
   readonly instanceId?: string;
+  readonly homeDir?: string;
+  readonly isolationRootDir?: string;
   readonly capabilities?: ModelCapabilities;
 }) =>
   Effect.tryPromise(
@@ -248,6 +250,10 @@ export const probeGeminiCapabilities = (input: {
             driver: "gemini",
             ...(input.instanceId !== undefined ? { instanceId: input.instanceId } : {}),
             ...(input.environment !== undefined ? { environment: input.environment } : {}),
+            ...(input.homeDir !== undefined ? { homeDir: input.homeDir } : {}),
+            ...(input.isolationRootDir !== undefined
+              ? { isolationRootDir: input.isolationRootDir }
+              : {}),
           }),
         );
         const prepared = prepareWindowsSafeProcess(input.binaryPath, ["--acp"], {

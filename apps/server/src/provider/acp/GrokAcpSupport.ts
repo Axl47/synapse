@@ -25,6 +25,8 @@ export interface GrokAcpRuntimeSettings {
   readonly alwaysApprove?: boolean;
   readonly environment?: Readonly<Record<string, string>>;
   readonly instanceId?: string;
+  readonly homeDir?: string;
+  readonly isolationRootDir?: string;
 }
 
 export interface GrokAcpRuntimeInput extends Omit<
@@ -85,6 +87,10 @@ export function buildGrokAcpSpawnInput(
       driver: "grok",
       ...(grokSettings?.instanceId !== undefined ? { instanceId: grokSettings.instanceId } : {}),
       ...(grokSettings?.environment !== undefined ? { environment: grokSettings.environment } : {}),
+      ...(grokSettings?.homeDir !== undefined ? { homeDir: grokSettings.homeDir } : {}),
+      ...(grokSettings?.isolationRootDir !== undefined
+        ? { isolationRootDir: grokSettings.isolationRootDir }
+        : {}),
     },
   };
 }
@@ -96,7 +102,12 @@ function availableAuthMethodIds(
 }
 
 export const resolveGrokAcpAuthMethodIdForEnv =
-  (environment?: Readonly<Record<string, string>> | undefined, instanceId?: string | undefined) =>
+  (
+    environment?: Readonly<Record<string, string>> | undefined,
+    instanceId?: string | undefined,
+    homeDir?: string | undefined,
+    isolationRootDir?: string | undefined,
+  ) =>
   (
     initializeResult: EffectAcpSchema.InitializeResponse,
   ): Effect.Effect<string, EffectAcpErrors.AcpError> =>
@@ -106,6 +117,8 @@ export const resolveGrokAcpAuthMethodIdForEnv =
         driver: "grok",
         ...(environment !== undefined ? { environment } : {}),
         ...(instanceId !== undefined ? { instanceId } : {}),
+        ...(homeDir !== undefined ? { homeDir } : {}),
+        ...(isolationRootDir !== undefined ? { isolationRootDir } : {}),
       });
       if (hasGrokApiKeyEnv(effectiveEnv) && authMethodIds.has(GROK_API_KEY_AUTH_METHOD_ID)) {
         return GROK_API_KEY_AUTH_METHOD_ID;
@@ -136,6 +149,8 @@ export const makeGrokAcpRuntime = (
         resolveAuthMethodId: resolveGrokAcpAuthMethodIdForEnv(
           input.grokSettings?.environment,
           input.grokSettings?.instanceId,
+          input.grokSettings?.homeDir,
+          input.grokSettings?.isolationRootDir,
         ),
         authenticateMeta: { headless: true },
       }).pipe(

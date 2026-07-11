@@ -10,9 +10,54 @@ import {
   applyPiRuntimeApiKeysFromEnvironment,
   createPiModelRegistry,
   getPiSupportedThinkingOptions,
+  makePiStoragePaths,
   makePiUserInputOptions,
   PLAIN_PI_EXTENSION_THEME,
 } from "./PiAdapter";
+
+describe("makePiStoragePaths", () => {
+  it("keeps legacy defaults byte-for-byte without an account boundary", () => {
+    expect(
+      makePiStoragePaths({
+        stateDir: "/state",
+        homeDir: "/home/user",
+        sdkAgentDir: "/sdk/default-agent",
+      }),
+    ).toEqual({ agentDir: "/sdk/default-agent" });
+  });
+
+  it("uses selected Pi roots and never falls back to the global session directory", () => {
+    expect(
+      makePiStoragePaths({
+        agentDir: "~/configured-agent",
+        environment: {
+          HOME: "/accounts/b",
+          PI_CODING_AGENT_DIR: "/ignored/env-agent",
+          PI_CODING_AGENT_SESSION_DIR: "~/selected-sessions",
+        },
+        instanceId: "pi_work",
+        stateDir: "/state",
+        homeDir: "/home/user",
+        sdkAgentDir: "/sdk/default-agent",
+      }),
+    ).toEqual({
+      agentDir: "/accounts/b/configured-agent",
+      sessionDir: "/accounts/b/selected-sessions",
+    });
+  });
+
+  it("derives persistent synthetic agent and session roots for nondefault instances", () => {
+    const paths = makePiStoragePaths({
+      instanceId: "pi_work",
+      stateDir: "/state",
+      homeDir: "/home/user",
+      sdkAgentDir: "/sdk/default-agent",
+    });
+    expect(paths.agentDir).toContain("/state/provider-homes/pi/");
+    expect(paths.agentDir.endsWith("/.pi/agent")).toBe(true);
+    expect(paths.sessionDir).toBe(`${paths.agentDir}/sessions`);
+  });
+});
 
 function makePiModel(input: {
   reasoning: boolean;
@@ -567,6 +612,90 @@ describe("applyPiRuntimeApiKeysFromEnvironment", () => {
     expect(context.authStorage.getAuthStatus("openai")).toMatchObject({
       source: "environment",
     });
+  });
+});
+
+describe("isolated Pi provider routing", () => {
+  const makeRegistry = (
+    environment: Record<string, string>,
+    credential?: { provider: string; key: string },
+  ) => {
+    const authStorage = {
+      setRuntimeApiKey: vi.fn(),
+      removeRuntimeApiKey: vi.fn(),
+      get: vi.fn((provider: string) =>
+        credential?.provider === provider
+          ? { type: "api_key" as const, key: credential.key }
+          : undefined,
+      ),
+      has: vi.fn((provider: string) => credential?.provider === provider),
+      getApiKey: vi.fn(),
+      hasAuth: vi.fn(),
+      getAuthStatus: vi.fn(() => ({ configured: false })),
+      getOAuthProviders: vi.fn(() => []),
+      reload: vi.fn(),
+    } as unknown as AuthStorage;
+    const registry = {
+      providerRequestConfigs: new Map(),
+      modelRequestHeaders: new Map(),
+      getApiKeyAndHeaders: vi.fn(),
+      getApiKeyForProvider: vi.fn(),
+      getProviderAuthStatus: vi.fn(() => ({ configured: false })),
+    } as unknown as ModelRegistry;
+    const sdk = {
+      AuthStorage: { create: vi.fn(() => authStorage) },
+      ModelRegistry: { create: vi.fn(() => registry) },
+    } as unknown as Parameters<typeof createPiModelRegistry>[1];
+    return createPiModelRegistry("/agent", sdk, environment, "pi_work").registry;
+  };
+
+  it.each([
+    ["amazon-bedrock", "stored-bedrock", "Amazon Bedrock"],
+    ["azure-openai-responses", "stored-azure", "Azure OpenAI"],
+    ["google-vertex", "gcp-vertex-credentials", "Vertex ADC"],
+  ])("fails closed for isolated %s ambient-chain auth", async (provider, key, message) => {
+    const registry = makeRegistry({}, { provider, key });
+    await expect(
+      registry.getApiKeyAndHeaders({ provider, id: "model" } as Model<Api>),
+    ).resolves.toMatchObject({ ok: false, error: expect.stringContaining(message) });
+  });
+
+  it("resolves Cloudflare routing only from the selected instance", async () => {
+    const registry = makeRegistry({
+      CLOUDFLARE_ACCOUNT_ID: "account-b",
+      CLOUDFLARE_GATEWAY_ID: "gateway-b",
+      CLOUDFLARE_API_KEY: "key-b",
+    });
+    const model = {
+      provider: "cloudflare-ai-gateway",
+      id: "model",
+      baseUrl:
+        "https://gateway.ai.cloudflare.com/v1/${CLOUDFLARE_ACCOUNT_ID}/${CLOUDFLARE_GATEWAY_ID}",
+    } as Model<Api>;
+    await registry.getApiKeyAndHeaders(model);
+    expect(model.baseUrl).toContain("/account-b/gateway-b");
+  });
+
+  it("suppresses ambient OpenAI and Anthropic routing headers", async () => {
+    const openai = makeRegistry({ OPENAI_API_KEY: "key-b" });
+    await expect(
+      openai.getApiKeyAndHeaders({
+        provider: "openai",
+        id: "model",
+        api: "openai-responses",
+      } as Model<Api>),
+    ).resolves.toMatchObject({
+      ok: true,
+      headers: { "OpenAI-Organization": null, "OpenAI-Project": null },
+    });
+    const anthropic = makeRegistry({ ANTHROPIC_API_KEY: "key-b" });
+    await expect(
+      anthropic.getApiKeyAndHeaders({
+        provider: "anthropic",
+        id: "model",
+        api: "anthropic-messages",
+      } as Model<Api>),
+    ).resolves.toMatchObject({ ok: true, headers: { Authorization: null } });
   });
 });
 

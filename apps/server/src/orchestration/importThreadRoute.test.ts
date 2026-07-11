@@ -3,15 +3,19 @@ import path from "node:path";
 
 import {
   DEFAULT_SERVER_SETTINGS,
+  ProjectId,
   type ProviderInstanceId,
   type ProviderStartOptions,
+  ThreadId,
 } from "@synara/contracts";
+import { Effect, Option } from "effect";
 import { describe, expect, it } from "vitest";
 
 import { claudeIsolatedHomePath } from "../provider/claudeEnvironment";
 import {
   claudeHistoricalSessionChildEnvironment,
   claudeHistoricalSessionEnvironment,
+  makeImportThreadHandler,
   resolveImportedThreadProviderOptionsForSettings,
 } from "./importThreadRoute";
 
@@ -114,4 +118,102 @@ describe("resolveImportedThreadProviderOptionsForSettings", () => {
       ),
     ).toThrow(/disabled for thread import/);
   });
+});
+
+describe("makeImportThreadHandler", () => {
+  it.each(["opencode", "kilo"] as const)(
+    "passes the resolved %s instance into external-thread preflight",
+    async (driver) => {
+      const threadId = ThreadId.makeUnsafe(`thread-import-${driver}`);
+      const projectId = ProjectId.makeUnsafe(`project-import-${driver}`);
+      const instanceId = `${driver}_work` as ProviderInstanceId;
+      const workspaceRoot = `/repo/${driver}`;
+      const externalReadInputs: Array<Record<string, unknown>> = [];
+      const now = new Date().toISOString();
+      const adapter = {
+        readExternalThread: (input: Record<string, unknown>) => {
+          externalReadInputs.push(input);
+          return Effect.succeed({
+            threadId,
+            turns: [],
+            cwd: workspaceRoot,
+          });
+        },
+        readThread: () => Effect.succeed({ threadId, turns: [], cwd: workspaceRoot }),
+      };
+      const handler = makeImportThreadHandler({
+        fileSystem: {} as never,
+        orchestrationEngine: {
+          dispatch: () => Effect.void,
+        } as never,
+        path: path as never,
+        platform: process.platform,
+        projectionSnapshotQuery: {
+          getThreadDetailById: () =>
+            Effect.succeed(
+              Option.some({
+                id: threadId,
+                projectId,
+                title: "Imported thread",
+                modelSelection: { instanceId, model: `${driver}/test-model` },
+                runtimeMode: "full-access",
+                interactionMode: "default",
+                envMode: "local",
+                branch: null,
+                worktreePath: null,
+                associatedWorktreePath: null,
+                associatedWorktreeBranch: null,
+                associatedWorktreeRef: null,
+                session: null,
+              } as never),
+            ),
+          getProjectShellById: () =>
+            Effect.succeed(
+              Option.some({
+                id: projectId,
+                kind: "git",
+                workspaceRoot,
+              } as never),
+            ),
+        } as never,
+        providerAdapterRegistry: {
+          getByProvider: () => Effect.succeed(adapter as never),
+        } as never,
+        providerService: {
+          startSession: () =>
+            Effect.succeed({
+              provider: driver,
+              providerInstanceId: instanceId,
+              status: "ready",
+              runtimeMode: "full-access",
+              cwd: workspaceRoot,
+              threadId,
+              createdAt: now,
+              updatedAt: now,
+            }),
+        } as never,
+        serverConfig: { homeDir: "/home/tester", stateDir: "/synara/state" },
+        serverSettings: {
+          getSettings: Effect.succeed({
+            ...DEFAULT_SERVER_SETTINGS,
+            providerInstances: {
+              [instanceId]: {
+                driver,
+                enabled: true,
+                config: {},
+              },
+            },
+          }),
+        } as never,
+      });
+
+      await Effect.runPromise(handler({ threadId, externalId: "external-session" }));
+
+      expect(externalReadInputs).toHaveLength(1);
+      expect(externalReadInputs[0]).toMatchObject({
+        externalThreadId: "external-session",
+        providerInstanceId: instanceId,
+      });
+    },
+  );
 });

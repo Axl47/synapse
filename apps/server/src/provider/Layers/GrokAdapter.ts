@@ -1154,6 +1154,8 @@ export function makeGrokAdapter(
           const providerGrokOptions = input.providerOptions?.grok;
           const grokModelOptions = grokModelOptionsFromSelection(grokModelSelection);
           const effectiveGrokSettings: GrokAcpRuntimeSettings = {
+            homeDir: serverConfig.homeDir,
+            isolationRootDir: serverConfig.stateDir,
             ...(input.providerInstanceId !== undefined
               ? { instanceId: input.providerInstanceId }
               : {}),
