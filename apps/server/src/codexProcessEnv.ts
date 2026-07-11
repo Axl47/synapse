@@ -1375,6 +1375,20 @@ function readCodexAuthoritativeAuthTrackingFingerprint(tracking: CodexAuthTracki
   });
 }
 
+function preparedEffectiveAuthMatchesAuthoritative(tracking: CodexAuthTracking): boolean {
+  if (!tracking.effectiveAuthFilePath) {
+    return true;
+  }
+  const authoritative = readCodexAuthFileIdentity(tracking.authoritativeAuthFilePath);
+  // A changed fallback copy becomes independent state after an explicit logout;
+  // preserving that state is intentional and there is no source copy to race.
+  if (authoritative.state === "missing") {
+    return true;
+  }
+  const effective = readCodexAuthFileIdentity(tracking.effectiveAuthFilePath);
+  return JSON.stringify(effective) === JSON.stringify(authoritative);
+}
+
 function writeSynaraConfigSuppressions(
   markerPath: string,
   sectionHeaders: readonly string[],
@@ -2309,6 +2323,11 @@ export function buildCodexProcessLaunchContext(
   ) {
     throw new Error(
       "Codex authentication changed during app-server launch preparation; retry the request.",
+    );
+  }
+  if (!preparedEffectiveAuthMatchesAuthoritative(authTracking)) {
+    throw new Error(
+      "Prepared Codex authentication did not match the authoritative account; refusing to launch.",
     );
   }
 

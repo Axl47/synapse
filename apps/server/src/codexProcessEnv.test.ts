@@ -1899,6 +1899,58 @@ describe("buildCodexProcessEnv account overlays", () => {
     assert.strictEqual(readFileSync(sourceAuthPath, "utf8"), secondAuth);
   });
 
+  it("rejects an A-to-B-to-A race that leaves fallback auth on the wrong account", () => {
+    const fixture = makeAccountFixture({ shadowAuth: "missing" });
+    const sharedEnv = { ...fixture.env, CODEX_HOME: fixture.homePath };
+    const sourceAuthPath = path.join(fixture.homePath, "auth.json");
+    const auth = (accountId: string, token: string) =>
+      JSON.stringify({
+        auth_mode: "chatgpt",
+        tokens: {
+          account_id: accountId,
+          access_token: `access-${token}`,
+          refresh_token: `refresh-${token}`,
+        },
+      });
+    const firstAuth = auth("workspace-first", "1");
+    const secondAuth = auth("workspace-second", "2");
+    writeFileSync(sourceAuthPath, firstAuth, "utf8");
+    const tracking = resolveCodexAuthTracking({ env: sharedEnv });
+    const fingerprintBeforePreparation = readCodexAuthTrackingFingerprint(tracking);
+    const overlayHomePath = resolveActiveCodexHomeWritePath({ env: sharedEnv });
+    const overlayAuthPath = path.join(overlayHomePath, "auth.json");
+    const copyWhileAuthoritativeTemporarilyChanges = {
+      symlink: vi.fn((sourcePath: string, targetPath: string, type?: string | null) => {
+        if (path.basename(targetPath) === "auth.json") {
+          throw new Error("auth symlinks unavailable");
+        }
+        return symlinkSync(sourcePath, targetPath, type as "dir" | "file");
+      }) as typeof symlinkSync,
+      copyFile: vi.fn((sourcePath: string, targetPath: string) => {
+        if (path.basename(targetPath) !== "auth.json") {
+          copyFileSync(sourcePath, targetPath);
+          return;
+        }
+        writeFileSync(sourcePath, secondAuth, "utf8");
+        copyFileSync(sourcePath, targetPath);
+        writeFileSync(sourcePath, firstAuth, "utf8");
+      }) as typeof copyFileSync,
+    };
+
+    assert.throws(
+      () =>
+        buildCodexProcessLaunchContext({
+          env: sharedEnv,
+          platform: "win32",
+          overlayEntryLinker: copyWhileAuthoritativeTemporarilyChanges,
+        }),
+      /authentication did not match the authoritative account; refusing to launch/,
+    );
+    assert.strictEqual(readFileSync(sourceAuthPath, "utf8"), firstAuth);
+    assert.strictEqual(readFileSync(overlayAuthPath, "utf8"), secondAuth);
+    assert.notStrictEqual(readCodexAuthTrackingFingerprint(tracking), fingerprintBeforePreparation);
+  });
+
   it("removes an unchanged fallback copy when the authoritative account logs out", () => {
     const fixture = makeAccountFixture({ shadowAuth: "missing" });
     const sharedEnv = { ...fixture.env, CODEX_HOME: fixture.homePath };
