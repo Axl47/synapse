@@ -964,6 +964,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
             }
           : {}),
       });
+      const launchAuthFingerprint = readCodexAuthTrackingFingerprint(authTracking);
       const child = spawnCodexAppServer({
         binaryPath: codexBinaryPath,
         cwd: resolvedCwd,
@@ -990,7 +991,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         nextRequestId: 1,
         stopping: false,
         authTracking,
-        authFingerprint: readCodexAuthTrackingFingerprint(authTracking),
+        authFingerprint: launchAuthFingerprint,
         ...(normalizedCodexOptions ? { codexOptions: normalizedCodexOptions } : {}),
       };
 
@@ -1000,6 +1001,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       this.emitLifecycleEvent(context, "session/connecting", "Starting codex app-server");
 
       await this.sendRequest(context, "initialize", buildCodexInitializeParams());
+      this.assertContextAuthCurrent(context);
 
       this.writeMessage(context, { method: "initialized" });
       await this.registerSynaraSkillsRoot(context);
@@ -1058,7 +1060,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       if (resumeThreadId) {
         try {
           threadOpenMethod = "thread/resume";
-          threadOpenResponse = await this.sendRequest(context, "thread/resume", {
+          threadOpenResponse = await this.sendThreadOpenRequest(context, "thread/resume", {
             ...sessionOverrides,
             threadId: resumeThreadId,
           });
@@ -1092,11 +1094,19 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
             recoverable: true,
             cause: error instanceof Error ? error.message : String(error),
           }).pipe(this.runPromise);
-          threadOpenResponse = await this.sendRequest(context, "thread/start", threadStartParams);
+          threadOpenResponse = await this.sendThreadOpenRequest(
+            context,
+            "thread/start",
+            threadStartParams,
+          );
         }
       } else {
         threadOpenMethod = "thread/start";
-        threadOpenResponse = await this.sendRequest(context, "thread/start", threadStartParams);
+        threadOpenResponse = await this.sendThreadOpenRequest(
+          context,
+          "thread/start",
+          threadStartParams,
+        );
       }
 
       const threadOpenRecord = this.readObject(threadOpenResponse);
@@ -1622,6 +1632,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
             }
           : {}),
       });
+      const launchAuthFingerprint = readCodexAuthTrackingFingerprint(authTracking);
       const child = spawnCodexAppServer({
         binaryPath: codexBinaryPath,
         cwd: resolvedCwd,
@@ -1648,7 +1659,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         nextRequestId: 1,
         stopping: false,
         authTracking,
-        authFingerprint: readCodexAuthTrackingFingerprint(authTracking),
+        authFingerprint: launchAuthFingerprint,
         ...(normalizedCodexOptions ? { codexOptions: normalizedCodexOptions } : {}),
       };
 
@@ -1657,6 +1668,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       this.emitLifecycleEvent(context, "session/connecting", "Starting codex app-server");
 
       await this.sendRequest(context, "initialize", buildCodexInitializeParams());
+      this.assertContextAuthCurrent(context);
       this.writeMessage(context, { method: "initialized" });
       await this.registerSynaraSkillsRoot(context);
       try {
@@ -1688,7 +1700,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         "session/threadOpenRequested",
         `Forking Codex thread ${sourceProviderThreadId}.`,
       );
-      const response = await this.sendRequest(context, "thread/fork", forkParams);
+      const response = await this.sendThreadOpenRequest(context, "thread/fork", forkParams);
       const forkedProviderThreadId = this.readThreadIdFromResponse("thread/fork", response);
 
       this.updateSession(context, {
@@ -1903,11 +1915,15 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
 
   stopSession(threadId: ThreadId): void {
     const context = this.sessions.get(threadId);
-    if (!context) {
+    if (!context || context.stopping) {
       return;
     }
 
     context.stopping = true;
+    // Claim the entry before cleanup or lifecycle emission. EventEmitter
+    // listeners run synchronously and the Codex adapter inspects sessions while
+    // stamping events; leaving this context visible would re-enter stopSession.
+    this.sessions.delete(threadId);
 
     for (const pending of context.pending.values()) {
       clearTimeout(pending.timeout);
@@ -1928,7 +1944,6 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       activeTurnId: undefined,
     });
     this.emitLifecycleEvent(context, "session/closed", "Session stopped");
-    this.sessions.delete(threadId);
   }
 
   listSessions(): ProviderSession[] {
@@ -2200,6 +2215,13 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     return this.contextAuthStalenessMessage(context) === undefined;
   }
 
+  private assertContextAuthCurrent(context: CodexSessionContext): void {
+    const stalenessMessage = this.contextAuthStalenessMessage(context);
+    if (stalenessMessage) {
+      throw new Error(stalenessMessage);
+    }
+  }
+
   private pruneStaleAuthSessions(): void {
     for (const [threadId, context] of this.sessions) {
       if (!this.isContextAuthCurrent(context)) {
@@ -2364,6 +2386,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       authTracking,
       appServerArgs,
     } = buildCodexProcessLaunchContext(codexProcessEnvInputForOptions(normalizedCodexOptions));
+    const launchAuthFingerprint = readCodexAuthTrackingFingerprint(authTracking);
     const child = spawnCodexAppServer({
       binaryPath: codexBinaryPath,
       cwd: normalizedCwd,
@@ -2398,7 +2421,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       nextRequestId: 1,
       stopping: false,
       authTracking,
-      authFingerprint: readCodexAuthTrackingFingerprint(authTracking),
+      authFingerprint: launchAuthFingerprint,
       ...(normalizedCodexOptions ? { codexOptions: normalizedCodexOptions } : {}),
       discovery: true,
       discoveryKey,
@@ -2408,6 +2431,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     this.attachProcessListeners(context);
     try {
       await this.sendRequest(context, "initialize", buildCodexInitializeParams());
+      this.assertContextAuthCurrent(context);
       this.writeMessage(context, { method: "initialized" });
       await this.registerSynaraSkillsRoot(context);
       try {
@@ -2416,6 +2440,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       } catch {
         // Discovery can still function without account metadata.
       }
+      this.assertContextAuthCurrent(context);
       this.updateSession(context, { status: "ready" });
       this.scheduleDiscoverySessionIdleStop(discoveryKey);
       return context;
@@ -2908,6 +2933,15 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     });
 
     return result as TResponse;
+  }
+
+  private sendThreadOpenRequest<TResponse>(
+    context: CodexSessionContext,
+    method: "thread/start" | "thread/resume" | "thread/fork",
+    params: unknown,
+  ): Promise<TResponse> {
+    this.assertContextAuthCurrent(context);
+    return this.sendRequest(context, method, params);
   }
 
   private writeMessage(context: CodexSessionContext, message: unknown): void {
