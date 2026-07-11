@@ -30,6 +30,7 @@ export interface CursorAcpRuntimeCursorSettings {
   readonly apiEndpoint?: string;
   readonly binaryPath?: string;
   readonly environment?: Readonly<Record<string, string>>;
+  readonly instanceId?: string;
 }
 
 export const CURSOR_PARAMETERIZED_MODEL_PICKER_CAPABILITIES = {
@@ -84,7 +85,15 @@ export function buildCursorAcpSpawnInput(
     // turns, while still applying per-instance environment overrides on top.
     env: {
       ...CURSOR_AGENT_BROWSERLESS_ENV,
-      ...(cursorSettings?.environment ?? {}),
+    },
+    providerEnvironment: {
+      driver: "cursor",
+      ...(cursorSettings?.instanceId !== undefined
+        ? { instanceId: cursorSettings.instanceId }
+        : {}),
+      ...(cursorSettings?.environment !== undefined
+        ? { environment: cursorSettings.environment }
+        : {}),
     },
   };
 }

@@ -60,6 +60,7 @@ import { probeGeminiCapabilities } from "../geminiAcpProbe.ts";
 import { GeminiAdapter, type GeminiAdapterShape } from "../Services/GeminiAdapter.ts";
 import { asArray, asNumber, asRecord, asString, trimToUndefined } from "../geminiValue.ts";
 import { extractProposedPlanMarkdown, withProviderPlanModePrompt } from "../planMode.ts";
+import { buildProviderProcessEnv } from "../providerProcessEnv.ts";
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
 
 const PROVIDER = "gemini" as const;
@@ -742,8 +743,13 @@ const makeGeminiAdapter = Effect.fn("makeGeminiAdapter")(function* (
     readonly threadId: ThreadId;
     readonly selectedModel?: string;
     readonly environment?: Readonly<Record<string, string>>;
+    readonly instanceId?: string;
   }) {
-    const baseEnv = input.environment ? { ...process.env, ...input.environment } : process.env;
+    const baseEnv = buildProviderProcessEnv({
+      driver: PROVIDER,
+      ...(input.instanceId !== undefined ? { instanceId: input.instanceId } : {}),
+      ...(input.environment !== undefined ? { environment: input.environment } : {}),
+    });
     const candidateModels = [
       ...MODEL_OPTIONS_BY_PROVIDER.gemini.map((option) => option.slug),
       ...(input.selectedModel ? [input.selectedModel] : []),
@@ -844,7 +850,9 @@ const makeGeminiAdapter = Effect.fn("makeGeminiAdapter")(function* (
     return {
       session: {
         provider: PROVIDER,
-        ...(input.providerInstanceId ? { providerInstanceId: input.providerInstanceId } : {}),
+        ...(input.providerInstanceId !== undefined
+          ? { providerInstanceId: input.providerInstanceId }
+          : {}),
         status: "connecting",
         runtimeMode: input.runtimeMode,
         cwd: input.cwd,
@@ -2149,6 +2157,7 @@ const makeGeminiAdapter = Effect.fn("makeGeminiAdapter")(function* (
       const launchConfig = yield* prepareGeminiLaunchConfig({
         threadId: input.threadId,
         ...(selectedGeminiModel ? { selectedModel: selectedGeminiModel } : {}),
+        ...(input.providerInstanceId !== undefined ? { instanceId: input.providerInstanceId } : {}),
         ...(providerOptions?.environment ? { environment: providerOptions.environment } : {}),
       });
       const child = yield* spawnGeminiProcess(
@@ -2177,6 +2186,9 @@ const makeGeminiAdapter = Effect.fn("makeGeminiAdapter")(function* (
         runtimeModeId,
         cwd,
         binaryPath,
+        ...(input.providerInstanceId !== undefined
+          ? { providerInstanceId: input.providerInstanceId }
+          : {}),
         ...(providerOptions?.environment ? { environment: providerOptions.environment } : {}),
         child,
         turns: resumeTurns,
@@ -2486,6 +2498,9 @@ const makeGeminiAdapter = Effect.fn("makeGeminiAdapter")(function* (
 
       const launchConfig = yield* prepareGeminiLaunchConfig({
         threadId,
+        ...(context.session.providerInstanceId !== undefined
+          ? { instanceId: context.session.providerInstanceId }
+          : {}),
         ...(context.session.model ? { selectedModel: context.session.model } : {}),
         ...(context.environment ? { environment: context.environment } : {}),
       });
@@ -2514,6 +2529,9 @@ const makeGeminiAdapter = Effect.fn("makeGeminiAdapter")(function* (
         runtimeModeId: context.runtimeModeId,
         cwd,
         binaryPath: context.binaryPath,
+        ...(context.session.providerInstanceId !== undefined
+          ? { providerInstanceId: context.session.providerInstanceId }
+          : {}),
         ...(context.environment ? { environment: context.environment } : {}),
         child,
         turns: nextTurns,
@@ -2560,6 +2578,7 @@ const makeGeminiAdapter = Effect.fn("makeGeminiAdapter")(function* (
     probeGeminiCapabilities({
       binaryPath: trimToUndefined(input.binaryPath) ?? "gemini",
       cwd: os.homedir(),
+      ...(input.instanceId !== undefined ? { instanceId: input.instanceId } : {}),
       ...(input.environment ? { environment: input.environment } : {}),
     }).pipe(
       Effect.map(

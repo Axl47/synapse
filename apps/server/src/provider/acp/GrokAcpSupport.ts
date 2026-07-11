@@ -16,6 +16,7 @@ import {
   type AcpSessionRuntimeShape,
   type AcpSpawnInput,
 } from "./AcpSessionRuntime.ts";
+import { buildProviderProcessEnv } from "../providerProcessEnv.ts";
 
 export interface GrokAcpRuntimeSettings {
   readonly binaryPath?: string;
@@ -23,6 +24,7 @@ export interface GrokAcpRuntimeSettings {
   readonly reasoningEffort?: GrokModelOptions["reasoningEffort"];
   readonly alwaysApprove?: boolean;
   readonly environment?: Readonly<Record<string, string>>;
+  readonly instanceId?: string;
 }
 
 export interface GrokAcpRuntimeInput extends Omit<
@@ -79,7 +81,11 @@ export function buildGrokAcpSpawnInput(
     command: grokSettings?.binaryPath || "grok",
     args,
     cwd,
-    ...(grokSettings?.environment ? { env: grokSettings.environment } : {}),
+    providerEnvironment: {
+      driver: "grok",
+      ...(grokSettings?.instanceId !== undefined ? { instanceId: grokSettings.instanceId } : {}),
+      ...(grokSettings?.environment !== undefined ? { environment: grokSettings.environment } : {}),
+    },
   };
 }
 
@@ -90,13 +96,17 @@ function availableAuthMethodIds(
 }
 
 export const resolveGrokAcpAuthMethodIdForEnv =
-  (environment?: Readonly<Record<string, string>> | undefined) =>
+  (environment?: Readonly<Record<string, string>> | undefined, instanceId?: string | undefined) =>
   (
     initializeResult: EffectAcpSchema.InitializeResponse,
   ): Effect.Effect<string, EffectAcpErrors.AcpError> =>
     Effect.gen(function* () {
       const authMethodIds = availableAuthMethodIds(initializeResult);
-      const effectiveEnv = environment ? { ...process.env, ...environment } : process.env;
+      const effectiveEnv = buildProviderProcessEnv({
+        driver: "grok",
+        ...(environment !== undefined ? { environment } : {}),
+        ...(instanceId !== undefined ? { instanceId } : {}),
+      });
       if (hasGrokApiKeyEnv(effectiveEnv) && authMethodIds.has(GROK_API_KEY_AUTH_METHOD_ID)) {
         return GROK_API_KEY_AUTH_METHOD_ID;
       }
@@ -123,7 +133,10 @@ export const makeGrokAcpRuntime = (
       AcpSessionRuntime.layer({
         ...input,
         spawn: buildGrokAcpSpawnInput(input.grokSettings, input.cwd),
-        resolveAuthMethodId: resolveGrokAcpAuthMethodIdForEnv(input.grokSettings?.environment),
+        resolveAuthMethodId: resolveGrokAcpAuthMethodIdForEnv(
+          input.grokSettings?.environment,
+          input.grokSettings?.instanceId,
+        ),
         authenticateMeta: { headless: true },
       }).pipe(
         Layer.provide(

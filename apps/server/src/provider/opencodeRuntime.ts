@@ -41,6 +41,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import { NetService } from "@synara/shared/Net";
 import { prepareWindowsSafeProcess } from "@synara/shared/windowsProcess";
 import { isWindowsShellCommandMissingResult } from "../shell-command-detection.ts";
+import { buildProviderProcessEnv } from "./providerProcessEnv.ts";
 
 const DEFAULT_OPENCODE_SERVER_TIMEOUT_MS = 20_000;
 const DEFAULT_HOSTNAME = "127.0.0.1";
@@ -191,6 +192,7 @@ export interface OpenCodeRuntimeShape {
     readonly timeoutMs?: number;
     readonly experimentalWebSockets?: boolean;
     readonly environment?: Readonly<Record<string, string>>;
+    readonly instanceId?: string;
   }) => Effect.Effect<OpenCodeServerProcess, OpenCodeRuntimeError, Scope.Scope>;
   readonly connectToOpenCodeServer: (input: {
     readonly binaryPath: string;
@@ -202,6 +204,7 @@ export interface OpenCodeRuntimeShape {
     readonly timeoutMs?: number;
     readonly experimentalWebSockets?: boolean;
     readonly environment?: Readonly<Record<string, string>>;
+    readonly instanceId?: string;
   }) => Effect.Effect<OpenCodeServerConnection, OpenCodeRuntimeError, Scope.Scope>;
   readonly runOpenCodeCommand: (input: {
     readonly binaryPath: string;
@@ -209,6 +212,7 @@ export interface OpenCodeRuntimeShape {
     readonly args: ReadonlyArray<string>;
     readonly cwd?: string;
     readonly environment?: Readonly<Record<string, string>>;
+    readonly instanceId?: string;
   }) => Effect.Effect<OpenCodeCommandResult, OpenCodeRuntimeError>;
   readonly createOpenCodeSdkClient: (input: {
     readonly baseUrl: string;
@@ -224,6 +228,7 @@ export interface OpenCodeRuntimeShape {
     readonly cliSpec?: OpenCodeCompatibleCliSpec;
     readonly cwd?: string;
     readonly environment?: Readonly<Record<string, string>>;
+    readonly instanceId?: string;
   }) => Effect.Effect<ReadonlyArray<OpenCodeCliModelDescriptor>, OpenCodeRuntimeError>;
   readonly loadOpenCodeCredentialProviderIDs: (
     client: OpencodeClient,
@@ -303,6 +308,7 @@ function pooledOpenCodeServerKey(input: {
   readonly hostname?: string;
   readonly experimentalWebSockets?: boolean;
   readonly environment?: Readonly<Record<string, string>>;
+  readonly instanceId?: string;
 }): string {
   const cliSpec = input.cliSpec ?? OPENCODE_CLI_SPEC;
   return JSON.stringify({
@@ -311,6 +317,7 @@ function pooledOpenCodeServerKey(input: {
     hostname: input.hostname ?? DEFAULT_HOSTNAME,
     port: input.port ?? null,
     experimentalWebSockets: input.experimentalWebSockets === true,
+    instanceId: input.instanceId ?? null,
     environment: environmentFingerprint(input.environment),
     cliSpec: {
       defaultBinaryPath: cliSpec.defaultBinaryPath,
@@ -792,9 +799,18 @@ export function buildOpenCodeServerProcessEnv(input: {
   readonly cliSpec?: OpenCodeCompatibleCliSpec;
   readonly experimentalWebSockets?: boolean;
   readonly baseEnv?: NodeJS.ProcessEnv;
+  readonly environment?: Readonly<Record<string, string>>;
+  readonly instanceId?: string;
 }): NodeJS.ProcessEnv {
+  const cliSpec = input.cliSpec ?? OPENCODE_CLI_SPEC;
   return {
-    ...(input.baseEnv ?? process.env),
+    ...buildProviderProcessEnv({
+      driver:
+        cliSpec.configContentEnvVar === KILO_CLI_SPEC.configContentEnvVar ? "kilo" : "opencode",
+      ...(input.baseEnv !== undefined ? { env: input.baseEnv } : {}),
+      ...(input.environment !== undefined ? { environment: input.environment } : {}),
+      ...(input.instanceId !== undefined ? { instanceId: input.instanceId } : {}),
+    }),
     ...(input.experimentalWebSockets ? { OPENCODE_EXPERIMENTAL_WEBSOCKETS: "true" } : {}),
   };
 }
@@ -861,7 +877,13 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
 
   const runOpenCodeCommand: OpenCodeRuntimeShape["runOpenCodeCommand"] = (input) =>
     Effect.gen(function* () {
-      const childEnv = input.environment ? { ...process.env, ...input.environment } : process.env;
+      const cliSpec = input.cliSpec ?? OPENCODE_CLI_SPEC;
+      const childEnv = buildProviderProcessEnv({
+        driver:
+          cliSpec.configContentEnvVar === KILO_CLI_SPEC.configContentEnvVar ? "kilo" : "opencode",
+        ...(input.instanceId !== undefined ? { instanceId: input.instanceId } : {}),
+        ...(input.environment !== undefined ? { environment: input.environment } : {}),
+      });
       const prepared = prepareWindowsSafeProcess(input.binaryPath, input.args, {
         cwd: input.cwd,
         env: childEnv,
@@ -926,7 +948,8 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
           ChildProcess.make(input.binaryPath, args, {
             env: buildOpenCodeServerProcessEnv({
               cliSpec,
-              ...(input.environment ? { baseEnv: { ...process.env, ...input.environment } } : {}),
+              ...(input.environment !== undefined ? { environment: input.environment } : {}),
+              ...(input.instanceId !== undefined ? { instanceId: input.instanceId } : {}),
               ...(input.experimentalWebSockets !== undefined
                 ? { experimentalWebSockets: input.experimentalWebSockets }
                 : {}),
@@ -1159,6 +1182,7 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
     readonly timeoutMs?: number;
     readonly experimentalWebSockets?: boolean;
     readonly environment?: Readonly<Record<string, string>>;
+    readonly instanceId?: string;
   }) =>
     pooledServerMutex.withPermit(
       Effect.gen(function* () {
@@ -1249,6 +1273,7 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
           ? { experimentalWebSockets: input.experimentalWebSockets }
           : {}),
         ...(input.environment !== undefined ? { environment: input.environment } : {}),
+        ...(input.instanceId !== undefined ? { instanceId: input.instanceId } : {}),
       });
       yield* Scope.addFinalizer(callerScope, releasePooledServer(pooledServer));
       return {
@@ -1345,12 +1370,14 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
     readonly cwd?: string;
     readonly args: ReadonlyArray<string>;
     readonly environment?: Readonly<Record<string, string>>;
+    readonly instanceId?: string;
   }) =>
     runOpenCodeCommand({
       binaryPath: input.binaryPath,
       ...(input.cliSpec !== undefined ? { cliSpec: input.cliSpec } : {}),
       ...(input.cwd !== undefined ? { cwd: input.cwd } : {}),
       ...(input.environment !== undefined ? { environment: input.environment } : {}),
+      ...(input.instanceId !== undefined ? { instanceId: input.instanceId } : {}),
       args: input.args,
     }).pipe(
       Effect.flatMap((result) =>
@@ -1374,6 +1401,7 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
       ...(input.cliSpec !== undefined ? { cliSpec: input.cliSpec } : {}),
       ...(input.cwd !== undefined ? { cwd: input.cwd } : {}),
       ...(input.environment !== undefined ? { environment: input.environment } : {}),
+      ...(input.instanceId !== undefined ? { instanceId: input.instanceId } : {}),
       args: ["models", "--verbose"],
     }).pipe(
       Effect.catch((error) => {
@@ -1399,6 +1427,7 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
           ...(input.cliSpec !== undefined ? { cliSpec: input.cliSpec } : {}),
           ...(input.cwd !== undefined ? { cwd: input.cwd } : {}),
           ...(input.environment !== undefined ? { environment: input.environment } : {}),
+          ...(input.instanceId !== undefined ? { instanceId: input.instanceId } : {}),
           args: ["models"],
         });
       }),

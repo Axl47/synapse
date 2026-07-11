@@ -74,6 +74,10 @@ describe("applyPiRuntimeApiKeysFromEnvironment", () => {
   it("uses the same runtime auth storage for API keys and model registry", () => {
     const authStorage = {
       setRuntimeApiKey: vi.fn(),
+      has: vi.fn(() => false),
+      getApiKey: vi.fn(async () => undefined),
+      hasAuth: vi.fn(() => false),
+      getAuthStatus: vi.fn(() => ({ configured: false })),
     } as unknown as AuthStorage;
     const registry = {} as ModelRegistry;
     const piSdk = {
@@ -128,6 +132,109 @@ describe("applyPiRuntimeApiKeysFromEnvironment", () => {
     expect(runtimeKeys.get("opencode")).toBe("opencode-key");
     expect(runtimeKeys.get("opencode-go")).toBe("opencode-key");
     expect(process.env.OPENAI_API_KEY).toBe(previousOpenAiKey);
+  });
+
+  it("blocks ambient API-key fallback for a non-default Pi instance registry", async () => {
+    const previousOpenAiKey = process.env.OPENAI_API_KEY;
+    process.env.OPENAI_API_KEY = "ambient-account-a";
+    const authStorage = {
+      setRuntimeApiKey: vi.fn(),
+      has: vi.fn(() => false),
+      getApiKey: vi.fn(async () => process.env.OPENAI_API_KEY),
+      hasAuth: vi.fn(() => process.env.OPENAI_API_KEY !== undefined),
+      getAuthStatus: vi.fn(() => ({
+        configured: process.env.OPENAI_API_KEY !== undefined,
+        source: "environment" as const,
+        label: "OPENAI_API_KEY",
+      })),
+    } as unknown as AuthStorage;
+    const piSdk = {
+      AuthStorage: {
+        create: vi.fn(() => authStorage),
+      },
+      ModelRegistry: {
+        create: vi.fn(() => ({}) as ModelRegistry),
+      },
+    } as unknown as Parameters<typeof createPiModelRegistry>[1];
+
+    let context: ReturnType<typeof createPiModelRegistry>;
+    try {
+      context = createPiModelRegistry("/agent", piSdk, undefined, "pi_work");
+      expect(await context.authStorage.getApiKey("openai")).toBeUndefined();
+      expect(context.authStorage.hasAuth("openai")).toBe(false);
+      expect(context.authStorage.getAuthStatus("openai")).toEqual({ configured: false });
+    } finally {
+      if (previousOpenAiKey === undefined) {
+        delete process.env.OPENAI_API_KEY;
+      } else {
+        process.env.OPENAI_API_KEY = previousOpenAiKey;
+      }
+    }
+
+    expect(authStorage.setRuntimeApiKey).not.toHaveBeenCalled();
+  });
+
+  it("preserves instance auth.json resolution while blocking ambient fallback", async () => {
+    const authStorage = {
+      setRuntimeApiKey: vi.fn(),
+      has: vi.fn((provider: string) => provider === "openai"),
+      getApiKey: vi.fn(async (provider: string) =>
+        provider === "openai" ? "stored-instance-key" : undefined,
+      ),
+      hasAuth: vi.fn((provider: string) => provider === "openai"),
+      getAuthStatus: vi.fn((provider: string) =>
+        provider === "openai"
+          ? { configured: true, source: "stored" as const }
+          : { configured: false },
+      ),
+    } as unknown as AuthStorage;
+    const piSdk = {
+      AuthStorage: {
+        create: vi.fn(() => authStorage),
+      },
+      ModelRegistry: {
+        create: vi.fn(() => ({}) as ModelRegistry),
+      },
+    } as unknown as Parameters<typeof createPiModelRegistry>[1];
+
+    const context = createPiModelRegistry("/agent", piSdk, undefined, "pi_work");
+
+    await expect(context.authStorage.getApiKey("openai")).resolves.toBe("stored-instance-key");
+    expect(context.authStorage.hasAuth("openai")).toBe(true);
+    expect(context.authStorage.getAuthStatus("openai")).toEqual({
+      configured: true,
+      source: "stored",
+    });
+  });
+
+  it("preserves ambient fallback for the default Pi instance", async () => {
+    const authStorage = {
+      setRuntimeApiKey: vi.fn(),
+      has: vi.fn(() => false),
+      getApiKey: vi.fn(async () => "ambient-default-key"),
+      hasAuth: vi.fn(() => true),
+      getAuthStatus: vi.fn(() => ({
+        configured: true,
+        source: "environment" as const,
+        label: "OPENAI_API_KEY",
+      })),
+    } as unknown as AuthStorage;
+    const piSdk = {
+      AuthStorage: {
+        create: vi.fn(() => authStorage),
+      },
+      ModelRegistry: {
+        create: vi.fn(() => ({}) as ModelRegistry),
+      },
+    } as unknown as Parameters<typeof createPiModelRegistry>[1];
+
+    const context = createPiModelRegistry("/agent", piSdk);
+
+    await expect(context.authStorage.getApiKey("openai")).resolves.toBe("ambient-default-key");
+    expect(context.authStorage.hasAuth("openai")).toBe(true);
+    expect(context.authStorage.getAuthStatus("openai")).toMatchObject({
+      source: "environment",
+    });
   });
 });
 

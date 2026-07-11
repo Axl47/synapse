@@ -91,6 +91,7 @@ import {
 } from "../acp/GrokAcpSupport.ts";
 import { GrokAdapter, type GrokAdapterShape } from "../Services/GrokAdapter.ts";
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
+import { buildProviderProcessEnv } from "../providerProcessEnv.ts";
 
 const PROVIDER = "grok" as const;
 const GROK_RESUME_VERSION = 1 as const;
@@ -546,6 +547,23 @@ export function mergeGrokModelDescriptors(
 
 function xaiApiBaseUrl(env: NodeJS.ProcessEnv = process.env): string {
   return (env.XAI_API_BASE_URL?.trim() || XAI_API_BASE_URL).replace(/\/+$/u, "");
+}
+
+export function buildGrokModelDiscoveryEnv(
+  input: {
+    readonly instanceId?: string | undefined;
+    readonly environment?: Readonly<Record<string, string>> | undefined;
+  },
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+): NodeJS.ProcessEnv {
+  return buildProviderProcessEnv({
+    driver: PROVIDER,
+    env,
+    platform,
+    ...(input.instanceId !== undefined ? { instanceId: input.instanceId } : {}),
+    ...(input.environment !== undefined ? { environment: input.environment } : {}),
+  });
 }
 
 function fetchXaiLanguageModels(input: {
@@ -1136,6 +1154,9 @@ export function makeGrokAdapter(
           const providerGrokOptions = input.providerOptions?.grok;
           const grokModelOptions = grokModelOptionsFromSelection(grokModelSelection);
           const effectiveGrokSettings: GrokAcpRuntimeSettings = {
+            ...(input.providerInstanceId !== undefined
+              ? { instanceId: input.providerInstanceId }
+              : {}),
             ...(grokSettings.binaryPath !== undefined
               ? { binaryPath: grokSettings.binaryPath }
               : {}),
@@ -2338,7 +2359,7 @@ export function makeGrokAdapter(
 
     const listModels: NonNullable<GrokAdapterShape["listModels"]> = (input) => {
       const binaryPath = input.binaryPath?.trim() || grokSettings.binaryPath || "grok";
-      const childEnv = input.environment ? { ...process.env, ...input.environment } : process.env;
+      const childEnv = buildGrokModelDiscoveryEnv(input);
       return Effect.gen(function* () {
         let cliError: unknown;
         let apiError: ProviderAdapterRequestError | undefined;
@@ -2376,9 +2397,9 @@ export function makeGrokAdapter(
             }),
           ),
         );
-        const apiKey = getGrokApiKeyEnv();
+        const apiKey = getGrokApiKeyEnv(childEnv);
         const apiModels = apiKey
-          ? yield* fetchXaiLanguageModels({ apiKey, baseUrl: xaiApiBaseUrl() }).pipe(
+          ? yield* fetchXaiLanguageModels({ apiKey, baseUrl: xaiApiBaseUrl(childEnv) }).pipe(
               Effect.catch((error) =>
                 Effect.sync(() => {
                   apiError = error;

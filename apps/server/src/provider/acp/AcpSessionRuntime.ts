@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { prepareWindowsSafeProcess } from "@synara/shared/windowsProcess";
+import { buildProviderProcessEnv, type ProviderProcessEnvDriver } from "../providerProcessEnv.ts";
 import {
   Cause,
   Deferred,
@@ -35,6 +36,27 @@ export interface AcpSpawnInput {
   readonly args: ReadonlyArray<string>;
   readonly cwd?: string;
   readonly env?: Readonly<Record<string, string>>;
+  readonly providerEnvironment?: {
+    readonly driver: ProviderProcessEnvDriver;
+    readonly instanceId?: string | undefined;
+    readonly environment?: Readonly<Record<string, string>> | undefined;
+  };
+}
+
+export function buildAcpSpawnProcessEnv(
+  spawn: AcpSpawnInput,
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+): NodeJS.ProcessEnv {
+  if (spawn.providerEnvironment) {
+    return buildProviderProcessEnv({
+      ...spawn.providerEnvironment,
+      env,
+      platform,
+      ...(spawn.env !== undefined ? { overlay: spawn.env } : {}),
+    });
+  }
+  return spawn.env ? { ...env, ...spawn.env } : env;
 }
 
 export interface AcpSessionRuntimeOptions {
@@ -231,7 +253,7 @@ const makeAcpSessionRuntime = (
         ),
       );
 
-    const env = options.spawn.env ? { ...process.env, ...options.spawn.env } : process.env;
+    const env = buildAcpSpawnProcessEnv(options.spawn);
     const prepared = prepareWindowsSafeProcess(options.spawn.command, options.spawn.args, {
       cwd: options.spawn.cwd,
       env,

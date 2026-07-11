@@ -106,6 +106,7 @@ import {
 } from "../providerMaintenance";
 import { collectUint8StreamText } from "../../stream/collectUint8StreamText";
 import { buildCodexProcessEnv } from "../../codexProcessEnv.ts";
+import { buildProviderProcessEnv, type ProviderProcessEnvDriver } from "../providerProcessEnv.ts";
 
 export { parseClaudeAuthStatusFromOutput } from "../claudeAuthStatus";
 export type { CommandResult } from "../providerCliOutput";
@@ -738,8 +739,39 @@ const runClaudeCommand = (
     ),
   );
 
-const makeProviderProbeEnv = (environment?: Readonly<Record<string, string>>): NodeJS.ProcessEnv =>
-  environment ? { ...process.env, ...environment } : process.env;
+const makeProviderProbeEnv = (
+  driver: ProviderProcessEnvDriver,
+  environment?: Readonly<Record<string, string>>,
+  instanceId?: string,
+): NodeJS.ProcessEnv =>
+  buildProviderProcessEnv({
+    driver,
+    ...(environment !== undefined ? { environment } : {}),
+    ...(instanceId !== undefined ? { instanceId } : {}),
+  });
+
+export const makeProviderUpdateEnv = (instance: ResolvedProviderInstance): NodeJS.ProcessEnv => {
+  const environment =
+    instance.raw.environment !== undefined || Object.keys(instance.environment).length > 0
+      ? instance.environment
+      : undefined;
+  switch (instance.driver) {
+    case "cursor":
+    case "gemini":
+    case "grok":
+    case "kilo":
+    case "opencode":
+    case "pi":
+      return buildProviderProcessEnv({
+        driver: instance.driver,
+        instanceId: instance.instanceId,
+        ...(environment !== undefined ? { environment } : {}),
+      });
+    case "codex":
+    case "claudeAgent":
+      return environment ? { ...process.env, ...environment } : process.env;
+  }
+};
 
 const runGeminiCommand = (
   args: ReadonlyArray<string>,
@@ -1364,11 +1396,12 @@ export const checkClaudeProviderStatus = makeCheckClaudeProviderStatus();
 export const makeCheckGeminiProviderStatus = (
   binaryPath?: string,
   environment?: Readonly<Record<string, string>>,
+  instanceId?: string,
 ): Effect.Effect<ServerProviderStatus, never, ChildProcessSpawner.ChildProcessSpawner> =>
   Effect.gen(function* () {
     const checkedAt = new Date().toISOString();
     const executable = nonEmptyTrimmed(binaryPath) ?? "gemini";
-    const probeEnv = makeProviderProbeEnv(environment);
+    const probeEnv = makeProviderProbeEnv(GEMINI_PROVIDER, environment, instanceId);
 
     const versionProbe = yield* runGeminiCommand(["--version"], executable, probeEnv).pipe(
       Effect.timeoutOption(DEFAULT_TIMEOUT_MS),
@@ -1425,6 +1458,7 @@ export const makeCheckGeminiProviderStatus = (
     const capabilityProbe = yield* probeGeminiCapabilities({
       binaryPath: executable,
       cwd: OS.homedir(),
+      ...(instanceId !== undefined ? { instanceId } : {}),
       ...(environment !== undefined ? { environment } : {}),
     }).pipe(Effect.result);
 
@@ -1467,11 +1501,12 @@ export const checkGeminiProviderStatus = makeCheckGeminiProviderStatus();
 export const makeCheckGrokProviderStatus = (
   binaryPath?: string,
   environment?: Readonly<Record<string, string>>,
+  instanceId?: string,
 ): Effect.Effect<ServerProviderStatus, never, ChildProcessSpawner.ChildProcessSpawner> =>
   Effect.gen(function* () {
     const checkedAt = new Date().toISOString();
     const executable = nonEmptyTrimmed(binaryPath) ?? "grok";
-    const probeEnv = makeProviderProbeEnv(environment);
+    const probeEnv = makeProviderProbeEnv(GROK_PROVIDER, environment, instanceId);
 
     const versionProbe = yield* runGrokCommand(["--version"], executable, probeEnv).pipe(
       Effect.timeoutOption(DEFAULT_TIMEOUT_MS),
@@ -1594,6 +1629,7 @@ export const makeCheckOpenCodeProviderStatus = (
     readonly serverPassword?: string | undefined;
     readonly experimentalWebSockets?: boolean | undefined;
   },
+  instanceId?: string,
 ): Effect.Effect<ServerProviderStatus, never, ChildProcessSpawner.ChildProcessSpawner> =>
   Effect.gen(function* () {
     const checkedAt = new Date().toISOString();
@@ -1609,7 +1645,7 @@ export const makeCheckOpenCodeProviderStatus = (
     }
 
     const executable = nonEmptyTrimmed(binaryPath) ?? "opencode";
-    const probeEnv = makeProviderProbeEnv(environment);
+    const probeEnv = makeProviderProbeEnv(OPENCODE_PROVIDER, environment, instanceId);
 
     const versionProbe = yield* runOpenCodeCommand(["--version"], executable, probeEnv).pipe(
       Effect.timeoutOption(OPENCODE_HEALTH_TIMEOUT_MS),
@@ -1688,6 +1724,7 @@ export const makeCheckKiloProviderStatus = (
     readonly serverUrl?: string | undefined;
     readonly serverPassword?: string | undefined;
   },
+  instanceId?: string,
 ): Effect.Effect<ServerProviderStatus, never, ChildProcessSpawner.ChildProcessSpawner> =>
   Effect.gen(function* () {
     const checkedAt = new Date().toISOString();
@@ -1702,7 +1739,7 @@ export const makeCheckKiloProviderStatus = (
     }
 
     const executable = nonEmptyTrimmed(binaryPath) ?? "kilo";
-    const probeEnv = makeProviderProbeEnv(environment);
+    const probeEnv = makeProviderProbeEnv(KILO_PROVIDER, environment, instanceId);
 
     const versionProbe = yield* runKiloCommand(["--version"], executable, probeEnv).pipe(
       Effect.timeoutOption(DEFAULT_TIMEOUT_MS),
@@ -1777,11 +1814,12 @@ export const checkPiProviderStatus = (
   agentDir?: string,
   binaryPath?: string,
   environment?: Readonly<Record<string, string>>,
+  instanceId?: string,
 ): Effect.Effect<ServerProviderStatus, never, ChildProcessSpawner.ChildProcessSpawner> =>
   Effect.gen(function* () {
     const checkedAt = new Date().toISOString();
     const executable = nonEmptyTrimmed(binaryPath) ?? "pi";
-    const probeEnv = makeProviderProbeEnv(environment);
+    const probeEnv = makeProviderProbeEnv(PI_PROVIDER, environment, instanceId);
 
     const versionProbe = yield* runPiCommand(["--version"], executable, probeEnv).pipe(
       Effect.timeoutOption(DEFAULT_TIMEOUT_MS),
@@ -1859,11 +1897,12 @@ export const checkPiProviderStatus = (
 export const makeCheckCursorProviderStatus = (
   binaryPath?: string,
   environment?: Readonly<Record<string, string>>,
+  instanceId?: string,
 ): Effect.Effect<ServerProviderStatus, never, ChildProcessSpawner.ChildProcessSpawner> =>
   Effect.gen(function* () {
     const checkedAt = new Date().toISOString();
     const executable = resolveCursorAgentBinaryPath(nonEmptyTrimmed(binaryPath));
-    const probeEnv = makeProviderProbeEnv(environment);
+    const probeEnv = makeProviderProbeEnv(CURSOR_PROVIDER, environment, instanceId);
 
     const versionProbe = yield* runCursorCommand(["--version"], executable, probeEnv).pipe(
       Effect.timeoutOption(DEFAULT_TIMEOUT_MS),
@@ -2799,47 +2838,81 @@ export const ProviderHealthLive = Layer.effect(
             ),
           );
         }
-        case "cursor":
+        case "cursor": {
+          const cursorOptions = providerStartOptionsFromInstance(instance)?.cursor;
           return checkProviderInstanceWhenEnabled(
             instance,
-            makeCheckCursorProviderStatus(binaryPath, instance.environment),
+            makeCheckCursorProviderStatus(
+              binaryPath,
+              cursorOptions?.environment,
+              instance.instanceId,
+            ),
           );
-        case "gemini":
+        }
+        case "gemini": {
+          const geminiOptions = providerStartOptionsFromInstance(instance)?.gemini;
           return checkProviderInstanceWhenEnabled(
             instance,
-            makeCheckGeminiProviderStatus(binaryPath, instance.environment),
+            makeCheckGeminiProviderStatus(
+              binaryPath,
+              geminiOptions?.environment,
+              instance.instanceId,
+            ),
           );
-        case "grok":
+        }
+        case "grok": {
+          const grokOptions = providerStartOptionsFromInstance(instance)?.grok;
           return checkProviderInstanceWhenEnabled(
             instance,
-            makeCheckGrokProviderStatus(binaryPath, instance.environment),
+            makeCheckGrokProviderStatus(binaryPath, grokOptions?.environment, instance.instanceId),
           );
-        case "kilo":
+        }
+        case "kilo": {
+          const kiloOptions = providerStartOptionsFromInstance(instance)?.kilo;
           return checkProviderInstanceWhenEnabled(
             instance,
-            makeCheckKiloProviderStatus(binaryPath, instance.environment, {
-              serverUrl: readInstanceConfigString(instance, "serverUrl"),
-              serverPassword: readInstanceConfigString(instance, "serverPassword"),
-            }),
+            makeCheckKiloProviderStatus(
+              binaryPath,
+              kiloOptions?.environment,
+              {
+                serverUrl: readInstanceConfigString(instance, "serverUrl"),
+                serverPassword: readInstanceConfigString(instance, "serverPassword"),
+              },
+              instance.instanceId,
+            ),
           );
-        case "opencode":
+        }
+        case "opencode": {
+          const openCodeOptions = providerStartOptionsFromInstance(instance)?.opencode;
           return checkProviderInstanceWhenEnabled(
             instance,
-            makeCheckOpenCodeProviderStatus(binaryPath, instance.environment, {
-              serverUrl: readInstanceConfigString(instance, "serverUrl"),
-              serverPassword: readInstanceConfigString(instance, "serverPassword"),
-              experimentalWebSockets: readInstanceConfigBoolean(instance, "experimentalWebSockets"),
-            }),
+            makeCheckOpenCodeProviderStatus(
+              binaryPath,
+              openCodeOptions?.environment,
+              {
+                serverUrl: readInstanceConfigString(instance, "serverUrl"),
+                serverPassword: readInstanceConfigString(instance, "serverPassword"),
+                experimentalWebSockets: readInstanceConfigBoolean(
+                  instance,
+                  "experimentalWebSockets",
+                ),
+              },
+              instance.instanceId,
+            ),
           );
-        case "pi":
+        }
+        case "pi": {
+          const piOptions = providerStartOptionsFromInstance(instance)?.pi;
           return checkProviderInstanceWhenEnabled(
             instance,
             checkPiProviderStatus(
               readInstanceConfigString(instance, "agentDir"),
               binaryPath,
-              instance.environment,
+              piOptions?.environment,
+              instance.instanceId,
             ),
           );
+        }
       }
     };
 
@@ -3077,10 +3150,7 @@ export const ProviderHealthLive = Layer.effect(
         const commandResult = yield* runUpdateCommand({
           command: update.executable,
           args: update.args,
-          env:
-            Object.keys(instance.environment).length > 0
-              ? { ...process.env, ...instance.environment }
-              : process.env,
+          env: makeProviderUpdateEnv(instance),
         }).pipe(
           Effect.scoped,
           Effect.timeoutOption(Duration.millis(UPDATE_TIMEOUT_MS)),
