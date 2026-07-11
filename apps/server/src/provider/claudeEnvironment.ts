@@ -27,6 +27,25 @@ const WINDOWS_PROFILE_ENV_KEYS = [
   "HOMEPATH",
 ] as const;
 
+function normalizeEnvironmentKeys(
+  environment: Readonly<NodeJS.ProcessEnv>,
+  platform: NodeJS.Platform,
+): NodeJS.ProcessEnv {
+  if (platform !== "win32") {
+    return { ...environment };
+  }
+
+  // A plain object loses process.env's Windows case-insensitive lookup. Collapse
+  // every spelling to one canonical key before inspecting or overlaying it so a
+  // later selected-instance value wins deterministically and no ambient alias is
+  // passed to child_process beside the canonical entry.
+  const normalized: NodeJS.ProcessEnv = {};
+  for (const [name, value] of Object.entries(environment)) {
+    normalized[name.toUpperCase()] = value;
+  }
+  return normalized;
+}
+
 function claudeInstanceHomeScope(providerInstanceId: string | undefined): string {
   const normalizedInstanceId = providerInstanceId?.trim();
   return normalizedInstanceId
@@ -91,13 +110,18 @@ export function buildClaudeProcessEnv(input?: {
   readonly hasClaudeCliCredentials?: boolean;
 }): NodeJS.ProcessEnv {
   const platform = input?.platform ?? process.platform;
+  const selectedEnvironment =
+    input?.environment === undefined
+      ? undefined
+      : normalizeEnvironmentKeys(input.environment, platform);
+  const env = normalizeEnvironmentKeys(input?.env ?? process.env, platform);
   const trimmedHomePath = input?.homePath?.trim();
   const resolvedHomePath = trimmedHomePath
     ? expandProviderAccountHomePath(trimmedHomePath, input?.homeDir ?? homedir())
     : undefined;
   const explicitEnvironmentHome =
-    input?.environment?.HOME?.trim() ||
-    (platform === "win32" ? input?.environment?.USERPROFILE?.trim() : undefined);
+    selectedEnvironment?.HOME?.trim() ||
+    (platform === "win32" ? selectedEnvironment?.USERPROFILE?.trim() : undefined);
   const resolvedEnvironmentHomePath = explicitEnvironmentHome
     ? expandProviderAccountHomePath(explicitEnvironmentHome, input?.homeDir ?? homedir())
     : undefined;
@@ -105,7 +129,7 @@ export function buildClaudeProcessEnv(input?: {
   const needsIsolatedInstanceHome =
     resolvedHomePath === undefined &&
     resolvedEnvironmentHomePath === undefined &&
-    (input?.environment !== undefined ||
+    (selectedEnvironment !== undefined ||
       (providerInstanceId !== undefined && providerInstanceId !== DEFAULT_CLAUDE_INSTANCE_ID));
   const effectiveHomePath =
     resolvedHomePath ??
@@ -117,7 +141,6 @@ export function buildClaudeProcessEnv(input?: {
           providerInstanceId,
         })
       : undefined);
-  const env: NodeJS.ProcessEnv = { ...(input?.env ?? process.env) };
   // Align the subprocess HOME with the credential home being checked so Claude
   // reads the same login state the health/session gate validated. Instance
   // environment overrides and instance homes still win below.
@@ -128,46 +151,44 @@ export function buildClaudeProcessEnv(input?: {
   // An explicit provider home, environment, or non-default instance selects a
   // distinct account boundary. Remove ambient account values first, then
   // overlay only values deliberately supplied by the selected instance below.
-  if (effectiveHomePath || input?.environment !== undefined) {
+  if (effectiveHomePath || selectedEnvironment !== undefined) {
     for (const key of Object.keys(env)) {
       if (isClaudeAccountIsolationEnvKey(key)) {
         delete env[key];
       }
     }
   }
-  if (input?.environment) {
-    Object.assign(env, input.environment);
+  if (selectedEnvironment) {
+    Object.assign(env, selectedEnvironment);
   }
   if (effectiveHomePath) {
     Object.assign(env, claudeHomeEnvironment(effectiveHomePath, platform));
-    if (!resolvedHomePath && input?.environment) {
+    if (!resolvedHomePath && selectedEnvironment) {
       // HOME/USERPROFILE can themselves be the deliberate external account
       // boundary. Normalize the selected root, while retaining any other
       // explicitly supplied Windows profile routes instead of replacing them
       // with generated defaults for the synthetic home.
-      if (input.environment.HOME?.trim()) {
+      if (selectedEnvironment.HOME?.trim()) {
         env.HOME = resolvedEnvironmentHomePath;
       }
       if (platform === "win32") {
         for (const key of WINDOWS_PROFILE_ENV_KEYS) {
-          if (!(key in input.environment)) {
+          if (!(key in selectedEnvironment)) {
             continue;
           }
-          if (key === "USERPROFILE" && input.environment[key]?.trim()) {
-            env[key] = expandProviderAccountHomePath(
-              input.environment[key],
-              input?.homeDir ?? homedir(),
-            );
+          const profileValue = selectedEnvironment[key];
+          if (key === "USERPROFILE" && profileValue?.trim()) {
+            env[key] = expandProviderAccountHomePath(profileValue, input?.homeDir ?? homedir());
             continue;
           }
-          env[key] = input.environment[key];
+          env[key] = profileValue;
         }
       }
     }
     // An inherited config directory takes precedence over HOME in Claude's
     // credential lookup. Do not let the server account leak into an instance
     // with an explicit home unless that instance deliberately configured it.
-    if (!input?.environment || !("CLAUDE_CONFIG_DIR" in input.environment)) {
+    if (!selectedEnvironment || !("CLAUDE_CONFIG_DIR" in selectedEnvironment)) {
       delete env.CLAUDE_CONFIG_DIR;
     }
   }
@@ -189,7 +210,7 @@ export function buildClaudeProcessEnv(input?: {
   // inherited keys when a real Claude CLI login can satisfy the subprocess, but keep
   // credentials the provider instance sets explicitly.
   for (const key of CLAUDE_DIRECT_CREDENTIAL_ENV_KEYS) {
-    if (input?.environment && key in input.environment) {
+    if (selectedEnvironment && key in selectedEnvironment) {
       continue;
     }
     delete env[key];
