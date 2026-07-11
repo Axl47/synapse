@@ -285,6 +285,9 @@ function makeSessionSnapshot(context: PiSessionContext): ProviderSession {
   const resumeCursor = getSessionFile(context.runtime.session);
   return {
     provider: PROVIDER,
+    ...(context.session.providerInstanceId
+      ? { providerInstanceId: context.session.providerInstanceId }
+      : {}),
     status: context.stopped ? "closed" : context.activeTurnId ? "running" : "ready",
     runtimeMode: context.session.runtimeMode,
     threadId: context.session.threadId,
@@ -971,6 +974,9 @@ const makePiAdapter = (options?: PiAdapterLiveOptions) =>
     ) => ({
       eventId: EventId.makeUnsafe(crypto.randomUUID()),
       provider: PROVIDER,
+      ...(context.session.providerInstanceId
+        ? { providerInstanceId: context.session.providerInstanceId }
+        : {}),
       threadId: context.session.threadId,
       createdAt: new Date().toISOString(),
       ...(options?.includeTurnId !== false && context.activeTurnId
@@ -1743,12 +1749,14 @@ const makePiAdapter = (options?: PiAdapterLiveOptions) =>
             }),
         });
         const now = new Date().toISOString();
+        const providerInstanceId = input.providerInstanceId ?? input.modelSelection?.instanceId;
         const model = runtime.session.model
           ? `${runtime.session.model.provider}/${runtime.session.model.id}`
           : modelId;
         const resumeCursor = getSessionFile(runtime.session);
         const session: ProviderSession = {
           provider: PROVIDER,
+          ...(providerInstanceId ? { providerInstanceId } : {}),
           status: "ready",
           runtimeMode: input.runtimeMode,
           cwd,

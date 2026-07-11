@@ -829,6 +829,7 @@ const makeGeminiAdapter = Effect.fn("makeGeminiAdapter")(function* (
 
   const makeSessionContext = (input: {
     threadId: ThreadId;
+    providerInstanceId?: ProviderSession["providerInstanceId"];
     runtimeMode: ProviderSession["runtimeMode"];
     runtimeModeId: string;
     cwd: string;
@@ -843,6 +844,7 @@ const makeGeminiAdapter = Effect.fn("makeGeminiAdapter")(function* (
     return {
       session: {
         provider: PROVIDER,
+        ...(input.providerInstanceId ? { providerInstanceId: input.providerInstanceId } : {}),
         status: "connecting",
         runtimeMode: input.runtimeMode,
         cwd: input.cwd,
@@ -884,6 +886,9 @@ const makeGeminiAdapter = Effect.fn("makeGeminiAdapter")(function* (
   const makeEventBase = (context: GeminiSessionContext) => ({
     eventId: EventId.makeUnsafe(crypto.randomUUID()),
     provider: PROVIDER,
+    ...(context.session.providerInstanceId
+      ? { providerInstanceId: context.session.providerInstanceId }
+      : {}),
     threadId: context.session.threadId,
     createdAt: new Date().toISOString(),
   });
@@ -2164,8 +2169,10 @@ const makeGeminiAdapter = Effect.fn("makeGeminiAdapter")(function* (
       );
       const requestedResumeSessionId = readResumeSessionId(input.resumeCursor);
       const resumeTurns = readResumeTurns(input.resumeCursor);
+      const providerInstanceId = input.providerInstanceId ?? input.modelSelection?.instanceId;
       const context = makeSessionContext({
         threadId: input.threadId,
+        ...(providerInstanceId ? { providerInstanceId } : {}),
         runtimeMode: input.runtimeMode,
         runtimeModeId,
         cwd,
@@ -2500,6 +2507,9 @@ const makeGeminiAdapter = Effect.fn("makeGeminiAdapter")(function* (
       );
       const nextContext = makeSessionContext({
         threadId,
+        ...(context.session.providerInstanceId
+          ? { providerInstanceId: context.session.providerInstanceId }
+          : {}),
         runtimeMode: context.session.runtimeMode,
         runtimeModeId: context.runtimeModeId,
         cwd,
