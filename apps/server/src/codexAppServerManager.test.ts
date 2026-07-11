@@ -113,6 +113,9 @@ lines.on("line", (line) => {
     );
   }
   if (message.id === undefined) return;
+  if (message.method === "initialize" && process.env.SYNARA_FAKE_CODEX_EXIT_ON_INITIALIZE) {
+    process.exit(Number(process.env.SYNARA_FAKE_CODEX_EXIT_ON_INITIALIZE));
+  }
   if (
     message.method === "initialize" &&
     process.env.SYNARA_FAKE_CODEX_MUTATE_AUTH_PATH &&
@@ -1284,6 +1287,88 @@ describe("startSession", () => {
   );
 
   it.runIf(process.platform !== "win32")(
+    "keeps a synchronous start replacement installed when the old app-server exits during initialize",
+    async () => {
+      const root = mkdtempSync(path.join(os.tmpdir(), "synara-codex-start-exit-replacement-"));
+      const sourceHome = path.join(root, "codex-home");
+      const projectPath = path.join(root, "project");
+      const runtimeHome = path.join(root, "runtime");
+      const replacementMessagesPath = path.join(root, "replacement-messages.txt");
+      mkdirSync(sourceHome, { recursive: true });
+      mkdirSync(projectPath, { recursive: true });
+      writeFileSync(path.join(sourceHome, "config.toml"), "", "utf8");
+      writeFileSync(path.join(sourceHome, "auth.json"), codexAuth("workspace-stable", "1"), "utf8");
+      const binaryPath = writeFakeCodexExecutable(root);
+      const manager = new CodexAppServerManager();
+      const threadId = asThreadId("thread-start-exit-replacement");
+      const methods: string[] = [];
+      let replacementPromise: ReturnType<typeof manager.startSession> | undefined;
+      const listener = (event: { readonly threadId: ThreadId; readonly method: string }) => {
+        if (event.threadId !== threadId) return;
+        methods.push(event.method);
+        if (event.method !== "session/exited" || replacementPromise) return;
+        replacementPromise = manager.startSession({
+          threadId,
+          provider: "codex",
+          providerInstanceId: "codex_work",
+          cwd: projectPath,
+          runtimeMode: "full-access",
+          providerOptions: {
+            codex: {
+              binaryPath,
+              homePath: sourceHome,
+              environment: {
+                HOME: root,
+                SYNARA_HOME: runtimeHome,
+                SYNARA_FAKE_CODEX_MESSAGES_PATH: replacementMessagesPath,
+              },
+            },
+          },
+        });
+      };
+      manager.on("event", listener);
+
+      try {
+        const first = await settle(
+          manager.startSession({
+            threadId,
+            provider: "codex",
+            providerInstanceId: "codex_work",
+            cwd: projectPath,
+            runtimeMode: "full-access",
+            providerOptions: {
+              codex: {
+                binaryPath,
+                homePath: sourceHome,
+                environment: {
+                  HOME: root,
+                  SYNARA_HOME: runtimeHome,
+                  SYNARA_FAKE_CODEX_EXIT_ON_INITIALIZE: "17",
+                },
+              },
+            },
+          }),
+        );
+        expect(first.status).toBe("rejected");
+        expect(replacementPromise).toBeDefined();
+        const replacement = await replacementPromise!;
+
+        expect(replacement.status).toBe("ready");
+        expect(replacement.providerInstanceId).toBe("codex_work");
+        expect(readFakeCodexMethods(replacementMessagesPath)).toContain("thread/start");
+        expect(manager.listSessions()).toEqual([replacement]);
+        expect(methods).toContain("session/exited");
+        expect(methods).not.toContain("session/startFailed");
+        expect(methods).not.toContain("session/closed");
+      } finally {
+        manager.off("event", listener);
+        manager.stopAll();
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.runIf(process.platform !== "win32")(
     "fails closed before native fork when the selected account changes during initialization",
     async () => {
       const root = mkdtempSync(path.join(os.tmpdir(), "synara-codex-fork-auth-swap-"));
@@ -1424,6 +1509,104 @@ describe("startSession", () => {
           }),
         ]);
       } finally {
+        manager.stopAll();
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.runIf(process.platform !== "win32")(
+    "keeps a synchronous fork replacement installed when the old app-server exits during initialize",
+    async () => {
+      const root = mkdtempSync(path.join(os.tmpdir(), "synara-codex-fork-exit-replacement-"));
+      const sourceHome = path.join(root, "codex-home");
+      const projectPath = path.join(root, "project");
+      const runtimeHome = path.join(root, "runtime");
+      const replacementMessagesPath = path.join(root, "replacement-messages.txt");
+      const environment = { HOME: root, SYNARA_HOME: runtimeHome };
+      mkdirSync(sourceHome, { recursive: true });
+      mkdirSync(projectPath, { recursive: true });
+      writeFileSync(path.join(sourceHome, "config.toml"), "", "utf8");
+      writeFileSync(path.join(sourceHome, "auth.json"), codexAuth("workspace-stable", "1"), "utf8");
+      buildCodexProcessEnv({ env: environment, homePath: sourceHome });
+      const generation = readCodexSharedContinuationGeneration({
+        env: environment,
+        homePath: sourceHome,
+      });
+      expect(generation).toMatch(/^[0-9a-f-]{36}$/);
+      const binaryPath = writeFakeCodexExecutable(root);
+      const manager = new CodexAppServerManager();
+      const threadId = asThreadId("thread-fork-exit-replacement");
+      const methods: string[] = [];
+      let replacementPromise: ReturnType<typeof manager.forkThread> | undefined;
+      const replacementInput = {
+        sourceThreadId: asThreadId("source-fork-exit-replacement"),
+        sourceResumeCursor: { threadId: "provider-source-replacement" },
+        threadId,
+        cwd: projectPath,
+        runtimeMode: "full-access" as const,
+        expectedCodexContinuationGeneration: generation!,
+        providerOptions: {
+          codex: {
+            binaryPath,
+            homePath: sourceHome,
+            environment: {
+              ...environment,
+              SYNARA_FAKE_CODEX_MESSAGES_PATH: replacementMessagesPath,
+            },
+          },
+        },
+      };
+      const listener = (event: { readonly threadId: ThreadId; readonly method: string }) => {
+        if (event.threadId !== threadId) return;
+        methods.push(event.method);
+        if (event.method !== "session/exited" || replacementPromise) return;
+        replacementPromise = manager.forkThread(replacementInput);
+      };
+      manager.on("event", listener);
+
+      try {
+        const first = await settle(
+          manager.forkThread({
+            sourceThreadId: asThreadId("source-fork-exit-first"),
+            sourceResumeCursor: { threadId: "provider-source-first" },
+            threadId,
+            cwd: projectPath,
+            runtimeMode: "full-access",
+            expectedCodexContinuationGeneration: generation!,
+            providerOptions: {
+              codex: {
+                binaryPath,
+                homePath: sourceHome,
+                environment: {
+                  ...environment,
+                  SYNARA_FAKE_CODEX_EXIT_ON_INITIALIZE: "18",
+                },
+              },
+            },
+          }),
+        );
+        expect(first.status).toBe("rejected");
+        expect(replacementPromise).toBeDefined();
+        const replacement = await replacementPromise!;
+
+        expect(replacement).toEqual({
+          threadId,
+          resumeCursor: { threadId: "fake-forked-thread" },
+        });
+        expect(readFakeCodexMethods(replacementMessagesPath)).toContain("thread/fork");
+        expect(manager.listSessions()).toEqual([
+          expect.objectContaining({
+            threadId,
+            status: "ready",
+            resumeCursor: { threadId: "fake-forked-thread" },
+          }),
+        ]);
+        expect(methods).toContain("session/exited");
+        expect(methods).not.toContain("session/threadForkFailed");
+        expect(methods).not.toContain("session/closed");
+      } finally {
+        manager.off("event", listener);
         manager.stopAll();
         rmSync(root, { recursive: true, force: true });
       }

@@ -952,6 +952,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       const {
         env: codexProcessEnv,
         authTracking,
+        authFingerprint: launchAuthFingerprint,
         appServerArgs,
       } = buildCodexProcessLaunchContext({
         ...(codexEnvironment ? { env: { ...process.env, ...codexEnvironment } } : {}),
@@ -964,7 +965,6 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
             }
           : {}),
       });
-      const launchAuthFingerprint = readCodexAuthTrackingFingerprint(authTracking);
       const child = spawnCodexAppServer({
         binaryPath: codexBinaryPath,
         cwd: resolvedCwd,
@@ -1139,7 +1139,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     } catch (error) {
       const message = error instanceof Error ? error.message : "Failed to start Codex session.";
       if (context) {
-        if (!context.stopping) {
+        if (!context.stopping && this.sessions.get(threadId) === context) {
           this.updateSession(context, {
             status: "error",
             lastError: message,
@@ -1622,6 +1622,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       const {
         env: codexProcessEnv,
         authTracking,
+        authFingerprint: launchAuthFingerprint,
         appServerArgs,
       } = buildCodexProcessLaunchContext({
         ...(codexEnvironment ? { env: { ...process.env, ...codexEnvironment } } : {}),
@@ -1634,7 +1635,6 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
             }
           : {}),
       });
-      const launchAuthFingerprint = readCodexAuthTrackingFingerprint(authTracking);
       const child = spawnCodexAppServer({
         binaryPath: codexBinaryPath,
         cwd: resolvedCwd,
@@ -1725,7 +1725,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     } catch (error) {
       const message = error instanceof Error ? error.message : "Failed to fork Codex thread.";
       if (context) {
-        if (!context.stopping) {
+        if (!context.stopping && this.sessions.get(threadId) === context) {
           this.updateSession(context, {
             status: "error",
             lastError: message,
@@ -1936,15 +1936,12 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     // Claim the entry before cleanup or lifecycle emission. EventEmitter
     // listeners run synchronously and the Codex adapter inspects sessions while
     // stamping events; leaving this context visible would re-enter stopSession.
-    if (this.sessions.get(threadId) === context) {
+    const ownedSession = this.sessions.get(threadId) === context;
+    if (ownedSession) {
       this.sessions.delete(threadId);
     }
 
-    for (const pending of context.pending.values()) {
-      clearTimeout(pending.timeout);
-      pending.reject(new Error("Session stopped before request completed."));
-    }
-    context.pending.clear();
+    this.rejectPendingRequests(context, "Session stopped before request completed.");
     context.pendingApprovals.clear();
     context.pendingUserInputs.clear();
 
@@ -1958,7 +1955,17 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       status: "closed",
       activeTurnId: undefined,
     });
-    this.emitLifecycleEvent(context, "session/closed", "Session stopped");
+    if (ownedSession) {
+      this.emitLifecycleEvent(context, "session/closed", "Session stopped");
+    }
+  }
+
+  private rejectPendingRequests(context: CodexSessionContext, message: string): void {
+    for (const pending of context.pending.values()) {
+      clearTimeout(pending.timeout);
+      pending.reject(new Error(message));
+    }
+    context.pending.clear();
   }
 
   listSessions(): ProviderSession[] {
@@ -2399,9 +2406,9 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     const {
       env: codexProcessEnv,
       authTracking,
+      authFingerprint: launchAuthFingerprint,
       appServerArgs,
     } = buildCodexProcessLaunchContext(codexProcessEnvInputForOptions(normalizedCodexOptions));
-    const launchAuthFingerprint = readCodexAuthTrackingFingerprint(authTracking);
     const child = spawnCodexAppServer({
       binaryPath: codexBinaryPath,
       cwd: normalizedCwd,
@@ -2560,19 +2567,38 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       }
 
       const message = `codex app-server exited (code=${code ?? "null"}, signal=${signal ?? "null"}).`;
+      context.stopping = true;
+      let ownedContext = false;
+      if (context.discovery) {
+        const discoveryKey = context.discoveryKey ?? "";
+        ownedContext =
+          discoveryKey.length > 0 && this.discoverySessions.get(discoveryKey) === context;
+        if (ownedContext) {
+          this.discoverySessions.delete(discoveryKey);
+          const idleTimer = this.discoverySessionIdleTimers.get(discoveryKey);
+          if (idleTimer) {
+            clearTimeout(idleTimer);
+            this.discoverySessionIdleTimers.delete(discoveryKey);
+          }
+        }
+      } else {
+        ownedContext = this.sessions.get(context.session.threadId) === context;
+        if (ownedContext) {
+          this.sessions.delete(context.session.threadId);
+        }
+      }
+
+      this.rejectPendingRequests(context, message);
+      context.pendingApprovals.clear();
+      context.pendingUserInputs.clear();
+      context.output.close();
       this.updateSession(context, {
         status: "closed",
         activeTurnId: undefined,
         lastError: code === 0 ? context.session.lastError : message,
       });
-      this.emitLifecycleEvent(context, "session/exited", message);
-      if (context.discovery) {
-        const discoveryKey = context.discoveryKey ?? "";
-        if (discoveryKey) {
-          this.discoverySessions.delete(discoveryKey);
-        }
-      } else {
-        this.sessions.delete(context.session.threadId);
+      if (ownedContext) {
+        this.emitLifecycleEvent(context, "session/exited", message);
       }
     });
   }

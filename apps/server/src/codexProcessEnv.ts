@@ -271,6 +271,8 @@ export interface CodexAuthTrackingPreparationHooks {
 export interface CodexProcessLaunchContext {
   readonly env: NodeJS.ProcessEnv;
   readonly authTracking: CodexAuthTracking;
+  /** Effective launch baseline recorded after authoritative pre/post validation. */
+  readonly authFingerprint: string;
   readonly appServerArgs: readonly string[];
 }
 
@@ -1366,6 +1368,13 @@ export function readCodexAuthTrackingFingerprint(tracking: CodexAuthTracking): s
   });
 }
 
+function readCodexAuthoritativeAuthTrackingFingerprint(tracking: CodexAuthTracking): string {
+  return readCodexAuthFileIdentityFingerprint({
+    authFilePath: tracking.authoritativeAuthFilePath,
+    configPath: tracking.sourceConfigPath,
+  });
+}
+
 function writeSynaraConfigSuppressions(
   markerPath: string,
   sectionHeaders: readonly string[],
@@ -2213,6 +2222,12 @@ export function buildCodexProcessLaunchContext(
     ...(input.shadowHomePath ? { shadowHomePath: input.shadowHomePath } : {}),
     ...(input.accountId ? { accountId: input.accountId } : {}),
   });
+  // Only an external authoritative source can be mirrored into a distinct
+  // effective home. Account-owned overlays have no copy boundary and may be
+  // intentionally repaired during preparation.
+  const authoritativeAuthFingerprint = authTracking.effectiveAuthFilePath
+    ? readCodexAuthoritativeAuthTrackingFingerprint(authTracking)
+    : undefined;
   const overlayPreparationInput: CodexHomeOverlayPreparationInput = {
     env: baseEnv,
     ...(input.homePath ? { homePath: input.homePath } : {}),
@@ -2287,9 +2302,20 @@ export function buildCodexProcessLaunchContext(
     );
   }
 
+  const authFingerprint = readCodexAuthTrackingFingerprint(authTracking);
+  if (
+    authoritativeAuthFingerprint !== undefined &&
+    readCodexAuthoritativeAuthTrackingFingerprint(authTracking) !== authoritativeAuthFingerprint
+  ) {
+    throw new Error(
+      "Codex authentication changed during app-server launch preparation; retry the request.",
+    );
+  }
+
   return {
     env: effectiveEnv,
     authTracking,
+    authFingerprint,
     appServerArgs: buildCodexAppServerArgs(sourceHomePath),
   };
 }
