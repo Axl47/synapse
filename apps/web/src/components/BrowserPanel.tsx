@@ -22,7 +22,7 @@ import {
   PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
   type ServerLocalServerProcess,
   type ThreadId,
-} from "@t3tools/contracts";
+} from "@synara/contracts";
 import {
   ArrowLeftIcon,
   ArrowRightIcon,
@@ -39,16 +39,16 @@ import {
   XIcon,
 } from "~/lib/icons";
 
-import { localServerPrimaryLabel } from "@t3tools/shared/localServers";
+import { localServerPrimaryLabel } from "@synara/shared/localServers";
 import {
   BROWSER_BLANK_URL,
   isBlankBrowserTabUrl,
   resolveCopyableBrowserTabUrl,
-} from "@t3tools/shared/browserSession";
+} from "@synara/shared/browserSession";
 import {
   BROWSER_COPY_LINK_TOAST_TITLE,
   isBrowserCopyLinkChord,
-} from "@t3tools/shared/browserShortcuts";
+} from "@synara/shared/browserShortcuts";
 
 import { isElectron } from "~/env";
 import { readNativeApi } from "~/nativeApi";

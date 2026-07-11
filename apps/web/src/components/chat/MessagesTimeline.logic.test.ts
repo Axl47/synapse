@@ -1,4 +1,4 @@
-import { CheckpointRef, MessageId, OrchestrationProposedPlanId, TurnId } from "@t3tools/contracts";
+import { CheckpointRef, MessageId, OrchestrationProposedPlanId, TurnId } from "@synara/contracts";
 import { describe, expect, it } from "vitest";
 import {
   buildTurnDiffSummaryByAssistantMessageId,
@@ -826,11 +826,7 @@ describe("deriveMessagesTimelineRows", () => {
   });
 
   it("folds settled reasoning traces into the terminal turn disclosure", () => {
-    const reasoning = workEntry(
-      "reasoning-1",
-      "2026-01-01T00:00:02Z",
-      "Reasoning trace",
-    );
+    const reasoning = workEntry("reasoning-1", "2026-01-01T00:00:02Z", "Reasoning trace");
     if (reasoning.kind === "work") {
       reasoning.entry = {
         ...reasoning.entry,

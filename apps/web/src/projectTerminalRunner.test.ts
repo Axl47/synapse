@@ -38,8 +38,8 @@ describe("runProjectCommandInTerminal", () => {
       terminalId: "terminal-1",
       cwd: "/repo/apps/web",
       env: {
-        T3CODE_PROJECT_ROOT: "/repo",
-        T3CODE_WORKTREE_PATH: "/repo-worktree",
+        SYNARA_PROJECT_ROOT: "/repo",
+        SYNARA_WORKTREE_PATH: "/repo-worktree",
         EXTRA: "1",
       },
       cols: 120,
@@ -89,7 +89,7 @@ describe("runProjectCommandInTerminal", () => {
       terminalId: "terminal-1",
       data: [
         "cd '/repo root/apps/web'",
-        "export T3CODE_PROJECT_ROOT='/repo root' T3CODE_WORKTREE_PATH=/repo-worktree EXTRA='with spaces'",
+        "export SYNARA_PROJECT_ROOT='/repo root' SYNARA_WORKTREE_PATH=/repo-worktree EXTRA='with spaces'",
         "pnpm run dev\r",
       ].join(" && "),
     });
