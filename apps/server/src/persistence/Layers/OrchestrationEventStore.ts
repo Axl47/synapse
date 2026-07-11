@@ -23,6 +23,10 @@ import {
 } from "../Errors.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import {
+  restoreTransientOrchestrationEventProviderOptions,
+  sanitizeOrchestrationEventProviderOptions,
+} from "../../orchestration/providerOptionsSecurity.ts";
+import {
   OrchestrationEventStore,
   type OrchestrationEventStoreShape,
 } from "../Services/OrchestrationEventStore.ts";
@@ -289,19 +293,20 @@ const makeEventStore = Effect.gen(function* () {
       `,
   });
 
-  const append: OrchestrationEventStoreShape["append"] = (event) =>
-    appendEventRow({
-      eventId: event.eventId,
-      aggregateKind: event.aggregateKind,
-      streamId: event.aggregateId,
-      type: event.type,
-      causationEventId: event.causationEventId,
-      correlationId: event.correlationId,
-      actorKind: inferActorKind(event),
-      occurredAt: event.occurredAt,
-      commandId: event.commandId,
-      payloadJson: event.payload,
-      metadataJson: event.metadata,
+  const append: OrchestrationEventStoreShape["append"] = (event) => {
+    const sanitizedEvent = sanitizeOrchestrationEventProviderOptions(event);
+    return appendEventRow({
+      eventId: sanitizedEvent.eventId,
+      aggregateKind: sanitizedEvent.aggregateKind,
+      streamId: sanitizedEvent.aggregateId,
+      type: sanitizedEvent.type,
+      causationEventId: sanitizedEvent.causationEventId,
+      correlationId: sanitizedEvent.correlationId,
+      actorKind: inferActorKind(sanitizedEvent),
+      occurredAt: sanitizedEvent.occurredAt,
+      commandId: sanitizedEvent.commandId,
+      payloadJson: sanitizedEvent.payload,
+      metadataJson: sanitizedEvent.metadata,
     }).pipe(
       Effect.mapError(
         toPersistenceSqlOrDecodeError(
@@ -311,10 +316,17 @@ const makeEventStore = Effect.gen(function* () {
       ),
       Effect.flatMap((row) =>
         decodeEvent(row).pipe(
+          // Durable JSON is sanitized above, while the just-committed in-memory
+          // event keeps transient launch credentials for internal runtime
+          // consumers. Public streams apply the same sanitizer in wsRpc.
+          Effect.map((savedEvent) =>
+            restoreTransientOrchestrationEventProviderOptions(savedEvent, event),
+          ),
           Effect.mapError(toPersistenceDecodeError("OrchestrationEventStore.append:rowToEvent")),
         ),
       ),
     );
+  };
 
   const readFromSequence: OrchestrationEventStoreShape["readFromSequence"] = (
     sequenceExclusive,
@@ -344,6 +356,7 @@ const makeEventStore = Effect.gen(function* () {
               Effect.flatMap((settings) =>
                 Effect.forEach(rows, (row) =>
                   decodeEvent(normalizeLegacyEventRow(row, settings)).pipe(
+                    Effect.map(sanitizeOrchestrationEventProviderOptions),
                     Effect.mapError(
                       toPersistenceDecodeError(
                         `OrchestrationEventStore.readFromSequence:rowToEvent(sequence=${row.sequence}, type=${row.type})`,

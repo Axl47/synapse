@@ -2,6 +2,10 @@
 // Purpose: Covers Claude env sanitization so stale process tokens do not shadow CLI OAuth.
 // Layer: Provider utility tests.
 // Exports: Vitest coverage for apps/server/src/provider/claudeProcessEnv.ts.
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+
 import { describe, it, assert } from "@effect/vitest";
 
 import { buildClaudeProcessEnv } from "./claudeEnvironment.ts";
@@ -128,6 +132,49 @@ describe("claudeProcessEnv", () => {
 
     assert.equal(result.HOME, "/Users/tester/.claude-work");
     assert.equal(result.ANTHROPIC_API_KEY, undefined);
+  });
+
+  it("expands Windows-style tilde instance homes", () => {
+    const result = buildClaudeProcessEnv({
+      env: { HOME: "/home/default" },
+      homeDir: "/Users/tester",
+      homePath: "~\\.claude-work",
+      hasClaudeCliCredentials: false,
+    });
+
+    assert.equal(result.HOME, "/Users/tester/.claude-work");
+  });
+
+  it("checks credentials under the final instance environment HOME", () => {
+    const root = mkdtempSync(path.join(tmpdir(), "synara-claude-effective-home-"));
+    const inheritedHome = path.join(root, "account-a");
+    const instanceHome = path.join(root, "account-b");
+    try {
+      mkdirSync(path.join(instanceHome, ".claude"), { recursive: true });
+      writeFileSync(
+        path.join(instanceHome, ".claude", ".credentials.json"),
+        JSON.stringify({
+          claudeAiOauth: {
+            accessToken: "account-b-local-token",
+            expiresAt: Date.now() + 60_000,
+          },
+        }),
+      );
+
+      const result = buildClaudeProcessEnv({
+        env: {
+          HOME: inheritedHome,
+          ANTHROPIC_API_KEY: "inherited-account-a-key",
+        },
+        homeDir: inheritedHome,
+        environment: { HOME: instanceHome },
+      });
+
+      assert.equal(result.HOME, instanceHome);
+      assert.equal(result.ANTHROPIC_API_KEY, undefined);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("checks CLAUDE_CONFIG_DIR before the default Claude home", () => {

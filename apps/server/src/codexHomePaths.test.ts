@@ -35,6 +35,13 @@ describe("Codex home paths", () => {
     assert.ok(result.endsWith(`${path.sep}.codex_work`));
     assert.ok(!result.startsWith("~"));
   });
+
+  it("expands a Windows-style tilde home", () => {
+    const result = resolveBaseCodexHomePath({}, "~\\.codex_work");
+
+    assert.ok(result.endsWith(`${path.sep}.codex_work`));
+    assert.ok(!result.startsWith("~"));
+  });
 });
 
 describe("resolveSynaraCodexHomeOverlayPath", () => {

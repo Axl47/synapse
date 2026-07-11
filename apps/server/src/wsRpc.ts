@@ -57,6 +57,7 @@ import { makeDispatchCommandNormalizer } from "./orchestration/dispatchCommandNo
 import { makeImportThreadHandler } from "./orchestration/importThreadRoute";
 import { OrchestrationEngineService } from "./orchestration/Services/OrchestrationEngine";
 import { ProjectionSnapshotQuery } from "./orchestration/Services/ProjectionSnapshotQuery";
+import { sanitizeOrchestrationEventProviderOptions } from "./orchestration/providerOptionsSecurity";
 import { shouldPublishThreadShellForEvent } from "./orchestration/threadShellEvents";
 import { ProviderDiscoveryService } from "./provider/Services/ProviderDiscoveryService";
 import { discoverSkillsCatalog, synaraSkillsDir } from "./provider/skillsCatalog";
@@ -706,12 +707,14 @@ export const makeWsRpcLayer = () =>
         [ORCHESTRATION_WS_METHODS.replayEvents]: (input) =>
           rpcEffect(
             Stream.runCollect(
-              orchestrationEngine.readEvents(
-                clamp(input.fromSequenceExclusive, {
-                  maximum: Number.MAX_SAFE_INTEGER,
-                  minimum: 0,
-                }),
-              ),
+              orchestrationEngine
+                .readEvents(
+                  clamp(input.fromSequenceExclusive, {
+                    maximum: Number.MAX_SAFE_INTEGER,
+                    minimum: 0,
+                  }),
+                )
+                .pipe(Stream.map(sanitizeOrchestrationEventProviderOptions)),
             ).pipe(Effect.map((events) => Array.from(events))),
             "Failed to replay orchestration events",
           ),
@@ -762,6 +765,7 @@ export const makeWsRpcLayer = () =>
             bufferLiveUiStream(
               orchestrationEngine.streamDomainEvents.pipe(
                 Stream.filter((event) => isThreadDetailEventFor(input.threadId, event)),
+                Stream.map(sanitizeOrchestrationEventProviderOptions),
               ),
               {
                 label: "orchestration.thread-detail",
@@ -778,9 +782,14 @@ export const makeWsRpcLayer = () =>
           ),
         [ORCHESTRATION_WS_METHODS.unsubscribeThread]: () => Effect.void,
         [WS_METHODS.subscribeOrchestrationDomainEvents]: () =>
-          bufferLiveUiStream(orchestrationEngine.streamDomainEvents, {
-            label: "orchestration.domain-events",
-          }),
+          bufferLiveUiStream(
+            orchestrationEngine.streamDomainEvents.pipe(
+              Stream.map(sanitizeOrchestrationEventProviderOptions),
+            ),
+            {
+              label: "orchestration.domain-events",
+            },
+          ),
 
         [WS_METHODS.projectsListDirectories]: (input) =>
           rpcEffect(

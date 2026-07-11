@@ -136,6 +136,13 @@ const PROVIDERS = [
 
 const UPDATE_OUTPUT_MAX_BYTES = 10_000;
 const UPDATE_TIMEOUT_MS = 5 * 60_000;
+export const PROVIDER_HEALTH_PROBE_CONCURRENCY = 4;
+
+export function runProviderHealthProbes<A, E, R>(
+  probes: ReadonlyArray<Effect.Effect<A, E, R>>,
+): Effect.Effect<ReadonlyArray<A>, E, R> {
+  return Effect.all(probes, { concurrency: PROVIDER_HEALTH_PROBE_CONCURRENCY });
+}
 
 function providerStatusInstanceKey(status: ServerProviderStatus): ProviderInstanceId {
   return status.instanceId ?? status.provider;
@@ -2791,13 +2798,10 @@ export const ProviderHealthLive = Layer.effect(
       .pipe(
         Effect.flatMap(() => serverSettings.getSettings),
         Effect.flatMap((settings) =>
-          Effect.all(
+          runProviderHealthProbes(
             deriveProviderInstances(settings).map((instance) =>
               checkProviderInstanceStatus(instance),
             ),
-            {
-              concurrency: "unbounded",
-            },
           ),
         ),
       )

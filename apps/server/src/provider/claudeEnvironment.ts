@@ -12,6 +12,7 @@ import {
   hasClaudeExternalAuthEnv,
   hasUsableClaudeCliCredentials,
 } from "./claudeProcessEnv.ts";
+import { expandProviderAccountHomePath } from "../providerAccountHomePath.ts";
 
 export function claudeHomeEnvironment(
   homePath: string,
@@ -40,16 +41,6 @@ export function claudeHomeEnvironment(
   };
 }
 
-function expandClaudeHomePath(homePath: string, homeDir?: string): string {
-  if (homePath === "~") {
-    return homeDir ?? homedir();
-  }
-  if (homePath.startsWith("~/")) {
-    return NodePath.join(homeDir ?? homedir(), homePath.slice(2));
-  }
-  return homePath;
-}
-
 export function buildClaudeProcessEnv(input?: {
   readonly homePath?: string | null | undefined;
   readonly environment?: Readonly<Record<string, string>> | undefined;
@@ -59,7 +50,7 @@ export function buildClaudeProcessEnv(input?: {
 }): NodeJS.ProcessEnv {
   const trimmedHomePath = input?.homePath?.trim();
   const resolvedHomePath = trimmedHomePath
-    ? expandClaudeHomePath(trimmedHomePath, input?.homeDir)
+    ? expandProviderAccountHomePath(trimmedHomePath, input?.homeDir ?? homedir())
     : undefined;
   const env: NodeJS.ProcessEnv = { ...(input?.env ?? process.env) };
   // Align the subprocess HOME with the credential home being checked so Claude
@@ -82,8 +73,8 @@ export function buildClaudeProcessEnv(input?: {
   }
 
   // Credentials live in the selected instance home when one is configured;
-  // otherwise fall back to the caller-provided server home / env HOME.
-  const credentialsHomeDir = resolvedHomePath ?? input?.homeDir;
+  // otherwise use the final overlaid HOME before the caller's server home.
+  const credentialsHomeDir = resolvedHomePath ?? env.HOME ?? input?.homeDir;
   const hasLocalClaudeAuth =
     input?.hasClaudeCliCredentials ??
     hasUsableClaudeCliCredentials(
