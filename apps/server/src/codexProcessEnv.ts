@@ -14,7 +14,6 @@ import {
   readlinkSync,
   renameSync,
   rmSync,
-  statSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -209,6 +208,7 @@ interface CodexOverlayResolution {
 }
 
 type SharedContinuationEntryKind = "dir" | "file";
+type SharedContinuationSourcePolicy = "create-if-missing" | "require-prepared";
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
   return value !== null && typeof value === "object" && !Array.isArray(value)
@@ -594,8 +594,14 @@ function prepareSharedCodexContinuationState(input: {
   readonly sourceHomePath: string;
   readonly overlayHomePath: string;
   readonly overlayEntryLinker?: CodexOverlayEntryLinker;
+  readonly sourcePolicy?: SharedContinuationSourcePolicy;
 }): void {
-  mkdirSync(input.sourceHomePath, { recursive: true });
+  const sourcePolicy = input.sourcePolicy ?? "create-if-missing";
+  if (sourcePolicy === "require-prepared") {
+    assertSharedCodexContinuationSourcePrepared(input.sourceHomePath);
+  } else {
+    mkdirSync(input.sourceHomePath, { recursive: true });
+  }
   mkdirSync(input.overlayHomePath, { recursive: true });
   for (const entryName of sharedContinuationIdentityEntryNames().toSorted()) {
     const entry = {
@@ -604,8 +610,26 @@ function prepareSharedCodexContinuationState(input: {
       sourceHomePath: input.sourceHomePath,
       overlayHomePath: input.overlayHomePath,
     } as const;
-    ensureSharedContinuationSource(entry);
+    if (sourcePolicy === "require-prepared") {
+      const sourceStat = lstatIfExists(path.join(input.sourceHomePath, entryName));
+      if (!sourceStat) {
+        throw new Error(
+          `Codex shared continuation source at ${input.sourceHomePath} became incomplete while preparing '${entryName}'; refusing to recreate persisted session state.`,
+        );
+      }
+      assertSharedContinuationEntryType({
+        entryName,
+        entryPath: path.join(input.sourceHomePath, entryName),
+        kind: entry.kind,
+        stat: sourceStat,
+      });
+    } else {
+      ensureSharedContinuationSource(entry);
+    }
     ensureSharedContinuationTarget(entry, input.overlayEntryLinker);
+  }
+  if (sourcePolicy === "require-prepared") {
+    assertSharedCodexContinuationSourcePrepared(input.sourceHomePath);
   }
   if (
     !selectedCodexOverlaySharesContinuationState({
@@ -617,7 +641,9 @@ function prepareSharedCodexContinuationState(input: {
       `Codex continuation state at ${input.overlayHomePath} is not fully linked to ${input.sourceHomePath}.`,
     );
   }
-  writeSharedCodexContinuationMarker(input.sourceHomePath);
+  if (sourcePolicy === "create-if-missing") {
+    writeSharedCodexContinuationMarker(input.sourceHomePath);
+  }
 }
 
 function writeSharedCodexContinuationMarker(sourceHomePath: string): void {
@@ -644,6 +670,42 @@ function writeSharedCodexContinuationMarker(sourceHomePath: string): void {
 
 function sharedContinuationIdentityEntryNames(): readonly string[] {
   return [...REQUIRED_SHARED_CONTINUATION_DIRECTORIES, ...REQUIRED_SHARED_CONTINUATION_FILES];
+}
+
+function sharedCodexContinuationSourcePrepared(sourceHomePath: string): boolean {
+  try {
+    const markerPath = sharedContinuationMarkerPath(sourceHomePath);
+    const markerStat = lstatSync(markerPath);
+    if (!markerStat.isFile() || markerStat.isSymbolicLink()) {
+      return false;
+    }
+    const marker = JSON.parse(readFileSync(markerPath, "utf8")) as {
+      readonly version?: unknown;
+      readonly sourceHomeIdentity?: unknown;
+    };
+    if (
+      marker.version !== SYNARA_SHARED_CONTINUATION_MARKER_VERSION ||
+      marker.sourceHomeIdentity !== resolveCodexPathIdentity(sourceHomePath)
+    ) {
+      return false;
+    }
+    return sharedContinuationIdentityEntryNames().every((entryName) => {
+      const stat = lstatSync(path.join(sourceHomePath, entryName));
+      const kind = sharedContinuationEntryKind(entryName);
+      return kind === "dir" ? stat.isDirectory() : stat.isFile();
+    });
+  } catch {
+    return false;
+  }
+}
+
+function assertSharedCodexContinuationSourcePrepared(sourceHomePath: string): void {
+  if (sharedCodexContinuationSourcePrepared(sourceHomePath)) {
+    return;
+  }
+  throw new Error(
+    `Codex shared continuation source at ${sourceHomePath} is missing or damaged; refusing to recreate persisted session state. Restore the original source home before resuming this thread.`,
+  );
 }
 
 function selectedCodexOverlaySharesContinuationState(input: {
@@ -686,24 +748,8 @@ export function isCodexSharedContinuationStatePrepared(
     const sourceConfigPath = path.join(sourceHomePath, "config.toml");
     const sourceConfig = existsSync(sourceConfigPath) ? readFileSync(sourceConfigPath, "utf8") : "";
     assertCodexSqliteHomeMatchesSource({ sourceConfig, sourceHomePath });
-    const marker = JSON.parse(
-      readFileSync(sharedContinuationMarkerPath(sourceHomePath), "utf8"),
-    ) as { readonly version?: unknown; readonly sourceHomeIdentity?: unknown };
-    const markerMatches =
-      marker.version === SYNARA_SHARED_CONTINUATION_MARKER_VERSION &&
-      marker.sourceHomeIdentity === resolveCodexPathIdentity(sourceHomePath);
-    if (!markerMatches) {
-      return false;
-    }
-    const sourceHasRequiredState =
-      REQUIRED_SHARED_CONTINUATION_DIRECTORIES.every((entryName) =>
-        statSync(path.join(sourceHomePath, entryName)).isDirectory(),
-      ) &&
-      REQUIRED_SHARED_CONTINUATION_FILES.every((entryName) =>
-        statSync(path.join(sourceHomePath, entryName)).isFile(),
-      );
     return (
-      sourceHasRequiredState &&
+      sharedCodexContinuationSourcePrepared(sourceHomePath) &&
       selectedCodexOverlaySharesContinuationState({ sourceHomePath, overlayHomePath })
     );
   } catch {
@@ -1200,6 +1246,7 @@ function prepareSynaraCodexHomeOverlay(input: {
   readonly shadowHomePath?: string;
   readonly accountId?: string;
   readonly overlayEntryLinker?: CodexOverlayEntryLinker;
+  readonly continuationSourcePolicy?: SharedContinuationSourcePolicy;
 }): string | undefined {
   const resolution = resolveCodexOverlayResolution(input);
   const {
@@ -1223,15 +1270,18 @@ function prepareSynaraCodexHomeOverlay(input: {
     ...(input.accountId ? { accountId: input.accountId } : {}),
   });
   if (path.resolve(sourceHomePath) === path.resolve(overlayHomePath)) {
+    if (input.continuationSourcePolicy === "require-prepared") {
+      assertSharedCodexContinuationSourcePrepared(sourceHomePath);
+    }
     return undefined;
   }
 
-  mkdirSync(overlayHomePath, { recursive: true });
   try {
     prepareSharedCodexContinuationState({
       sourceHomePath,
       overlayHomePath,
       ...(input.overlayEntryLinker ? { overlayEntryLinker: input.overlayEntryLinker } : {}),
+      ...(input.continuationSourcePolicy ? { sourcePolicy: input.continuationSourcePolicy } : {}),
     });
   } catch (error) {
     // Continuation preparation is all-or-nothing on every platform and for the
@@ -1322,6 +1372,9 @@ function prepareSynaraCodexHomeOverlay(input: {
     "utf8",
   );
   writeSynaraConfigSuppressions(suppressionMarkerPath, suppressedSections);
+  if (input.continuationSourcePolicy === "require-prepared") {
+    assertSharedCodexContinuationSourcePrepared(sourceHomePath);
+  }
   return overlayHomePath;
 }
 
@@ -1330,11 +1383,14 @@ function prepareSynaraCodexHomeOverlay(input: {
  * real process launch. Continuation compatibility checks call this before
  * trusting a newly selected account to share the source session store.
  */
-export function prepareCodexHomeOverlay(
-  input: Pick<
-    CodexProcessEnvInput,
-    "env" | "homePath" | "shadowHomePath" | "accountId" | "overlayEntryLinker"
-  > = {},
+type CodexHomeOverlayPreparationInput = Pick<
+  CodexProcessEnvInput,
+  "env" | "homePath" | "shadowHomePath" | "accountId" | "overlayEntryLinker"
+>;
+
+function prepareCodexHomeOverlayWithSourcePolicy(
+  input: CodexHomeOverlayPreparationInput,
+  continuationSourcePolicy: SharedContinuationSourcePolicy,
 ): string | undefined {
   const env = { ...(input.env ?? process.env) };
   return prepareSynaraCodexHomeOverlay({
@@ -1343,7 +1399,25 @@ export function prepareCodexHomeOverlay(
     ...(input.shadowHomePath ? { shadowHomePath: input.shadowHomePath } : {}),
     ...(input.accountId ? { accountId: input.accountId } : {}),
     ...(input.overlayEntryLinker ? { overlayEntryLinker: input.overlayEntryLinker } : {}),
+    continuationSourcePolicy,
   });
+}
+
+export function prepareCodexHomeOverlay(
+  input: CodexHomeOverlayPreparationInput = {},
+): string | undefined {
+  return prepareCodexHomeOverlayWithSourcePolicy(input, "create-if-missing");
+}
+
+/**
+ * Repairs only a target overlay for a persisted shared continuation. The
+ * source marker and every required source entry must already be healthy; this
+ * path never creates or rewrites source continuation state.
+ */
+export function prepareCodexHomeOverlayFromPreparedContinuationSource(
+  input: CodexHomeOverlayPreparationInput = {},
+): string | undefined {
+  return prepareCodexHomeOverlayWithSourcePolicy(input, "require-prepared");
 }
 
 // Earlier builds symlinked shared private state (auth) into account homes;

@@ -11,7 +11,7 @@ import { resolveActiveCodexHomeWritePath, resolveBaseCodexHomePath } from "../co
 import { resolveCodexPathIdentity } from "../codexPathIdentity.ts";
 import {
   isCodexSharedContinuationStatePrepared,
-  prepareCodexHomeOverlay,
+  prepareCodexHomeOverlayFromPreparedContinuationSource,
   type CodexProcessEnvInput,
 } from "../codexProcessEnv.ts";
 import { expandProviderAccountHomePath } from "../providerAccountHomePath.ts";
@@ -59,7 +59,7 @@ export function prepareProviderContinuationIdentity(
     // shared-source identity. Different homes and legacy overlay identities
     // are already incompatible without creating any new filesystem state.
     if (persistedIdentity === candidateSharedIdentity) {
-      prepareCodexHomeOverlay(continuationInput);
+      prepareCodexHomeOverlayFromPreparedContinuationSource(continuationInput);
     }
   }
   return providerContinuationIdentity(provider, options);

@@ -539,6 +539,74 @@ routing.layer("ProviderServiceLive native forks", (it) => {
     }),
   );
 
+  it.effect("does not recreate damaged shared source state before a native fork", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService;
+      const serverSettings = yield* ServerSettingsService;
+      const sourceThreadId = asThreadId("thread-fork-damaged-source");
+      const targetThreadId = asThreadId("thread-fork-damaged-source-target");
+      const fixture = makeSharedCodexContinuationFixture(["personal", "work"], ["personal"]);
+      yield* serverSettings.updateSettings({
+        providerInstances: {
+          codex_personal: {
+            driver: "codex",
+            environment: fixture.instanceEnvironment,
+            config: {
+              homePath: fixture.homePath,
+              shadowHomePath: fixture.shadowHomePath("personal"),
+              accountId: "personal",
+            },
+          },
+          codex_work: {
+            driver: "codex",
+            environment: fixture.instanceEnvironment,
+            config: {
+              homePath: fixture.homePath,
+              shadowHomePath: fixture.shadowHomePath("work"),
+              accountId: "work",
+            },
+          },
+        },
+      });
+      yield* provider.startSession(sourceThreadId, {
+        provider: "codex",
+        providerInstanceId: "codex_personal",
+        threadId: sourceThreadId,
+        runtimeMode: "full-access",
+      });
+      const workOverlayHomePath = resolveActiveCodexHomeWritePath({
+        env: { ...process.env, ...fixture.environment },
+        homePath: fixture.homePath,
+        shadowHomePath: fixture.shadowHomePath("work"),
+        accountId: "work",
+      });
+      assert.equal(fs.existsSync(workOverlayHomePath), false);
+      const sourceSessionsPath = path.join(fixture.homePath, "sessions");
+      fs.rmSync(sourceSessionsPath, { recursive: true, force: true });
+      routing.codex.forkThread.mockClear();
+
+      assert.equal(typeof provider.forkThread, "function");
+      if (!provider.forkThread) return;
+      const result = yield* Effect.result(
+        provider.forkThread({
+          sourceThreadId,
+          threadId: targetThreadId,
+          modelSelection: { instanceId: "codex_work", model: "gpt-5.4" },
+          runtimeMode: "full-access",
+        }),
+      );
+
+      assert.equal(result._tag, "Failure");
+      if (result._tag === "Failure") {
+        assert.match(String(result.failure), /missing or damaged/);
+      }
+      assert.equal(routing.codex.forkThread.mock.calls.length, 0);
+      assert.equal(fs.existsSync(sourceSessionsPath), false);
+      assert.equal(fs.existsSync(workOverlayHomePath), false);
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+    }),
+  );
+
   it.effect("falls back without invoking native fork across incompatible Codex homes", () =>
     Effect.gen(function* () {
       const provider = yield* ProviderService;
@@ -1281,6 +1349,58 @@ routing.layer("ProviderServiceLive routing", (it) => {
     }),
   );
 
+  it.effect("does not recreate damaged shared source state during a direct account switch", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService;
+      const threadId = asThreadId("thread-codex-switch-damaged-source");
+      const fixture = makeSharedCodexContinuationFixture(["personal", "work"], ["personal"]);
+      const options = (accountId: "personal" | "work") => ({
+        codex: {
+          homePath: fixture.homePath,
+          shadowHomePath: fixture.shadowHomePath(accountId),
+          accountId,
+          environment: fixture.environment,
+        },
+      });
+      yield* provider.startSession(threadId, {
+        provider: "codex",
+        threadId,
+        providerOptions: options("personal"),
+        runtimeMode: "full-access",
+      });
+      const workOverlayHomePath = resolveActiveCodexHomeWritePath({
+        env: { ...process.env, ...fixture.environment },
+        homePath: fixture.homePath,
+        shadowHomePath: fixture.shadowHomePath("work"),
+        accountId: "work",
+      });
+      assert.equal(fs.existsSync(workOverlayHomePath), false);
+      const sourceSessionsPath = path.join(fixture.homePath, "sessions");
+      fs.rmSync(sourceSessionsPath, { recursive: true, force: true });
+      routing.codex.startSession.mockClear();
+      routing.codex.stopSession.mockClear();
+
+      const result = yield* Effect.result(
+        provider.startSession(threadId, {
+          provider: "codex",
+          threadId,
+          providerOptions: options("work"),
+          runtimeMode: "full-access",
+        }),
+      );
+
+      assert.equal(result._tag, "Failure");
+      if (result._tag === "Failure") {
+        assert.match(String(result.failure), /missing or damaged/);
+      }
+      assert.equal(routing.codex.startSession.mock.calls.length, 0);
+      assert.equal(routing.codex.stopSession.mock.calls.length, 0);
+      assert.equal(fs.existsSync(sourceSessionsPath), false);
+      assert.equal(fs.existsSync(workOverlayHomePath), false);
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+    }),
+  );
+
   it.effect("prepares a newly configured Codex account during persisted recovery", () =>
     Effect.gen(function* () {
       const provider = yield* ProviderService;
@@ -1342,6 +1462,65 @@ routing.layer("ProviderServiceLive routing", (it) => {
         initial.resumeCursor,
       );
       assert.equal(routing.codex.sendTurn.mock.calls.length, 1);
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+    }),
+  );
+
+  it.effect("does not recreate a deleted shared source home during persisted recovery", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService;
+      const serverSettings = yield* ServerSettingsService;
+      const threadId = asThreadId("thread-codex-recovery-deleted-source");
+      const fixture = makeSharedCodexContinuationFixture(["personal", "work"], ["personal"]);
+      const instance = (accountId: "personal" | "work") => ({
+        driver: "codex" as const,
+        environment: fixture.instanceEnvironment,
+        config: {
+          homePath: fixture.homePath,
+          shadowHomePath: fixture.shadowHomePath(accountId),
+          accountId,
+        },
+      });
+      yield* serverSettings.updateSettings({
+        providerInstances: { codex_selected: instance("personal") },
+      });
+      yield* provider.startSession(threadId, {
+        provider: "codex",
+        providerInstanceId: "codex_selected",
+        threadId,
+        runtimeMode: "full-access",
+      });
+      const workOverlayHomePath = resolveActiveCodexHomeWritePath({
+        env: { ...process.env, ...fixture.environment },
+        homePath: fixture.homePath,
+        shadowHomePath: fixture.shadowHomePath("work"),
+        accountId: "work",
+      });
+      assert.equal(fs.existsSync(workOverlayHomePath), false);
+      yield* routing.codex.stopAll();
+      yield* serverSettings.updateSettings({
+        providerInstances: { codex_selected: instance("work") },
+      });
+      fs.rmSync(fixture.homePath, { recursive: true, force: true });
+      routing.codex.startSession.mockClear();
+      routing.codex.sendTurn.mockClear();
+
+      const result = yield* Effect.result(
+        provider.sendTurn({
+          threadId,
+          input: "resume after source deletion",
+          attachments: [],
+        }),
+      );
+
+      assert.equal(result._tag, "Failure");
+      if (result._tag === "Failure") {
+        assert.match(String(result.failure), /missing or damaged/);
+      }
+      assert.equal(routing.codex.startSession.mock.calls.length, 0);
+      assert.equal(routing.codex.sendTurn.mock.calls.length, 0);
+      assert.equal(fs.existsSync(fixture.homePath), false);
+      assert.equal(fs.existsSync(workOverlayHomePath), false);
       fs.rmSync(fixture.root, { recursive: true, force: true });
     }),
   );
@@ -1410,7 +1589,7 @@ routing.layer("ProviderServiceLive routing", (it) => {
       );
       assert.equal(result._tag, "Failure");
       if (result._tag === "Failure") {
-        assert.match(String(result.failure), /exists as real entries in both/);
+        assert.match(String(result.failure), /refusing to overwrite raced or independently owned/);
       }
       assert.equal(routing.codex.startSession.mock.calls.length, 0);
       assert.strictEqual(
@@ -1477,7 +1656,7 @@ routing.layer("ProviderServiceLive routing", (it) => {
       );
       assert.equal(result._tag, "Failure");
       if (result._tag === "Failure") {
-        assert.match(String(result.failure), /exists as real entries in both/);
+        assert.match(String(result.failure), /refusing to overwrite raced or independently owned/);
       }
       assert.equal(routing.codex.startSession.mock.calls.length, 0);
       assert.strictEqual(
