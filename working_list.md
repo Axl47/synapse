@@ -2,11 +2,11 @@
 
 ## Pending
 
-- [ ] Push `multiple-accounts-selection` and summarize the handoff
+- None.
 
 ## In Progress
 
-- [~] Publish the integrated branch
+- None.
 
 ## Done
 
@@ -18,3 +18,5 @@
 - [x] Preserve current task-tracking and projection-schema migrations
 - [x] Run focused verification for provider instances, model selection, migrations, and browser pickers
 - [x] Commit the integrated feature branch
+- [x] Push `multiple-accounts-selection` to the fork
+- [x] Summarize the integration and verification handoff
