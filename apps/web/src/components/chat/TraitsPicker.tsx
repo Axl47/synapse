@@ -34,8 +34,6 @@ import { ComposerPickerMenuPopup } from "./ComposerPickerMenuPopup";
 import { getComposerTraitSelection, hasVisibleComposerTraitControls } from "./composerTraits";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { ShortcutKbd } from "../ui/shortcut-kbd";
-import { cn } from "~/lib/utils";
-import { isUltraEffort, ULTRA_EFFORT_TEXT_CLASS_NAME } from "./effortPresentation";
 
 const ULTRATHINK_PROMPT_PREFIX = "Ultrathink:\n";
 
@@ -190,7 +188,6 @@ function TraitRadioSection({
             <MenuRadioItem
               key={option.value}
               value={option.value}
-              className={cn(isUltraEffort(option.value) && ULTRA_EFFORT_TEXT_CLASS_NAME)}
               {...(disabled ? { disabled: true } : {})}
               onClick={() => onSelectionComplete?.()}
             >

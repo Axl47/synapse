@@ -45,7 +45,6 @@ import {
   resolveProviderModelLabel,
 } from "./ProviderModelPicker";
 import { TraitsMenuContent } from "./TraitsPicker";
-import { isUltraEffort, ULTRA_EFFORT_TEXT_CLASS_NAME } from "./effortPresentation";
 
 type ComposerModelEffortPickerProps = {
   // Model picker data.
@@ -225,14 +224,7 @@ export const ComposerModelEffortPicker = memo(function ComposerModelEffortPicker
         props.hideStatusLabel ? (
           <span className="sr-only">{triggerStatusLabel}</span>
         ) : (
-          <span
-            className={cn(
-              "shrink-0",
-              isUltraEffort(effort)
-                ? ULTRA_EFFORT_TEXT_CLASS_NAME
-                : COMPOSER_MUTED_ACCENT_TEXT_CLASS_NAME,
-            )}
-          >
+          <span className={cn("shrink-0", COMPOSER_MUTED_ACCENT_TEXT_CLASS_NAME)}>
             {triggerStatusLabel}
           </span>
         )

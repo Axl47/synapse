@@ -818,7 +818,7 @@ describe("resolveCodexModelForAccount", () => {
         planType: "plus",
         sparkEnabled: false,
       }),
-    ).toBe("gpt-5.6-sol");
+    ).toBe("gpt-5.5");
   });
 
   it("keeps spark for supported plans", () => {

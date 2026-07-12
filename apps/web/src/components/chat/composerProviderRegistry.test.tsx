@@ -150,32 +150,6 @@ describe("getComposerProviderState", () => {
     });
   });
 
-  it("recognizes runtime-discovered Ultra effort metadata", () => {
-    const selection = getComposerTraitSelection(
-      "codex",
-      "gpt-5.6-sol",
-      "",
-      { reasoningEffort: "ultra" },
-      {
-        slug: "gpt-5.6-sol",
-        name: "GPT-5.6 Sol",
-        supportedReasoningEfforts: [
-          { value: "medium" },
-          { value: "max" },
-          { value: "ultra" },
-        ],
-        defaultReasoningEffort: "medium",
-      },
-    );
-
-    expect(selection.effort).toBe("ultra");
-    expect(selection.effortLevels.map(({ value, label }) => ({ value, label }))).toEqual([
-      { value: "medium", label: "Medium" },
-      { value: "max", label: "Max" },
-      { value: "ultra", label: "Ultra" },
-    ]);
-  });
-
   it("drops codex fast mode when runtime discovery does not advertise support", () => {
     const state = getComposerProviderState({
       provider: "codex",
