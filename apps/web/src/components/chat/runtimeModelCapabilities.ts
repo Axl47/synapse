@@ -31,6 +31,10 @@ function runtimeEffortLabel(value: string): string {
       return "High";
     case "xhigh":
       return "Extra High";
+    case "max":
+      return "Max";
+    case "ultra":
+      return "Ultra";
     default:
       return value
         .split(/[-_\s]+/u)

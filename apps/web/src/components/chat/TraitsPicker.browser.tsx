@@ -428,6 +428,24 @@ describe("TraitsPicker (Codex)", () => {
       expect(text).toContain("Medium");
       expect(text).toContain("High");
       expect(text).toContain("Extra High");
+      expect(text).toContain("Max");
+      expect(text).toContain("Ultra");
+    });
+  });
+
+  it("gives Ultra a distinct violet accent", async () => {
+    await using _ = await mountCodexPicker({
+      model: "gpt-5.6-sol",
+      options: { reasoningEffort: "ultra", fastMode: false },
+    });
+
+    await page.getByRole("button").click();
+
+    await vi.waitFor(() => {
+      const ultra = Array.from(document.querySelectorAll('[role="menuitemradio"]')).find(
+        (element) => element.textContent?.trim() === "Ultra",
+      );
+      expect(ultra?.className).toContain("text-violet-300");
     });
   });
 

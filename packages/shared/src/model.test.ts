@@ -187,8 +187,11 @@ describe("getModelCapabilities reasoningEffortLevels", () => {
     getModelCapabilities(provider, model).reasoningEffortLevels.map((l) => l.value);
 
   it("returns codex reasoning options for codex", () => {
-    expect(values("codex", "gpt-5.5")).toEqual([...CODEX_REASONING_EFFORT_OPTIONS]);
-    expect(values("codex", "gpt-5.4")).toEqual([...CODEX_REASONING_EFFORT_OPTIONS]);
+    expect(values("codex", "gpt-5.6-sol")).toEqual([...CODEX_REASONING_EFFORT_OPTIONS]);
+    expect(values("codex", "gpt-5.6-terra")).toEqual(CODEX_REASONING_EFFORT_OPTIONS.slice(0, -1));
+    expect(values("codex", "gpt-5.6-luna")).toEqual(CODEX_REASONING_EFFORT_OPTIONS.slice(0, -1));
+    expect(values("codex", "gpt-5.5")).toEqual(CODEX_REASONING_EFFORT_OPTIONS.slice(0, 4));
+    expect(values("codex", "gpt-5.4")).toEqual(CODEX_REASONING_EFFORT_OPTIONS.slice(0, 4));
   });
 
   it("returns claude effort options for Opus 4.6", () => {

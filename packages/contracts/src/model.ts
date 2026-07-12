@@ -2,7 +2,14 @@ import { Schema } from "effect";
 import { TrimmedNonEmptyString } from "./baseSchemas";
 import type { ProviderKind } from "./orchestration";
 
-export const CODEX_REASONING_EFFORT_OPTIONS = ["low", "medium", "high", "xhigh"] as const;
+export const CODEX_REASONING_EFFORT_OPTIONS = [
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+  "ultra",
+] as const;
 export type CodexReasoningEffort = (typeof CODEX_REASONING_EFFORT_OPTIONS)[number];
 export const CLAUDE_API_EFFORT_OPTIONS = ["low", "medium", "high", "xhigh", "max"] as const;
 export type ClaudeApiEffort = (typeof CLAUDE_API_EFFORT_OPTIONS)[number];
@@ -219,6 +226,25 @@ const CODEX_GPT_5_5_CAPABILITIES: ModelCapabilities = {
   ],
 };
 
+const CODEX_GPT_5_6_CAPABILITIES: ModelCapabilities = {
+  ...CODEX_GPT_5_CAPABILITIES,
+  reasoningEffortLevels: [
+    { value: "low", label: "Low" },
+    { value: "medium", label: "Medium", isDefault: true },
+    { value: "high", label: "High" },
+    { value: "xhigh", label: "Extra High" },
+    { value: "max", label: "Max" },
+  ],
+};
+
+const CODEX_GPT_5_6_SOL_CAPABILITIES: ModelCapabilities = {
+  ...CODEX_GPT_5_6_CAPABILITIES,
+  reasoningEffortLevels: [
+    ...CODEX_GPT_5_6_CAPABILITIES.reasoningEffortLevels,
+    { value: "ultra", label: "Ultra" },
+  ],
+};
+
 const GROK_BUILD_CAPABILITIES: ModelCapabilities = {
   reasoningEffortLevels: [
     { value: "none", label: "None" },
@@ -328,6 +354,21 @@ type ModelDefinition = {
  */
 export const MODEL_OPTIONS_BY_PROVIDER = {
   codex: [
+    {
+      slug: "gpt-5.6-sol",
+      name: "GPT-5.6 Sol",
+      capabilities: CODEX_GPT_5_6_SOL_CAPABILITIES,
+    },
+    {
+      slug: "gpt-5.6-terra",
+      name: "GPT-5.6 Terra",
+      capabilities: CODEX_GPT_5_6_CAPABILITIES,
+    },
+    {
+      slug: "gpt-5.6-luna",
+      name: "GPT-5.6 Luna",
+      capabilities: CODEX_GPT_5_6_CAPABILITIES,
+    },
     {
       slug: "gpt-5.5",
       name: "GPT-5.5",
@@ -606,7 +647,7 @@ export type ModelSlug = BuiltInModelSlug | (string & {});
 export type ProviderWithDefaultModel = Exclude<ProviderKind, "pi">;
 
 export const DEFAULT_MODEL_BY_PROVIDER: Record<ProviderWithDefaultModel, ModelSlug> = {
-  codex: "gpt-5.5",
+  codex: "gpt-5.6-sol",
   claudeAgent: "claude-sonnet-5",
   cursor: "auto",
   gemini: "auto-gemini-3",
@@ -622,6 +663,10 @@ export const DEFAULT_GIT_TEXT_GENERATION_MODEL = "gpt-5.4-mini" as const;
 
 export const MODEL_SLUG_ALIASES_BY_PROVIDER: Record<ProviderKind, Record<string, ModelSlug>> = {
   codex: {
+    "5.6": "gpt-5.6-sol",
+    "5.6-sol": "gpt-5.6-sol",
+    "5.6-terra": "gpt-5.6-terra",
+    "5.6-luna": "gpt-5.6-luna",
     "5.5": "gpt-5.5",
     "5.4": "gpt-5.4",
     "5.3": "gpt-5.3-codex",
