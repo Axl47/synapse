@@ -139,6 +139,8 @@ import type {
   OrchestrationGetFullThreadDiffResult,
   OrchestrationImportThreadInput,
   OrchestrationImportThreadResult,
+  OrchestrationListExternalThreadsInput,
+  OrchestrationListExternalThreadsResult,
   OrchestrationGetTurnDiffInput,
   OrchestrationGetTurnDiffResult,
   OrchestrationEvent,
@@ -574,6 +576,9 @@ export interface NativeApi {
     importThread: (
       input: OrchestrationImportThreadInput,
     ) => Promise<OrchestrationImportThreadResult>;
+    listExternalThreads: (
+      input: OrchestrationListExternalThreadsInput,
+    ) => Promise<OrchestrationListExternalThreadsResult>;
     repairState: () => Promise<OrchestrationReadModel>;
     getTurnDiff: (input: OrchestrationGetTurnDiffInput) => Promise<OrchestrationGetTurnDiffResult>;
     getFullThreadDiff: (

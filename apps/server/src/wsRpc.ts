@@ -56,6 +56,7 @@ import { listLocalServers, stopLocalServer } from "./localServerMonitor";
 import { Open, resolveAvailableEditors } from "./open";
 import { makeDispatchCommandNormalizer } from "./orchestration/dispatchCommandNormalization";
 import { makeImportThreadHandler } from "./orchestration/importThreadRoute";
+import { makeExternalThreadDiscoveryHandler } from "./orchestration/externalThreadDiscoveryRoute";
 import { OrchestrationEngineService } from "./orchestration/Services/OrchestrationEngine";
 import { ProjectionSnapshotQuery } from "./orchestration/Services/ProjectionSnapshotQuery";
 import { sanitizeOrchestrationEventProviderOptions } from "./orchestration/providerOptionsSecurity";
@@ -65,6 +66,7 @@ import { discoverSkillsCatalog, synaraSkillsDir } from "./provider/skillsCatalog
 import { ProviderAdapterRegistry } from "./provider/Services/ProviderAdapterRegistry";
 import { ProviderHealth } from "./provider/Services/ProviderHealth";
 import { ProviderService } from "./provider/Services/ProviderService";
+import { ProviderSessionDirectory } from "./provider/Services/ProviderSessionDirectory";
 import { listProviderUsage } from "./providerUsage";
 import { getProviderUsageSnapshot } from "./providerUsageSnapshot";
 import { ProfileStatsQuery } from "./profileStats";
@@ -408,6 +410,7 @@ export const makeWsRpcLayer = () =>
       const providerDiscoveryService = yield* ProviderDiscoveryService;
       const providerHealth = yield* ProviderHealth;
       const providerService = yield* ProviderService;
+      const providerSessionDirectory = yield* ProviderSessionDirectory;
       const lifecycleEvents = yield* ServerLifecycleEvents;
       const runtimeStartup = yield* ServerRuntimeStartup;
       const serverEnvironment = yield* ServerEnvironment;
@@ -527,6 +530,15 @@ export const makeWsRpcLayer = () =>
         providerAdapterRegistry,
         providerService,
         serverConfig: config,
+        serverSettings,
+      });
+      const listExternalThreads = makeExternalThreadDiscoveryHandler({
+        fileSystem,
+        path,
+        platform: process.platform,
+        projectionSnapshotQuery: projectionReadModelQuery,
+        providerAdapterRegistry,
+        providerSessionDirectory,
         serverSettings,
       });
 
@@ -687,6 +699,8 @@ export const makeWsRpcLayer = () =>
           ),
         [ORCHESTRATION_WS_METHODS.importThread]: (input) =>
           rpcEffect(importThread(input), "Failed to import thread"),
+        [ORCHESTRATION_WS_METHODS.listExternalThreads]: (input) =>
+          rpcEffect(listExternalThreads(input), "Failed to list external threads"),
         [ORCHESTRATION_WS_METHODS.getSnapshot]: () =>
           rpcEffect(
             projectionReadModelQuery.getSnapshot(),

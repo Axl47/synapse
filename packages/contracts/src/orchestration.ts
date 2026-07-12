@@ -26,6 +26,7 @@ export const ORCHESTRATION_WS_METHODS = {
   getShellSnapshot: "orchestration.getShellSnapshot",
   dispatchCommand: "orchestration.dispatchCommand",
   importThread: "orchestration.importThread",
+  listExternalThreads: "orchestration.listExternalThreads",
   repairState: "orchestration.repairState",
   getTurnDiff: "orchestration.getTurnDiff",
   getFullThreadDiff: "orchestration.getFullThreadDiff",
@@ -2070,6 +2071,61 @@ export const OrchestrationImportThreadResult = Schema.Struct({
 });
 export type OrchestrationImportThreadResult = typeof OrchestrationImportThreadResult.Type;
 
+export const ExternalThreadMatchKind = Schema.Literals([
+  "exact",
+  "descendant",
+  "managed-worktree",
+  "unmatched",
+]);
+export type ExternalThreadMatchKind = typeof ExternalThreadMatchKind.Type;
+
+export const ExternalThreadStatus = Schema.Literals([
+  "not-loaded",
+  "idle",
+  "active",
+  "system-error",
+  "unknown",
+]);
+export type ExternalThreadStatus = typeof ExternalThreadStatus.Type;
+
+export const ExternalThreadCandidate = Schema.Struct({
+  provider: Schema.Literal("codex"),
+  providerInstanceId: ProviderInstanceId,
+  externalThreadId: TrimmedNonEmptyString,
+  title: TrimmedNonEmptyString,
+  preview: Schema.String,
+  cwd: TrimmedNonEmptyString,
+  sourceKind: TrimmedNonEmptyString,
+  status: ExternalThreadStatus,
+  modelProvider: TrimmedNonEmptyString,
+  createdAt: IsoDateTime,
+  updatedAt: IsoDateTime,
+  matchedProjectId: Schema.NullOr(ProjectId),
+  matchKind: ExternalThreadMatchKind,
+});
+export type ExternalThreadCandidate = typeof ExternalThreadCandidate.Type;
+
+export const ExternalThreadDiscoveryWarning = Schema.Struct({
+  providerInstanceId: ProviderInstanceId,
+  message: TrimmedNonEmptyString,
+});
+export type ExternalThreadDiscoveryWarning = typeof ExternalThreadDiscoveryWarning.Type;
+
+export const OrchestrationListExternalThreadsInput = Schema.Struct({
+  refresh: Schema.optional(Schema.Boolean),
+});
+export type OrchestrationListExternalThreadsInput =
+  typeof OrchestrationListExternalThreadsInput.Type;
+
+export const OrchestrationListExternalThreadsResult = Schema.Struct({
+  candidates: Schema.Array(ExternalThreadCandidate),
+  refreshedAt: IsoDateTime,
+  warnings: Schema.Array(ExternalThreadDiscoveryWarning),
+  truncated: Schema.Boolean,
+});
+export type OrchestrationListExternalThreadsResult =
+  typeof OrchestrationListExternalThreadsResult.Type;
+
 export const OrchestrationUnsubscribeThreadInput = Schema.Struct({
   threadId: ThreadId,
 });
@@ -2095,6 +2151,10 @@ export const OrchestrationRpcSchemas = {
   importThread: {
     input: OrchestrationImportThreadInput,
     output: OrchestrationImportThreadResult,
+  },
+  listExternalThreads: {
+    input: OrchestrationListExternalThreadsInput,
+    output: OrchestrationListExternalThreadsResult,
   },
   getTurnDiff: {
     input: OrchestrationGetTurnDiffInput,

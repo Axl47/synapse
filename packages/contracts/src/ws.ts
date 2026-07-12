@@ -16,6 +16,7 @@ import {
   ClientOrchestrationCommand,
   OrchestrationEvent,
   OrchestrationImportThreadInput,
+  OrchestrationListExternalThreadsInput,
   OrchestrationShellStreamItem,
   OrchestrationSubscribeShellInput,
   OrchestrationSubscribeThreadInput,
@@ -261,6 +262,10 @@ const WebSocketRequestBody = Schema.Union([
     Schema.Struct({ command: ClientOrchestrationCommand }),
   ),
   tagRequestBody(ORCHESTRATION_WS_METHODS.importThread, OrchestrationImportThreadInput),
+  tagRequestBody(
+    ORCHESTRATION_WS_METHODS.listExternalThreads,
+    OrchestrationListExternalThreadsInput,
+  ),
   tagRequestBody(ORCHESTRATION_WS_METHODS.getSnapshot, OrchestrationGetSnapshotInput),
   tagRequestBody(ORCHESTRATION_WS_METHODS.getShellSnapshot, OrchestrationGetShellSnapshotInput),
   tagRequestBody(ORCHESTRATION_WS_METHODS.repairState, OrchestrationRepairStateInput),
