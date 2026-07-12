@@ -17,6 +17,7 @@ import {
   OrchestrationEvent,
   OrchestrationImportThreadInput,
   OrchestrationListExternalThreadsInput,
+  OrchestrationAdoptExternalThreadInput,
   OrchestrationShellStreamItem,
   OrchestrationSubscribeShellInput,
   OrchestrationSubscribeThreadInput,
@@ -260,6 +261,10 @@ const WebSocketRequestBody = Schema.Union([
   tagRequestBody(
     ORCHESTRATION_WS_METHODS.dispatchCommand,
     Schema.Struct({ command: ClientOrchestrationCommand }),
+  ),
+  tagRequestBody(
+    ORCHESTRATION_WS_METHODS.adoptExternalThread,
+    OrchestrationAdoptExternalThreadInput,
   ),
   tagRequestBody(ORCHESTRATION_WS_METHODS.importThread, OrchestrationImportThreadInput),
   tagRequestBody(

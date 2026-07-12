@@ -679,6 +679,8 @@ export function createWsNativeApi(): NativeApi {
       importThread: (input) => transport.request(ORCHESTRATION_WS_METHODS.importThread, input),
       listExternalThreads: (input) =>
         transport.request(ORCHESTRATION_WS_METHODS.listExternalThreads, input),
+      adoptExternalThread: (input) =>
+        transport.request(ORCHESTRATION_WS_METHODS.adoptExternalThread, input),
       repairState: () => transport.request(ORCHESTRATION_WS_METHODS.repairState),
       getTurnDiff: (input) => transport.request(ORCHESTRATION_WS_METHODS.getTurnDiff, input),
       getFullThreadDiff: (input) =>

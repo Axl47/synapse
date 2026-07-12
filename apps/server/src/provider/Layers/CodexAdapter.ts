@@ -1875,6 +1875,8 @@ const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
           threadId,
           turns: snapshot.turns,
           cwd: snapshot.cwd ?? null,
+          ...(snapshot.name ? { name: snapshot.name } : {}),
+          ...(snapshot.preview ? { preview: snapshot.preview } : {}),
         })),
       );
 
@@ -1898,6 +1900,8 @@ const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
           threadId: ThreadId.makeUnsafe(snapshot.threadId),
           turns: snapshot.turns,
           cwd: snapshot.cwd ?? null,
+          ...(snapshot.name ? { name: snapshot.name } : {}),
+          ...(snapshot.preview ? { preview: snapshot.preview } : {}),
         })),
       );
 

@@ -78,6 +78,8 @@ export interface ProviderThreadSnapshot {
   readonly threadId: ThreadId;
   readonly turns: ReadonlyArray<ProviderThreadTurnSnapshot>;
   readonly cwd?: string | null;
+  readonly name?: string | null;
+  readonly preview?: string | null;
 }
 
 export type ProviderExternalThreadStatus =

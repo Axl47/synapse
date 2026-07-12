@@ -261,6 +261,8 @@ export interface CodexThreadSnapshot {
   threadId: string;
   turns: CodexThreadTurnSnapshot[];
   cwd?: string | null;
+  name?: string | null;
+  preview?: string | null;
 }
 
 const CODEX_VERSION_CHECK_TIMEOUT_MS = 4_000;
@@ -3261,10 +3263,18 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       };
     });
 
+    const name =
+      this.readString(threadRecord, "name") ?? this.readString(responseRecord, "name") ?? null;
+    const preview =
+      this.readString(threadRecord, "preview") ??
+      this.readString(responseRecord, "preview") ??
+      null;
     return {
       threadId: threadIdRaw,
       turns,
       cwd: this.readString(threadRecord, "cwd") ?? this.readString(responseRecord, "cwd") ?? null,
+      ...(name ? { name } : {}),
+      ...(preview ? { preview } : {}),
     };
   }
 

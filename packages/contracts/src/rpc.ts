@@ -71,6 +71,8 @@ import {
   OrchestrationImportThreadResult,
   OrchestrationListExternalThreadsInput,
   OrchestrationListExternalThreadsResult,
+  OrchestrationAdoptExternalThreadInput,
+  OrchestrationAdoptExternalThreadResult,
   OrchestrationRpcSchemas,
   OrchestrationShellStreamItem,
   OrchestrationThreadStreamItem,
@@ -191,6 +193,15 @@ export const WsOrchestrationListExternalThreadsRpc = Rpc.make(
   {
     payload: OrchestrationListExternalThreadsInput,
     success: OrchestrationListExternalThreadsResult,
+    error: WsRpcError,
+  },
+);
+
+export const WsOrchestrationAdoptExternalThreadRpc = Rpc.make(
+  ORCHESTRATION_WS_METHODS.adoptExternalThread,
+  {
+    payload: OrchestrationAdoptExternalThreadInput,
+    success: OrchestrationAdoptExternalThreadResult,
     error: WsRpcError,
   },
 );
@@ -844,6 +855,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsOrchestrationDispatchCommandRpc,
   WsOrchestrationImportThreadRpc,
   WsOrchestrationListExternalThreadsRpc,
+  WsOrchestrationAdoptExternalThreadRpc,
   WsOrchestrationGetSnapshotRpc,
   WsOrchestrationGetShellSnapshotRpc,
   WsOrchestrationRepairStateRpc,

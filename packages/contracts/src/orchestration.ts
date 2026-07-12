@@ -26,6 +26,7 @@ export const ORCHESTRATION_WS_METHODS = {
   getShellSnapshot: "orchestration.getShellSnapshot",
   dispatchCommand: "orchestration.dispatchCommand",
   importThread: "orchestration.importThread",
+  adoptExternalThread: "orchestration.adoptExternalThread",
   listExternalThreads: "orchestration.listExternalThreads",
   repairState: "orchestration.repairState",
   getTurnDiff: "orchestration.getTurnDiff",
@@ -2126,6 +2127,20 @@ export const OrchestrationListExternalThreadsResult = Schema.Struct({
 export type OrchestrationListExternalThreadsResult =
   typeof OrchestrationListExternalThreadsResult.Type;
 
+export const OrchestrationAdoptExternalThreadInput = Schema.Struct({
+  providerInstanceId: ProviderInstanceId,
+  externalThreadId: TrimmedNonEmptyString,
+  projectId: ProjectId,
+});
+export type OrchestrationAdoptExternalThreadInput =
+  typeof OrchestrationAdoptExternalThreadInput.Type;
+
+export const OrchestrationAdoptExternalThreadResult = Schema.Struct({
+  threadId: ThreadId,
+});
+export type OrchestrationAdoptExternalThreadResult =
+  typeof OrchestrationAdoptExternalThreadResult.Type;
+
 export const OrchestrationUnsubscribeThreadInput = Schema.Struct({
   threadId: ThreadId,
 });
@@ -2155,6 +2170,10 @@ export const OrchestrationRpcSchemas = {
   listExternalThreads: {
     input: OrchestrationListExternalThreadsInput,
     output: OrchestrationListExternalThreadsResult,
+  },
+  adoptExternalThread: {
+    input: OrchestrationAdoptExternalThreadInput,
+    output: OrchestrationAdoptExternalThreadResult,
   },
   getTurnDiff: {
     input: OrchestrationGetTurnDiffInput,
