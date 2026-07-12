@@ -247,7 +247,7 @@ export function buildMenuItems(
       : []),
     {
       id: "push",
-      label: isDefaultBranch ? "Commit & push" : "Push",
+      label: isDefaultBranch && hasChanges ? "Commit & push" : "Push",
       disabled: !(isDefaultBranch ? canCommitPush : canPush),
       icon: "push",
       kind: "open_dialog",
@@ -381,7 +381,7 @@ export function resolveQuickAction(
     }
     if (hasOpenPr || isDefaultBranch) {
       return {
-        label: isDefaultBranch ? "Commit & push" : "Push",
+        label: "Push",
         disabled: false,
         kind: "run_action",
         action: isDefaultBranch ? "commit_push" : "push",
@@ -398,7 +398,7 @@ export function resolveQuickAction(
   if (isAhead) {
     if (hasOpenPr || isDefaultBranch) {
       return {
-        label: isDefaultBranch ? "Commit & push" : "Push",
+        label: "Push",
         disabled: false,
         kind: "run_action",
         action: isDefaultBranch ? "commit_push" : "push",

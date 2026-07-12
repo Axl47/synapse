@@ -24,3 +24,5 @@
 - [x] Remove duplicate provider-local Favorites grouping
 - [x] Make the composer account trigger icon-only
 - [x] Verify 29 picker browser tests and 9 grouping unit tests
+- [x] Label clean publish-only Git actions as Push
+- [x] Verify all 82 Git actions logic tests

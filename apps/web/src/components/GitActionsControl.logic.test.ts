@@ -631,7 +631,7 @@ describe("when: on default branch without open PR", () => {
     assert.deepInclude(quick, {
       kind: "run_action",
       action: "commit_push",
-      label: "Commit & push",
+      label: "Push",
       disabled: false,
     });
   });
@@ -671,7 +671,7 @@ describe("when: on default branch without open PR", () => {
     ]);
   });
 
-  it("buildMenuItems uses commit-and-push row on default branch", () => {
+  it("buildMenuItems labels a publish-only default-branch action as push", () => {
     const items = buildMenuItems(
       status({ branch: "main", aheadCount: 2, pr: null }),
       false,
@@ -689,7 +689,7 @@ describe("when: on default branch without open PR", () => {
       },
       {
         id: "push",
-        label: "Commit & push",
+        label: "Push",
         disabled: false,
         icon: "push",
         kind: "open_dialog",
@@ -724,7 +724,7 @@ describe("when: on default branch without open PR", () => {
       },
       {
         id: "push",
-        label: "Commit & push",
+        label: "Push",
         disabled: true,
         icon: "push",
         kind: "open_dialog",
@@ -1044,7 +1044,7 @@ describe("when: branch has no upstream configured", () => {
     assert.deepInclude(quick, {
       kind: "run_action",
       action: "commit_push",
-      label: "Commit & push",
+      label: "Push",
       disabled: false,
     });
   });
@@ -1073,7 +1073,7 @@ describe("when: branch has no upstream configured", () => {
       },
       {
         id: "push",
-        label: "Commit & push",
+        label: "Push",
         disabled: true,
         icon: "push",
         kind: "open_dialog",

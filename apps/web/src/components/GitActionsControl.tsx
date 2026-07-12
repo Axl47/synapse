@@ -1303,6 +1303,7 @@ export default function GitActionsControl({
     (item) => item.dialogAction === "commit_push" && !item.disabled,
   );
   const shouldDimPanelCommitPushRow = isGitActionRunning || !hasRunnableCommitPushAction;
+  const panelPushLabel = gitStatusForActions?.hasWorkingTreeChanges ? "Commit and Push" : "Push";
 
   // Shared dropdown body — the picker rows plus the contextual git-status warnings.
   // Rendered identically by the header split button and the panel "Commit and Push" row.
@@ -1659,20 +1660,20 @@ export default function GitActionsControl({
                   )}
                   aria-label={
                     shouldDimPanelCommitPushRow
-                      ? "Commit and Push unavailable; open Git actions menu"
-                      : "Commit and Push"
+                      ? `${panelPushLabel} unavailable; open Git actions menu`
+                      : panelPushLabel
                   }
                   title={
                     shouldDimPanelCommitPushRow
-                      ? "Commit and Push unavailable. Open for more Git actions."
-                      : "Commit and Push"
+                      ? `${panelPushLabel} unavailable. Open for more Git actions.`
+                      : panelPushLabel
                   }
                 />
               }
             >
               <EnvironmentRowBody
                 icon={<GitActionGlyph name="push" className={ENVIRONMENT_ROW_ICON_CLASS_NAME} />}
-                label="Commit and Push"
+                label={panelPushLabel}
                 trailing={<EnvironmentRowChevron />}
               />
             </MenuTrigger>
