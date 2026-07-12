@@ -3874,6 +3874,177 @@ describe("CodexAppServerManager discovery", () => {
   });
 });
 
+describe("external thread discovery", () => {
+  it("lists interactive persisted root threads with bounded pagination", async () => {
+    const manager = new CodexAppServerManager();
+    const context = {
+      session: {
+        provider: "codex",
+        status: "ready",
+        threadId: "discovery",
+        runtimeMode: "full-access",
+        createdAt: "2026-02-10T00:00:00.000Z",
+        updatedAt: "2026-02-10T00:00:00.000Z",
+      },
+      account: { type: "unknown", planType: null, sparkEnabled: true },
+      collabReceiverTurns: new Map(),
+      collabReceiverParents: new Map(),
+      reviewTurnIds: new Set(),
+    };
+    vi.spyOn(
+      manager as unknown as { resolveContextForDiscovery: () => Promise<unknown> },
+      "resolveContextForDiscovery",
+    ).mockResolvedValue(context);
+    const sendRequest = vi
+      .spyOn(
+        manager as unknown as { sendRequest: (...args: unknown[]) => Promise<unknown> },
+        "sendRequest",
+      )
+      .mockResolvedValueOnce({
+        data: [
+          {
+            id: "external-1",
+            name: "Reconnect work",
+            preview: "Fix reconnect handling",
+            cwd: "/repo",
+            source: "appServer",
+            status: { type: "active", activeFlags: [] },
+            modelProvider: "openai",
+            createdAt: 100,
+            updatedAt: 200,
+            recencyAt: 250,
+            ephemeral: false,
+            parentThreadId: null,
+          },
+          {
+            id: "child-thread",
+            preview: "Ignore child",
+            cwd: "/repo",
+            source: "subAgent",
+            status: { type: "idle" },
+            modelProvider: "openai",
+            createdAt: 100,
+            updatedAt: 200,
+            ephemeral: false,
+            parentThreadId: "external-1",
+          },
+          { id: "malformed" },
+        ],
+        nextCursor: "page-2",
+      })
+      .mockResolvedValueOnce({
+        result: {
+          data: [
+            {
+              id: "external-2",
+              name: null,
+              preview: "CLI task",
+              cwd: "/other",
+              source: "cli",
+              status: { type: "idle" },
+              modelProvider: "openai",
+              createdAt: 300,
+              updatedAt: 400,
+              recencyAt: null,
+              ephemeral: false,
+              parentThreadId: null,
+            },
+          ],
+          nextCursor: null,
+        },
+      });
+
+    const result = await manager.listExternalThreads({
+      useStateDbOnly: false,
+      maxThreads: 10,
+    });
+
+    expect(sendRequest).toHaveBeenNthCalledWith(1, context, "thread/list", {
+      archived: false,
+      cursor: null,
+      limit: 10,
+      sortKey: "recency_at",
+      sortDirection: "desc",
+      sourceKinds: ["cli", "vscode", "appServer"],
+      useStateDbOnly: false,
+    });
+    expect(sendRequest).toHaveBeenNthCalledWith(2, context, "thread/list", {
+      archived: false,
+      cursor: "page-2",
+      limit: 9,
+      sortKey: "recency_at",
+      sortDirection: "desc",
+      sourceKinds: ["cli", "vscode", "appServer"],
+      useStateDbOnly: false,
+    });
+    expect(result).toEqual({
+      threads: [
+        {
+          externalThreadId: "external-1",
+          name: "Reconnect work",
+          preview: "Fix reconnect handling",
+          cwd: "/repo",
+          sourceKind: "appServer",
+          status: "active",
+          modelProvider: "openai",
+          createdAtSeconds: 100,
+          updatedAtSeconds: 200,
+          recencyAtSeconds: 250,
+        },
+        {
+          externalThreadId: "external-2",
+          name: null,
+          preview: "CLI task",
+          cwd: "/other",
+          sourceKind: "cli",
+          status: "idle",
+          modelProvider: "openai",
+          createdAtSeconds: 300,
+          updatedAtSeconds: 400,
+          recencyAtSeconds: null,
+        },
+      ],
+      truncated: false,
+    });
+  });
+
+  it("caps external discovery and reports truncation", async () => {
+    const manager = new CodexAppServerManager();
+    const context = {
+      session: { provider: "codex", threadId: "discovery" },
+      account: { type: "unknown", planType: null, sparkEnabled: true },
+    };
+    vi.spyOn(
+      manager as unknown as { resolveContextForDiscovery: () => Promise<unknown> },
+      "resolveContextForDiscovery",
+    ).mockResolvedValue(context);
+    vi.spyOn(
+      manager as unknown as { sendRequest: (...args: unknown[]) => Promise<unknown> },
+      "sendRequest",
+    ).mockResolvedValue({
+      data: [
+        {
+          id: "external-1",
+          preview: "Task",
+          cwd: "/repo",
+          source: "cli",
+          status: { type: "notLoaded" },
+          modelProvider: "openai",
+          createdAt: 100,
+          updatedAt: 200,
+        },
+      ],
+      nextCursor: "more",
+    });
+
+    const result = await manager.listExternalThreads({ maxThreads: 1 });
+
+    expect(result.truncated).toBe(true);
+    expect(result.threads).toHaveLength(1);
+    expect(result.threads[0]?.status).toBe("not-loaded");
+  });
+});
+
 describe("thread checkpoint control", () => {
   it("reads thread turns from thread/read", async () => {
     const { manager, context, requireSession, sendRequest } = createThreadControlHarness();

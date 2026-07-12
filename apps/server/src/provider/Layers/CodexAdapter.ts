@@ -1901,6 +1901,25 @@ const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
         })),
       );
 
+    const listExternalThreads: NonNullable<CodexAdapterShape["listExternalThreads"]> = (input) =>
+      Effect.tryPromise({
+        try: () =>
+          manager.listExternalThreads({
+            ...(input.providerOptions?.codex ? { codexOptions: input.providerOptions.codex } : {}),
+            ...(input.useStateDbOnly !== undefined
+              ? { useStateDbOnly: input.useStateDbOnly }
+              : {}),
+            ...(input.maxThreads !== undefined ? { maxThreads: input.maxThreads } : {}),
+          }),
+        catch: (cause) =>
+          new ProviderAdapterRequestError({
+            provider: PROVIDER,
+            method: "thread/list",
+            detail: toMessage(cause, "Failed to list external Codex threads."),
+            cause,
+          }),
+      });
+
     const rollbackThread: CodexAdapterShape["rollbackThread"] = (threadId, numTurns) => {
       if (!Number.isInteger(numTurns) || numTurns < 1) {
         return Effect.fail(
@@ -2184,6 +2203,7 @@ const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
       interruptTurn,
       readThread,
       readExternalThread,
+      listExternalThreads,
       rollbackThread,
       compactThread,
       forkThread,

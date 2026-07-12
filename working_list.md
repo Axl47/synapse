@@ -2,14 +2,19 @@
 
 ## Pending
 
-- None.
+- [ ] Phase 3: implement server-owned idempotent adoption and shared import operations
+- [ ] Phase 4: implement project-local sidebar, unmatched tasks, Search integration, and adoption UX
+- [ ] Phase 5: implement idempotent persisted-history reconciliation
+- [ ] Phase 6: harden, document, and run the final required verification pass
+- [ ] Audit every ExecPlan outcome and close implementation
 
 ## In Progress
 
-- None.
+- [~] Phase 2: implement multi-account discovery, deduplication, and project/worktree matching
 
 ## Done
 
+- [x] Phase 1: implement the Codex thread/list protocol boundary and adapter coverage (136 focused server tests passed)
 - [x] Validate the external Codex thread discovery ExecPlan structure, required sections, HTML element balance, and whitespace
 - [x] Write the standalone HTML ExecPlan for discovery, project matching, adoption, and reconciliation
 - [x] Trace the existing Codex import, thread/read, provider-instance, RPC, and sidebar project paths

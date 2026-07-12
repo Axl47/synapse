@@ -63,7 +63,11 @@ import {
 import { ensureIsolatedScratchWorkspace } from "./scratchWorkspaces.ts";
 import { createLogger } from "./logger";
 import { transcribeVoiceWithChatGptSession } from "./voiceTranscription.ts";
-import type { ProviderAdapterForkThreadInput } from "./provider/Services/ProviderAdapter.ts";
+import type {
+  ProviderAdapterForkThreadInput,
+  ProviderExternalThreadStatus,
+  ProviderListExternalThreadsResult,
+} from "./provider/Services/ProviderAdapter.ts";
 
 const log = createLogger("codex");
 
@@ -149,6 +153,12 @@ interface CodexPluginListInput extends Omit<ProviderListPluginsInput, "provider"
 
 interface CodexPluginReadInput extends Omit<ProviderReadPluginInput, "provider"> {
   readonly codexOptions?: CodexDiscoveryOptions;
+}
+
+interface CodexExternalThreadListInput {
+  readonly codexOptions?: CodexDiscoveryOptions;
+  readonly useStateDbOnly?: boolean;
+  readonly maxThreads?: number;
 }
 
 type CodexDiscoveryOptions = NonNullable<ProviderStartOptions["codex"]>;
@@ -275,6 +285,10 @@ const CODEX_DEFAULT_MODEL = "gpt-5.6-sol";
 const CODEX_SPARK_MODEL = "gpt-5.3-codex-spark";
 const CODEX_SPARK_DISABLED_PLAN_TYPES = new Set<CodexPlanType>(["free", "go", "plus"]);
 const CODEX_DISCOVERY_SESSION_IDLE_MS = 10 * 60 * 1000;
+const CODEX_EXTERNAL_THREAD_PAGE_SIZE = 100;
+const CODEX_EXTERNAL_THREAD_DEFAULT_LIMIT = 200;
+const CODEX_EXTERNAL_THREAD_MAX_LIMIT = 500;
+const CODEX_EXTERNAL_THREAD_SOURCE_KINDS = ["cli", "vscode", "appServer"] as const;
 
 function asObject(value: unknown): Record<string, unknown> | undefined {
   if (!value || typeof value !== "object") {
@@ -1560,6 +1574,49 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       includeTurns: true,
     });
     return this.parseThreadSnapshot("thread/read", response);
+  }
+
+  async listExternalThreads(
+    input: CodexExternalThreadListInput = {},
+  ): Promise<ProviderListExternalThreadsResult> {
+    const codexOptions = normalizeCodexDiscoveryOptions(input.codexOptions);
+    const authFingerprint = codexAuthFingerprintForOptions(codexOptions);
+    const context = await this.resolveContextForDiscovery(
+      undefined,
+      undefined,
+      codexOptions,
+      authFingerprint,
+    );
+    this.assertDiscoveryAuthMatchesRequest(context, codexOptions, authFingerprint);
+
+    const requestedLimit = input.maxThreads ?? CODEX_EXTERNAL_THREAD_DEFAULT_LIMIT;
+    const maxThreads = Math.min(
+      CODEX_EXTERNAL_THREAD_MAX_LIMIT,
+      Math.max(1, Math.trunc(requestedLimit)),
+    );
+    const threads: ProviderListExternalThreadsResult["threads"][number][] = [];
+    let cursor: string | null = null;
+    let truncated = false;
+
+    do {
+      const remaining = maxThreads - threads.length;
+      const response = await this.sendRequest<Record<string, unknown>>(context, "thread/list", {
+        archived: false,
+        cursor,
+        limit: Math.min(CODEX_EXTERNAL_THREAD_PAGE_SIZE, remaining),
+        sortKey: "recency_at",
+        sortDirection: "desc",
+        sourceKinds: [...CODEX_EXTERNAL_THREAD_SOURCE_KINDS],
+        useStateDbOnly: input.useStateDbOnly ?? true,
+      });
+      const page = this.parseExternalThreadListResponse(response);
+      threads.push(...page.threads.slice(0, remaining));
+      cursor = page.nextCursor;
+      truncated = cursor !== null && threads.length >= maxThreads;
+    } while (cursor !== null && threads.length < maxThreads);
+
+    this.assertDiscoveryAuthMatchesRequest(context, codexOptions, authFingerprint);
+    return { threads, truncated };
   }
 
   async forkThread(input: ProviderAdapterForkThreadInput): Promise<ProviderForkThreadResult> {
@@ -3406,6 +3463,15 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     return typeof candidate === "string" ? candidate : undefined;
   }
 
+  private readFiniteNumber(value: unknown, key: string): number | undefined {
+    if (!value || typeof value !== "object") {
+      return undefined;
+    }
+
+    const candidate = (value as Record<string, unknown>)[key];
+    return typeof candidate === "number" && Number.isFinite(candidate) ? candidate : undefined;
+  }
+
   private readBoolean(value: unknown, key: string): boolean | undefined {
     if (!value || typeof value !== "object") {
       return undefined;
@@ -3857,6 +3923,76 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         },
       ];
     });
+  }
+
+  private parseExternalThreadListResponse(response: unknown): {
+    readonly threads: ProviderListExternalThreadsResult["threads"];
+    readonly nextCursor: string | null;
+  } {
+    const responseRecord = this.readObject(response);
+    const resultRecord = this.readObject(responseRecord, "result") ?? responseRecord;
+    const rawThreads = this.readArray(resultRecord, "data") ?? [];
+    const threads = rawThreads.flatMap((value) => {
+      const thread = this.readObject(value);
+      if (!thread || thread.ephemeral === true || this.readString(thread, "parentThreadId")) {
+        return [];
+      }
+
+      const externalThreadId = this.readString(thread, "id")?.trim();
+      const cwd = this.readString(thread, "cwd")?.trim();
+      const preview = this.readString(thread, "preview")?.trim();
+      const sourceKind = this.readString(thread, "source")?.trim();
+      const modelProvider = this.readString(thread, "modelProvider")?.trim();
+      const createdAtSeconds = this.readFiniteNumber(thread, "createdAt");
+      const updatedAtSeconds = this.readFiniteNumber(thread, "updatedAt");
+      if (
+        !externalThreadId ||
+        !cwd ||
+        preview === undefined ||
+        !sourceKind ||
+        !modelProvider ||
+        createdAtSeconds === undefined ||
+        updatedAtSeconds === undefined
+      ) {
+        return [];
+      }
+
+      const rawName = this.readString(thread, "name")?.trim();
+      const recencyAtSeconds = this.readFiniteNumber(thread, "recencyAt");
+      return [
+        {
+          externalThreadId,
+          name: rawName || null,
+          preview,
+          cwd,
+          sourceKind,
+          status: this.parseExternalThreadStatus(thread.status),
+          modelProvider,
+          createdAtSeconds,
+          updatedAtSeconds,
+          recencyAtSeconds: recencyAtSeconds ?? null,
+        },
+      ];
+    });
+    const nextCursor = this.readString(resultRecord, "nextCursor")?.trim() || null;
+    return { threads, nextCursor };
+  }
+
+  private parseExternalThreadStatus(value: unknown): ProviderExternalThreadStatus {
+    const status = this.readObject(value);
+    const type = this.readString(status, "type");
+    switch (type) {
+      case "notLoaded":
+        return "not-loaded";
+      case "idle":
+        return "idle";
+      case "active":
+        return "active";
+      case "systemError":
+        return "system-error";
+      default:
+        return "unknown";
+    }
   }
 }
 

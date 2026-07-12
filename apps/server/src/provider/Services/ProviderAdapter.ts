@@ -80,6 +80,38 @@ export interface ProviderThreadSnapshot {
   readonly cwd?: string | null;
 }
 
+export type ProviderExternalThreadStatus =
+  | "not-loaded"
+  | "idle"
+  | "active"
+  | "system-error"
+  | "unknown";
+
+export interface ProviderExternalThreadSummary {
+  readonly externalThreadId: string;
+  readonly name: string | null;
+  readonly preview: string;
+  readonly cwd: string;
+  readonly sourceKind: string;
+  readonly status: ProviderExternalThreadStatus;
+  readonly modelProvider: string;
+  readonly createdAtSeconds: number;
+  readonly updatedAtSeconds: number;
+  readonly recencyAtSeconds: number | null;
+}
+
+export interface ProviderListExternalThreadsInput {
+  readonly providerInstanceId?: ProviderInstanceId;
+  readonly providerOptions?: ProviderStartOptions;
+  readonly useStateDbOnly?: boolean;
+  readonly maxThreads?: number;
+}
+
+export interface ProviderListExternalThreadsResult {
+  readonly threads: ReadonlyArray<ProviderExternalThreadSummary>;
+  readonly truncated: boolean;
+}
+
 export interface ProviderGeneratedImageHomePathsInput {
   /** When present, live sessions outside this current settings scope are ignored. */
   readonly enabledProviderInstanceIds?: ReadonlySet<ProviderInstanceId>;
@@ -193,6 +225,13 @@ export interface ProviderAdapterShape<TError> {
     readonly providerInstanceId?: ProviderInstanceId;
     readonly providerOptions?: ProviderStartOptions;
   }) => Effect.Effect<ProviderThreadSnapshot, TError>;
+
+  /**
+   * List persisted provider threads without binding them to local app threads.
+   */
+  readonly listExternalThreads?: (
+    input: ProviderListExternalThreadsInput,
+  ) => Effect.Effect<ProviderListExternalThreadsResult, TError>;
 
   /**
    * Roll back a provider thread by N turns.

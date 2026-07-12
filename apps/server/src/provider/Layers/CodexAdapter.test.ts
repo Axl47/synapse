@@ -167,6 +167,13 @@ class FakeCodexManager extends CodexAppServerManager {
     }),
   );
 
+  public listExternalThreadsImpl = vi.fn(
+    async (_input: Parameters<CodexAppServerManager["listExternalThreads"]>[0]) => ({
+      threads: [],
+      truncated: false,
+    }),
+  );
+
   override startSession(input: CodexAppServerStartSessionInput): Promise<ProviderSession> {
     return this.startSessionImpl(input);
   }
@@ -256,6 +263,12 @@ class FakeCodexManager extends CodexAppServerManager {
   override listModels(input: Parameters<CodexAppServerManager["listModels"]>[0]) {
     return this.listModelsImpl(input);
   }
+
+  override listExternalThreads(
+    input: Parameters<CodexAppServerManager["listExternalThreads"]>[0],
+  ) {
+    return this.listExternalThreadsImpl(input);
+  }
 }
 
 const providerSessionDirectoryTestLayer = Layer.succeed(ProviderSessionDirectory, {
@@ -340,6 +353,7 @@ validationLayer("CodexAdapterLive validation", (it) => {
       validationManager.listPluginsImpl.mockClear();
       validationManager.readPluginImpl.mockClear();
       validationManager.listModelsImpl.mockClear();
+      validationManager.listExternalThreadsImpl.mockClear();
       const adapter = yield* CodexAdapter;
       const environment = { CODEX_PROFILE: "work" };
 
@@ -347,7 +361,8 @@ validationLayer("CodexAdapterLive validation", (it) => {
       const listPlugins = adapter.listPlugins;
       const readPlugin = adapter.readPlugin;
       const listModels = adapter.listModels;
-      if (!listSkills || !listPlugins || !readPlugin || !listModels) {
+      const listExternalThreads = adapter.listExternalThreads;
+      if (!listSkills || !listPlugins || !readPlugin || !listModels || !listExternalThreads) {
         throw new Error("Expected Codex adapter to expose discovery APIs.");
       }
 
@@ -372,6 +387,12 @@ validationLayer("CodexAdapterLive validation", (it) => {
         cwd: "/repo",
         environment,
       });
+      yield* listExternalThreads({
+        providerInstanceId: "codex_work" as ProviderInstanceId,
+        providerOptions: { codex: { environment } },
+        useStateDbOnly: false,
+        maxThreads: 75,
+      });
 
       assert.deepStrictEqual(
         validationManager.listSkillsImpl.mock.calls[0]?.[0]?.codexOptions?.environment,
@@ -390,6 +411,11 @@ validationLayer("CodexAdapterLive validation", (it) => {
           ?.codexOptions,
         { environment },
       );
+      assert.deepStrictEqual(validationManager.listExternalThreadsImpl.mock.calls[0]?.[0], {
+        codexOptions: { environment },
+        useStateDbOnly: false,
+        maxThreads: 75,
+      });
     }),
   );
 
