@@ -5,6 +5,7 @@
 import {
   MAX_PINNED_PROJECTS,
   type KeybindingCommand,
+  type ExternalThreadCandidate,
   type ProjectId,
   type ThreadId,
 } from "@synara/contracts";
@@ -46,6 +47,26 @@ export const SIDEBAR_THREAD_PREWARM_LIMIT = 10;
 export const DEBUG_FEATURE_FLAGS_MENU_STORAGE_KEY = "synara:show-debug-feature-flags-menu";
 export type SidebarNewThreadEnvMode = "local" | "worktree";
 export type SidebarView = "threads" | "studio" | "workspace";
+
+export function groupExternalThreadsByProject(
+  candidates: ReadonlyArray<ExternalThreadCandidate>,
+): {
+  readonly byProjectId: ReadonlyMap<ProjectId, ReadonlyArray<ExternalThreadCandidate>>;
+  readonly unmatched: ReadonlyArray<ExternalThreadCandidate>;
+} {
+  const byProjectId = new Map<ProjectId, ExternalThreadCandidate[]>();
+  const unmatched: ExternalThreadCandidate[] = [];
+  for (const candidate of candidates) {
+    if (candidate.matchedProjectId === null) {
+      unmatched.push(candidate);
+      continue;
+    }
+    const existing = byProjectId.get(candidate.matchedProjectId) ?? [];
+    existing.push(candidate);
+    byProjectId.set(candidate.matchedProjectId, existing);
+  }
+  return { byProjectId, unmatched };
+}
 
 /** The optimistic segment follows a destination click and clears when the user returns. */
 export function resolvePendingSidebarViewSelection(

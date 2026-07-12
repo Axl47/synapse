@@ -125,7 +125,9 @@ export function makeAdoptExternalThreadHandler(options: AdoptExternalThreadHandl
       platform: options.platform,
       projects: shell.projects,
     });
-    if (match.projectId !== project.id) {
+    const explicitlyAssignedUnmatchedProject =
+      match.projectId === null && input.allowUnmatchedProject === true;
+    if (match.projectId !== project.id && !explicitlyAssignedUnmatchedProject) {
       return yield* adoptError(
         match.projectId === null
           ? "The Codex thread is not safely associated with this project. Add its folder as a project first."

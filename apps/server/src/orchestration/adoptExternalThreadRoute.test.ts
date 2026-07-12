@@ -183,4 +183,55 @@ describe("makeAdoptExternalThreadHandler", () => {
       ),
     ).rejects.toThrow("was not found");
   });
+
+  it("allows an explicit project choice only when the workspace remains unmatched", async () => {
+    const commands: Array<Record<string, unknown>> = [];
+    const handler = makeAdoptExternalThreadHandler({
+      ...baseOptions({
+        providerAdapterRegistry: {
+          getByInstance: () =>
+            Effect.succeed({
+              readExternalThread: () =>
+                Effect.succeed({
+                  threadId: ThreadId.makeUnsafe("external-1"),
+                  cwd: "/outside/projects",
+                  name: "External task",
+                  turns: [],
+                }),
+            } as never),
+          getByProvider: () => Effect.die("not used"),
+          listProviders: () => Effect.succeed([]),
+        },
+        orchestrationEngine: {
+          dispatch: (command: Record<string, unknown>) => {
+            commands.push(command);
+            return Effect.succeed({ sequence: commands.length });
+          },
+        } as never,
+        importThread: ((input: { threadId: ThreadId }) => Effect.succeed(input)) as never,
+      }),
+    });
+
+    await expect(
+      Effect.runPromise(
+        handler({
+          providerInstanceId: "codex" as ProviderInstanceId,
+          externalThreadId: "external-1",
+          projectId: ProjectId.makeUnsafe("project-1"),
+        }),
+      ),
+    ).rejects.toThrow("not safely associated");
+
+    await expect(
+      Effect.runPromise(
+        handler({
+          providerInstanceId: "codex" as ProviderInstanceId,
+          externalThreadId: "external-1",
+          projectId: ProjectId.makeUnsafe("project-1"),
+          allowUnmatchedProject: true,
+        }),
+      ),
+    ).resolves.toMatchObject({ threadId: expect.any(String) });
+    expect(commands).toHaveLength(1);
+  });
 });

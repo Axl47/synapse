@@ -1,7 +1,7 @@
 // Purpose: Scores sidebar palette results for actions, themes, projects, and chat threads.
 // Keeps search local and deterministic so the palette can rank title hits above
 // message-content hits while still surfacing a useful snippet for chat matches.
-import type { ProviderKind } from "@synara/contracts";
+import type { ExternalThreadCandidate, ProviderKind } from "@synara/contracts";
 import { basenameOfPath } from "../file-icons";
 import type { ThemeMode, ThemeVariant } from "../theme/theme.logic";
 
@@ -53,6 +53,7 @@ export interface SidebarSearchThread {
   messages: readonly {
     text: string;
   }[];
+  externalThread?: ExternalThreadCandidate;
 }
 
 export interface SidebarSearchThreadMatch {

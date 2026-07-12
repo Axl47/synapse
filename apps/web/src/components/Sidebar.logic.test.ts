@@ -19,6 +19,7 @@ import {
   getSidebarThreadIdsToPrewarm,
   getRenderedThreadsForSidebarProject,
   groupSidebarThreadsByProjectId,
+  groupExternalThreadsByProject,
   isLatestPinnedProjectMutation,
   getUnpinnedThreadsForSidebar,
   getVisibleSidebarThreadIds,
@@ -68,6 +69,24 @@ function makeLatestTurn(overrides?: {
     completedAt: overrides?.completedAt ?? "2026-03-09T10:05:00.000Z",
   };
 }
+
+describe("groupExternalThreadsByProject", () => {
+  it("separates project candidates from unmatched candidates", () => {
+    const matchedProjectId = ProjectId.makeUnsafe("project-1");
+    const candidate = (externalThreadId: string, projectId: ProjectId | null) =>
+      ({ externalThreadId, matchedProjectId: projectId }) as never;
+
+    const result = groupExternalThreadsByProject([
+      candidate("matched", matchedProjectId),
+      candidate("unmatched", null),
+    ]);
+
+    expect(result.byProjectId.get(matchedProjectId)?.map((item) => item.externalThreadId)).toEqual([
+      "matched",
+    ]);
+    expect(result.unmatched.map((item) => item.externalThreadId)).toEqual(["unmatched"]);
+  });
+});
 
 describe("resolvePendingSidebarViewSelection", () => {
   it("optimistically follows a destination segment", () => {

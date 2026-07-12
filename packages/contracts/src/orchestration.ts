@@ -2131,6 +2131,7 @@ export const OrchestrationAdoptExternalThreadInput = Schema.Struct({
   providerInstanceId: ProviderInstanceId,
   externalThreadId: TrimmedNonEmptyString,
   projectId: ProjectId,
+  allowUnmatchedProject: Schema.optional(Schema.Boolean),
 });
 export type OrchestrationAdoptExternalThreadInput =
   typeof OrchestrationAdoptExternalThreadInput.Type;

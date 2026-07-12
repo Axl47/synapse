@@ -7,6 +7,7 @@ import { page } from "vitest/browser";
 import { describe, expect, it, vi } from "vitest";
 import { render } from "vitest-browser-react";
 
+import type { ExternalThreadCandidate } from "@synara/contracts";
 import type { ThreadImportTarget } from "../lib/threadImport";
 import { SidebarSearchPalette } from "./SidebarSearchPalette";
 
@@ -100,4 +101,73 @@ describe("SidebarSearchPalette import targets", () => {
       }
     });
   }
+});
+
+describe("SidebarSearchPalette external threads", () => {
+  it("labels an external Codex result and opens it through adoption", async () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const onOpenExternalThread = vi.fn();
+    const candidate = {
+      provider: "codex",
+      providerInstanceId: "codex",
+      externalThreadId: "external-1",
+      title: "Investigate reconnect",
+      preview: "Trace the reconnect path",
+      cwd: "/repo/synara",
+      sourceKind: "appServer",
+      status: "idle",
+      modelProvider: "openai",
+      createdAt: "2026-07-12T12:00:00.000Z",
+      updatedAt: "2026-07-12T12:05:00.000Z",
+      matchedProjectId: "project-1",
+      matchKind: "exact",
+    } as const satisfies ExternalThreadCandidate;
+    const screen = await render(
+      <QueryClientProvider client={queryClient}>
+        <SidebarSearchPalette
+          open
+          mode="search"
+          onModeChange={vi.fn()}
+          onOpenChange={vi.fn()}
+          actions={[]}
+          projects={[]}
+          threads={[
+            {
+              id: "external:codex:external-1",
+              title: candidate.title,
+              projectId: "project-1",
+              projectName: "Synara",
+              projectRemoteName: "Synara",
+              provider: "codex",
+              createdAt: candidate.createdAt,
+              updatedAt: candidate.updatedAt,
+              messages: [{ text: candidate.preview }],
+              externalThread: candidate,
+            },
+          ]}
+          onCreateChat={vi.fn()}
+          onCreateThread={vi.fn()}
+          onAddProjectPath={async () => {}}
+          homeDir={null}
+          onOpenSettings={vi.fn()}
+          onOpenUsageSettings={vi.fn()}
+          onOpenProject={vi.fn()}
+          onOpenThread={vi.fn()}
+          importTargets={[]}
+          onImportThread={vi.fn()}
+          onOpenExternalThread={onOpenExternalThread}
+        />
+      </QueryClientProvider>,
+    );
+
+    try {
+      await expect.element(page.getByText("Investigate reconnect", { exact: true })).toBeVisible();
+      await expect.element(page.getByText("External · Codex App", { exact: true })).toBeVisible();
+      await page.getByText("Investigate reconnect", { exact: true }).click();
+      expect(onOpenExternalThread).toHaveBeenCalledWith(candidate);
+    } finally {
+      await screen.unmount();
+      queryClient.clear();
+    }
+  });
 });

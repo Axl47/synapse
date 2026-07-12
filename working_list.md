@@ -8,10 +8,11 @@
 
 ## In Progress
 
-- [~] Phase 4: implement project-local sidebar, unmatched tasks, Search integration, and adoption UX
+- [~] Phase 5: implement idempotent persisted-history reconciliation
 
 ## Done
 
+- [x] Phase 4: implement project-local sidebar, unmatched tasks, Search integration, and adoption UX (5 adoption tests, 131 web logic/transport tests, 3 browser tests, and package builds passed)
 - [x] Phase 3: implement server-owned idempotent adoption and shared import operations (148 focused server tests, 41 contract tests, 26 web transport tests, and package builds passed)
 - [x] Phase 2: implement multi-account discovery, deduplication, and project/worktree matching (5 focused server tests, 41 contract tests, 26 web transport tests, and package builds passed)
 - [x] Phase 1: implement the Codex thread/list protocol boundary and adapter coverage (136 focused server tests passed)

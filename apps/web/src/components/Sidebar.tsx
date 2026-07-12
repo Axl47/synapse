@@ -20,6 +20,7 @@ import {
   PencilIcon,
   PinIcon,
   PlayIcon,
+  RefreshCwIcon,
   SearchIcon,
   SettingsIcon,
   StopFilledIcon,
@@ -71,6 +72,7 @@ import {
   type AutomationListResult,
   MAX_PINNED_PROJECTS,
   type DesktopUpdateState,
+  type ExternalThreadCandidate,
   type OrchestrationShellSnapshot,
   ProjectId,
   type ProviderKind,
@@ -131,6 +133,10 @@ import {
   gitStatusQueryOptions,
 } from "../lib/gitReactQuery";
 import { providerComposerCapabilitiesQueryOptions } from "../lib/providerDiscoveryReactQuery";
+import {
+  externalThreadQueryKeys,
+  externalThreadsQueryOptions,
+} from "../lib/externalThreadsReactQuery";
 import {
   buildThreadImportCandidates,
   filterThreadImportTargetsByCapabilities,
@@ -286,6 +292,7 @@ import {
   getSidebarThreadIdsToPrewarm,
   getVisibleSidebarEntriesForPreview,
   groupSidebarThreadsByProjectId,
+  groupExternalThreadsByProject,
   partitionSidebarThreadsByProjectIds,
   isLatestPinnedProjectMutation,
   isLatestPinnedThreadMutation,
@@ -404,6 +411,10 @@ const SIDEBAR_VIEW_LABELS: Record<SidebarView, string> = {
 /** Snap the optimistic segment selection back if the navigation never lands. */
 const SIDEBAR_SEGMENT_PENDING_RESET_MS = 2000;
 const EMPTY_PROJECT_SIDEBAR_DATA: ReadonlyMap<ProjectId, SidebarDerivedProjectData> = new Map();
+
+function externalThreadKey(candidate: ExternalThreadCandidate): string {
+  return `${candidate.providerInstanceId}:${candidate.externalThreadId}`;
+}
 const DebugFeatureFlagsMenu = import.meta.env.DEV
   ? lazy(() =>
       import("./DebugFeatureFlagsMenu").then((module) => ({
@@ -1415,6 +1426,19 @@ export default function Sidebar() {
   const isOnStudioRoute = pathname.startsWith("/studio");
   const isOnKanban = pathname.startsWith("/kanban");
   const isOnAutomations = pathname.startsWith("/automations");
+  const externalThreadsQuery = useQuery(
+    externalThreadsQueryOptions(!isOnSettings && !isOnWorkspace && !isOnStudioRoute),
+  );
+  const externalThreadGroups = useMemo(
+    () => groupExternalThreadsByProject(externalThreadsQuery.data?.candidates ?? []),
+    [externalThreadsQuery.data?.candidates],
+  );
+  const [collapsedExternalProjectIds, setCollapsedExternalProjectIds] = useState<
+    ReadonlySet<ProjectId>
+  >(() => new Set());
+  const [unmatchedExternalExpanded, setUnmatchedExternalExpanded] = useState(true);
+  const [adoptingExternalThreadKey, setAdoptingExternalThreadKey] = useState<string | null>(null);
+  const [refreshingExternalThreads, setRefreshingExternalThreads] = useState(false);
   // Lightweight read of automations to drive the sidebar attention badge. Shares the
   // ["automations"] query cache with the Automations route (and its live stream updates).
   const automationListQuery = useQuery({
@@ -2872,6 +2896,71 @@ export default function Sidebar() {
     },
     [appSettings.defaultThreadEnvMode, currentProjectShortcutTargetId, navigate, projects],
   );
+
+  const handleAdoptExternalThread = useCallback(
+    async (candidate: ExternalThreadCandidate, chosenProjectId?: ProjectId) => {
+      const projectId = candidate.matchedProjectId ?? chosenProjectId;
+      if (!projectId || candidate.status === "active") return;
+      const key = externalThreadKey(candidate);
+      setAdoptingExternalThreadKey(key);
+      try {
+        const api = ensureNativeApi();
+        const result = await api.orchestration.adoptExternalThread({
+          providerInstanceId: candidate.providerInstanceId,
+          externalThreadId: candidate.externalThreadId,
+          projectId,
+          ...(candidate.matchedProjectId === null ? { allowUnmatchedProject: true } : {}),
+        });
+        const snapshot = await api.orchestration.getShellSnapshot();
+        syncServerShellSnapshot(snapshot);
+        await queryClient.invalidateQueries({ queryKey: externalThreadQueryKeys.all });
+        await navigate({ to: "/$threadId", params: { threadId: result.threadId } });
+      } catch (error) {
+        toastManager.add({
+          type: "error",
+          title: "Could not open Codex task",
+          description:
+            error instanceof Error ? error.message : "The external Codex task could not be adopted.",
+        });
+      } finally {
+        setAdoptingExternalThreadKey((current) => (current === key ? null : current));
+      }
+    },
+    [navigate, queryClient, syncServerShellSnapshot],
+  );
+
+  const handleAddProjectForExternalThread = useCallback(
+    async (candidate: ExternalThreadCandidate) => {
+      try {
+        await addProjectFromPath(candidate.cwd, { createIfMissing: false });
+        await queryClient.invalidateQueries({ queryKey: externalThreadQueryKeys.all });
+      } catch (error) {
+        toastManager.add({
+          type: "error",
+          title: "Could not add Codex task project",
+          description:
+            error instanceof Error ? error.message : "The task folder could not be added.",
+        });
+      }
+    },
+    [addProjectFromPath, queryClient],
+  );
+
+  const handleRefreshExternalThreads = useCallback(async () => {
+    setRefreshingExternalThreads(true);
+    try {
+      const result = await ensureNativeApi().orchestration.listExternalThreads({ refresh: true });
+      queryClient.setQueryData(externalThreadQueryKeys.list(), result);
+    } catch (error) {
+      toastManager.add({
+        type: "error",
+        title: "Could not refresh Codex tasks",
+        description: error instanceof Error ? error.message : "External task discovery failed.",
+      });
+    } finally {
+      setRefreshingExternalThreads(false);
+    }
+  }, [queryClient]);
 
   const commitRename = useCallback(
     async (threadId: ThreadId, newTitle: string, originalTitle: string) => {
@@ -5810,6 +5899,151 @@ export default function Sidebar() {
     );
   }
 
+  function renderExternalThreadRow(candidate: ExternalThreadCandidate) {
+    const key = externalThreadKey(candidate);
+    const isAdopting = adoptingExternalThreadKey === key;
+    const isActiveElsewhere = candidate.status === "active";
+    return (
+        <SidebarMenuSubButton
+          key={key}
+          render={<button type="button" />}
+          size="sm"
+          disabled={isAdopting || isActiveElsewhere}
+          aria-label={
+            isActiveElsewhere
+              ? `${candidate.title}, active in another Codex client`
+              : `Open external Codex task ${candidate.title}`
+          }
+          title={
+            isActiveElsewhere
+              ? "This task is active in another Codex client. It can be adopted after the turn settles."
+              : candidate.cwd
+          }
+          className="h-7 w-full translate-x-0 justify-start gap-2 rounded-lg pr-2 pl-6 text-left text-[length:var(--app-font-size-ui,12px)] text-muted-foreground/89 hover:bg-[var(--sidebar-accent)] disabled:cursor-default disabled:opacity-60"
+          onClick={() => void handleAdoptExternalThread(candidate)}
+        >
+          <ProviderIcon provider="codex" />
+          <span className="min-w-0 flex-1 truncate">{candidate.title}</span>
+          <span className="shrink-0 text-[length:var(--app-font-size-ui-meta,10px)] text-muted-foreground/58">
+            {isAdopting
+              ? "Opening…"
+              : isActiveElsewhere
+                ? "Active elsewhere"
+                : candidate.sourceKind === "appServer"
+                  ? "Codex App"
+                  : candidate.sourceKind}
+          </span>
+        </SidebarMenuSubButton>
+    );
+  }
+
+  function renderProjectExternalThreads(projectId: ProjectId) {
+    const candidates = externalThreadGroups.byProjectId.get(projectId) ?? [];
+    if (candidates.length === 0) return null;
+    const open = !collapsedExternalProjectIds.has(projectId);
+    return (
+        <SidebarMenuSubItem className="w-full">
+          <SidebarMenuSubButton
+            render={<button type="button" />}
+            size="sm"
+            aria-expanded={open}
+            className="h-7 w-full translate-x-0 justify-start gap-1 rounded-lg pr-2 pl-6 text-left text-[length:var(--app-font-size-ui-meta,10px)] font-medium text-muted-foreground/68 hover:bg-[var(--sidebar-accent)]"
+            onClick={() =>
+              setCollapsedExternalProjectIds((current) => {
+                const next = new Set(current);
+                if (next.has(projectId)) next.delete(projectId);
+                else next.add(projectId);
+                return next;
+              })
+            }
+          >
+            <span>From Codex · {candidates.length}</span>
+            <DisclosureChevron open={open} className="text-muted-foreground/58" />
+          </SidebarMenuSubButton>
+          <div className={disclosureShellClassName(open)}>
+            <div className={DISCLOSURE_INNER_CLASS}>
+              <div className={cn("space-y-0.5", disclosureContentClassName(open))}>
+                {candidates.map(renderExternalThreadRow)}
+              </div>
+            </div>
+          </div>
+        </SidebarMenuSubItem>
+    );
+  }
+
+  function renderUnmatchedExternalThreadsSection() {
+    const candidates = externalThreadGroups.unmatched;
+    if (candidates.length === 0) return null;
+    return (
+      <div className="mt-3 group/collapsible">
+        <SidebarMenuButton
+          size="sm"
+          aria-expanded={unmatchedExternalExpanded}
+          className={cn(
+            SIDEBAR_HEADER_ROW_CLASS_NAME,
+            SIDEBAR_ROW_IDLE_TEXT_CLASS_NAME,
+            SIDEBAR_ROW_HOVER_CLASS_NAME,
+            "cursor-pointer",
+          )}
+          onClick={() => setUnmatchedExternalExpanded((current) => !current)}
+        >
+          <span className="min-w-0 flex-1 truncate text-[length:var(--app-font-size-ui,12px)] text-muted-foreground/79">
+            Other Codex tasks · {candidates.length}
+          </span>
+          <DisclosureChevron open={unmatchedExternalExpanded} />
+        </SidebarMenuButton>
+        <div className={cn(disclosureShellClassName(unmatchedExternalExpanded), "pt-1")}>
+          <div className={DISCLOSURE_INNER_CLASS}>
+            <SidebarMenu
+              className={cn("gap-0.5", disclosureContentClassName(unmatchedExternalExpanded))}
+            >
+              {candidates.map((candidate) => (
+                <SidebarMenuItem key={externalThreadKey(candidate)}>
+                  <div className="flex min-w-0 items-center gap-1">
+                    <SidebarMenuButton
+                      size="sm"
+                      className="h-8 min-w-0 flex-1 gap-2 rounded-lg pl-6 pr-2 text-[length:var(--app-font-size-ui,12px)] text-muted-foreground/89 hover:bg-[var(--sidebar-accent)]"
+                      title={`${candidate.cwd} — add this folder as a project`}
+                      onClick={() => void handleAddProjectForExternalThread(candidate)}
+                    >
+                      <ProviderIcon provider="codex" />
+                      <span className="min-w-0 flex-1 truncate">{candidate.title}</span>
+                      <span className="shrink-0 text-[length:var(--app-font-size-ui-meta,10px)] text-muted-foreground/58">
+                        Add project
+                      </span>
+                    </SidebarMenuButton>
+                    <Menu>
+                      <SidebarIconButton
+                        render={<MenuTrigger />}
+                        icon={FolderOpenIcon}
+                        label={`Choose project for ${candidate.title}`}
+                        tooltip="Choose project"
+                        tooltipSide="right"
+                      />
+                      <MenuPopup align="end" side="right" className="max-h-72 min-w-48 overflow-y-auto">
+                        <MenuGroup>
+                          {sortedProjects.map((project) => (
+                            <MenuItem
+                              key={project.id}
+                              onClick={() => void handleAdoptExternalThread(candidate, project.id)}
+                            >
+                              <ProjectSidebarIcon project={project} className="size-4" />
+                              <span className="truncate">{project.name}</span>
+                            </MenuItem>
+                          ))}
+                        </MenuGroup>
+                      </MenuPopup>
+                    </Menu>
+                  </div>
+                </SidebarMenuItem>
+              ))}
+            </SidebarMenu>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   function renderProjectItem(
     project: (typeof sortedProjects)[number],
     dragHandleProps: SortableProjectHandleProps | null,
@@ -6010,6 +6244,7 @@ export default function Sidebar() {
                 disclosureContentClassName(project.expanded),
               )}
             >
+              {renderProjectExternalThreads(project.id)}
               {visibleEntries.map((entry) =>
                 renderThreadRow(
                   entry.thread,
@@ -7073,6 +7308,15 @@ export default function Sidebar() {
                           tooltipSide="bottom"
                         />
                       ) : null}
+                      <SidebarIconButton
+                        icon={RefreshCwIcon}
+                        label="Refresh external Codex tasks"
+                        disabled={refreshingExternalThreads}
+                        className={refreshingExternalThreads ? "animate-spin" : undefined}
+                        onClick={() => void handleRefreshExternalThreads()}
+                        tooltip="Refresh Codex tasks"
+                        tooltipSide="bottom"
+                      />
                       <ProjectSortMenu
                         projectSortOrder={appSettings.sidebarProjectSortOrder}
                         threadSortOrder={appSettings.sidebarThreadSortOrder}
@@ -7172,6 +7416,17 @@ export default function Sidebar() {
                     </div>
                   )}
 
+                  {externalThreadsQuery.isError ||
+                  (externalThreadsQuery.data?.warnings.length ?? 0) > 0 ? (
+                    <button
+                      type="button"
+                      className="mb-2 w-full rounded-lg border border-amber-500/20 bg-amber-500/5 px-2.5 py-2 text-left text-[length:var(--app-font-size-ui-meta,10px)] text-amber-700 hover:bg-amber-500/10 dark:text-amber-300/85"
+                      onClick={() => void handleRefreshExternalThreads()}
+                    >
+                      Some Codex tasks could not be discovered. Click to retry.
+                    </button>
+                  ) : null}
+
                   {isManualProjectSorting ? (
                     <DndContext
                       sensors={projectDnDSensors}
@@ -7203,6 +7458,8 @@ export default function Sidebar() {
                       ))}
                     </SidebarMenu>
                   )}
+
+                  {renderUnmatchedExternalThreadsSection()}
 
                   {projectEmptyState === "loading" && (
                     <div
@@ -7725,6 +7982,14 @@ export default function Sidebar() {
           onOpenThread={(threadId) => {
             activateThreadFromSidebarIntent(ThreadId.makeUnsafe(threadId));
           }}
+          externalThreads={externalThreadsQuery.data?.candidates ?? []}
+          onOpenExternalThread={(candidate) => {
+            if (candidate.matchedProjectId) {
+              void handleAdoptExternalThread(candidate);
+            } else {
+              void handleAddProjectForExternalThread(candidate);
+            }
+          }}
         />
       ) : null}
     </>
@@ -7750,6 +8015,8 @@ function SidebarSearchPaletteController(props: {
   providerInstances: readonly ProviderInstanceOption[];
   onImportThread: (target: ThreadImportTarget, externalId: string) => Promise<void>;
   onOpenThread: (threadId: string) => void;
+  externalThreads: readonly ExternalThreadCandidate[];
+  onOpenExternalThread: (candidate: ExternalThreadCandidate) => void;
 }) {
   const selectAllThreads = useMemo(() => createAllThreadsSelector(), []);
   const selectSidebarDisplayThreads = useMemo(() => createSidebarDisplayThreadsSelector(), []);
@@ -7770,7 +8037,7 @@ function SidebarSearchPaletteController(props: {
   );
   const searchPaletteThreads = useMemo<SidebarSearchThread[]>(() => {
     const threadById = new Map(threads.map((thread) => [thread.id, thread] as const));
-    return sidebarDisplayThreads.flatMap((threadSummary) => {
+    const persistedThreads = sidebarDisplayThreads.flatMap((threadSummary) => {
       const thread = threadById.get(threadSummary.id);
       if (!thread) {
         return [];
@@ -7793,7 +8060,24 @@ function SidebarSearchPaletteController(props: {
         },
       ];
     });
-  }, [props.projectById, sidebarDisplayThreads, threads]);
+    const externalThreads: SidebarSearchThread[] = props.externalThreads.map((candidate) => ({
+      id: `external:${candidate.providerInstanceId}:${candidate.externalThreadId}`,
+      title: candidate.title,
+      projectId: candidate.matchedProjectId ?? "",
+      projectName: candidate.matchedProjectId
+        ? (props.projectById.get(candidate.matchedProjectId)?.name ?? "Unknown project")
+        : "Other Codex tasks",
+      projectRemoteName: candidate.matchedProjectId
+        ? (props.projectById.get(candidate.matchedProjectId)?.remoteName ?? "Unknown project")
+        : "Other Codex tasks",
+      provider: "codex",
+      createdAt: candidate.createdAt,
+      updatedAt: candidate.updatedAt,
+      messages: [{ text: candidate.preview }],
+      externalThread: candidate,
+    }));
+    return [...persistedThreads, ...externalThreads];
+  }, [props.externalThreads, props.projectById, sidebarDisplayThreads, threads]);
 
   return (
     <SidebarSearchPalette
@@ -7815,6 +8099,7 @@ function SidebarSearchPaletteController(props: {
       importTargets={importTargets}
       onImportThread={props.onImportThread}
       onOpenThread={props.onOpenThread}
+      onOpenExternalThread={props.onOpenExternalThread}
     />
   );
 }

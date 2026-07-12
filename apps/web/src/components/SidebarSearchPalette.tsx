@@ -96,6 +96,7 @@ interface SidebarSearchPaletteProps {
   onOpenUsageSettings: () => void;
   onOpenProject: (projectId: string) => void;
   onOpenThread: (threadId: string) => void;
+  onOpenExternalThread?: (candidate: NonNullable<SidebarSearchThread["externalThread"]>) => void;
   importTargets: readonly ThreadImportTarget[];
   onImportThread: (target: ThreadImportTarget, externalId: string) => Promise<void>;
 }
@@ -902,13 +903,18 @@ export function SidebarSearchPalette(props: SidebarSearchPaletteProps) {
                           <CommandItem
                             key={id}
                             value={id}
-                            className="cursor-pointer items-center gap-2 rounded-lg px-2.5 py-2"
+                            disabled={thread.externalThread?.status === "active"}
+                            className="cursor-pointer items-center gap-2 rounded-lg px-2.5 py-2 disabled:cursor-default"
                             onMouseDown={(event) => {
                               event.preventDefault();
                             }}
                             onClick={() => {
                               props.onOpenChange(false);
-                              props.onOpenThread(thread.id);
+                              if (thread.externalThread) {
+                                props.onOpenExternalThread?.(thread.externalThread);
+                              } else {
+                                props.onOpenThread(thread.id);
+                              }
                             }}
                           >
                             {isGenericChatThreadTitle(thread.title) ? null : (
@@ -923,7 +929,11 @@ export function SidebarSearchPalette(props: SidebarSearchPaletteProps) {
                                   />
                                 </div>
                                 <span className="w-24 shrink-0 truncate text-right text-[length:var(--app-font-size-ui-meta,10px)] text-muted-foreground/79">
-                                  {thread.projectName}
+                                  {thread.externalThread
+                                    ? thread.externalThread.status === "active"
+                                      ? "External · Active elsewhere"
+                                      : `External · ${thread.externalThread.sourceKind === "appServer" ? "Codex App" : thread.externalThread.sourceKind}`
+                                    : thread.projectName}
                                 </span>
                                 {thread.updatedAt || thread.createdAt ? (
                                   <span className="w-10 shrink-0 text-right text-[length:var(--app-font-size-ui-timestamp,10px)] text-muted-foreground/79">
