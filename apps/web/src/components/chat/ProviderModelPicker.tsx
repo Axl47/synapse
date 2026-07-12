@@ -709,10 +709,8 @@ export const ProviderModelMenuItems = memo(function ProviderModelMenuItems(
 
   const globalFavoriteModels = useMemo(() => {
     const providerByInstanceId = new Map<ProviderInstanceId, ProviderKind>();
-    const instanceLabelById = new Map<ProviderInstanceId, string>();
     for (const instance of props.providerInstances ?? []) {
       providerByInstanceId.set(instance.instanceId, instance.provider);
-      instanceLabelById.set(instance.instanceId, instance.label);
     }
 
     return normalizeFavoriteModels(props.favoriteModels ?? []).flatMap((favorite) => {
@@ -738,10 +736,6 @@ export const ProviderModelMenuItems = memo(function ProviderModelMenuItems(
           instanceId: favorite.provider,
           model: option.slug,
           modelLabel: option.name,
-          instanceLabel:
-            instanceLabelById.get(favorite.provider) ??
-            AVAILABLE_PROVIDER_OPTIONS.find((candidate) => candidate.value === provider)?.label ??
-            provider,
         },
       ];
     });
@@ -783,9 +777,6 @@ export const ProviderModelMenuItems = memo(function ProviderModelMenuItems(
               {globalFavoriteModels.map((favorite) => (
                 <MenuRadioItem key={favorite.key} value={favorite.key}>
                   <span className="min-w-0 truncate">{favorite.modelLabel}</span>
-                  <span className="ms-auto max-w-24 truncate text-[11px] text-muted-foreground/70">
-                    {favorite.instanceLabel}
-                  </span>
                 </MenuRadioItem>
               ))}
             </MenuRadioGroup>
@@ -841,7 +832,7 @@ export const ProviderModelMenuItems = memo(function ProviderModelMenuItems(
           })
         : undefined;
     const groupedOptions =
-      favoriteModelSlugSet !== undefined
+      props.favoriteModels === undefined && favoriteModelSlugSet !== undefined
         ? groupProviderModelOptionsWithFavorites({
             options: filteredOptions,
             favoriteSlugs: favoriteModelSlugSet,

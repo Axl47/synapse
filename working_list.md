@@ -20,3 +20,7 @@
 - [x] Add focused regression coverage
 - [x] Verify 227 web unit tests, 46 browser tests, 78 shared tests, and 136 server tests
 - [x] Commit and publish the verified corrections to `multiple-accounts-selection`
+- [x] Remove account/default labels from global favourite rows
+- [x] Remove duplicate provider-local Favorites grouping
+- [x] Make the composer account trigger icon-only
+- [x] Verify 29 picker browser tests and 9 grouping unit tests

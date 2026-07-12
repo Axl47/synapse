@@ -9467,7 +9467,7 @@ export default function ChatView({
             selectedProviderInstanceId={selectedProviderInstanceId}
             selectionLocked={lockedProvider !== null}
             compact={isComposerFooterCompact}
-            hideLabel={!composerFooterControlsPlan.showModelLabel}
+            hideLabel
             onProviderInstanceChange={onProviderInstanceSelect}
             onManageAccounts={openProviderAccountSettings}
           />

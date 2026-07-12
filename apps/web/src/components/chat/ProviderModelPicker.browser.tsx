@@ -403,6 +403,7 @@ describe("ProviderModelPicker", () => {
         const text = document.body.textContent ?? "";
         expect(text).toContain("Claude Sonnet 4.6");
         expect(text).toContain("GPT-5.3 Codex");
+        expect(text).not.toContain("Default");
       });
     } finally {
       await mounted.cleanup();
