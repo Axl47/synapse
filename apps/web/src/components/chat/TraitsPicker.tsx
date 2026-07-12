@@ -6,6 +6,7 @@
 import {
   type OpenCodeModelOptions,
   type ProviderAgentDescriptor,
+  type ProviderInstanceId,
   type ProviderKind,
   type ProviderModelDescriptor,
   type ThreadId,
@@ -226,6 +227,7 @@ export interface TraitsMenuContentProps {
   onPromptChange: (prompt: string) => void;
   includeFastMode?: boolean;
   modelOptions?: ProviderOptions | null | undefined;
+  selectedProviderInstanceId?: ProviderInstanceId | null | undefined;
   onSelectionComplete?: () => void;
 }
 
@@ -239,6 +241,7 @@ export const TraitsMenuContent = memo(function TraitsMenuContentImpl({
   onPromptChange,
   includeFastMode = true,
   modelOptions,
+  selectedProviderInstanceId,
   onSelectionComplete,
 }: TraitsMenuContentProps) {
   const setProviderModelOptions = useComposerDraftStore((store) => store.setProviderModelOptions);
@@ -280,11 +283,23 @@ export const TraitsMenuContent = memo(function TraitsMenuContentImpl({
         threadId,
         provider,
         buildNextProviderOptions(provider, modelOptions, patch),
-        { ...(model !== undefined ? { model } : {}), persistSticky: true },
+        {
+          ...(selectedProviderInstanceId ? { instanceId: selectedProviderInstanceId } : {}),
+          ...(model !== undefined ? { model } : {}),
+          persistSticky: true,
+        },
       );
       onSelectionComplete?.();
     },
-    [threadId, provider, modelOptions, model, setProviderModelOptions, onSelectionComplete],
+    [
+      threadId,
+      provider,
+      modelOptions,
+      model,
+      selectedProviderInstanceId,
+      setProviderModelOptions,
+      onSelectionComplete,
+    ],
   );
 
   const handleEffortChange = useCallback(
@@ -438,6 +453,7 @@ export const TraitsPicker = memo(function TraitsPicker({
   onPromptChange,
   includeFastMode = true,
   modelOptions,
+  selectedProviderInstanceId,
   open,
   onOpenChange,
   onSelectionCommitted,
@@ -625,6 +641,7 @@ export const TraitsPicker = memo(function TraitsPicker({
           onPromptChange={onPromptChange}
           includeFastMode={includeFastMode}
           modelOptions={modelOptions}
+          selectedProviderInstanceId={selectedProviderInstanceId}
           onSelectionComplete={handleSelectionComplete}
         />
       </ComposerPickerMenuPopup>

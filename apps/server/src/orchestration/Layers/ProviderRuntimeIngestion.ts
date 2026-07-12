@@ -15,10 +15,12 @@ import {
   type OrchestrationThreadActivity,
   type OrchestrationThread,
   type OrchestrationThreadShell,
+  type ProviderInstanceId,
+  ProviderKind,
   type ProviderRuntimeEvent,
   type RuntimeMode,
 } from "@synara/contracts";
-import { Cache, Cause, Duration, Effect, Layer, Option, Ref, Stream } from "effect";
+import { Cache, Cause, Duration, Effect, Layer, Option, Ref, Schema, Stream } from "effect";
 import { makeDrainableWorker } from "@synara/shared/DrainableWorker";
 import {
   buildSubagentIdentityDirectory,
@@ -26,6 +28,7 @@ import {
   extractSubagentIdentityHints,
   resolveSubagentIdentityFromDirectory,
 } from "@synara/shared/subagents";
+import { inferLegacyProviderKindFromModelSelection } from "@synara/shared/providerInstances";
 
 import {
   generatedImageMarkdown,
@@ -144,6 +147,14 @@ function threadDetailFromShell(shell: OrchestrationThreadShell): OrchestrationTh
     activities: [],
     checkpoints: [],
   };
+}
+
+function readModelSelectionProviderInstanceId(
+  modelSelection:
+    | OrchestrationThread["modelSelection"]
+    | OrchestrationThreadShell["modelSelection"],
+): string | undefined {
+  return "instanceId" in modelSelection ? modelSelection.instanceId : undefined;
 }
 
 /**
@@ -1761,11 +1772,12 @@ const make = Effect.gen(function* () {
     return isGitRepository(workspaceCwd);
   });
 
-  const supportsLiveTurnDiffPatch = Effect.fnUntraced(function* (
-    provider: ProviderRuntimeEvent["provider"],
-  ) {
+  const supportsLiveTurnDiffPatch = Effect.fnUntraced(function* (input: {
+    provider: ProviderRuntimeEvent["provider"];
+    instanceId?: ProviderInstanceId | undefined;
+  }) {
     const capabilities = yield* providerService
-      .getCapabilities(provider)
+      .getCapabilities(input.instanceId ?? input.provider)
       .pipe(Effect.catch(() => Effect.succeed(null)));
     return capabilities?.supportsLiveTurnDiffPatch === true;
   });
@@ -2601,7 +2613,7 @@ const make = Effect.gen(function* () {
           const resolvedModelSelection =
             identity?.model && identity.modelIsRequestedHint !== true
               ? {
-                  provider: parentThread.modelSelection.provider,
+                  ...parentThread.modelSelection,
                   model: identity.model,
                 }
               : undefined;
@@ -2854,6 +2866,10 @@ const make = Effect.gen(function* () {
               threadId: thread.id,
               status,
               providerName: event.provider,
+              providerInstanceId:
+                event.providerInstanceId ??
+                thread.session?.providerInstanceId ??
+                readModelSelectionProviderInstanceId(thread.modelSelection),
               runtimeMode: thread.session?.runtimeMode ?? "full-access",
               activeTurnId: nextActiveTurnId,
               lastError,
@@ -3154,6 +3170,10 @@ const make = Effect.gen(function* () {
               threadId: thread.id,
               status: "error",
               providerName: event.provider,
+              providerInstanceId:
+                event.providerInstanceId ??
+                thread.session?.providerInstanceId ??
+                readModelSelectionProviderInstanceId(thread.modelSelection),
               runtimeMode: thread.session?.runtimeMode ?? "full-access",
               activeTurnId: eventTurnId ?? null,
               lastError: runtimeErrorMessage,
@@ -3194,7 +3214,10 @@ const make = Effect.gen(function* () {
           if (existingCheckpoint && !existingProviderPlaceholder) {
             yield* clearProviderDiffPlaceholder(thread.id, turnId);
           } else {
-            const canParseLiveDiffPatch = yield* supportsLiveTurnDiffPatch(event.provider);
+            const canParseLiveDiffPatch = yield* supportsLiveTurnDiffPatch({
+              provider: event.provider,
+              ...(event.providerInstanceId ? { instanceId: event.providerInstanceId } : {}),
+            });
             const livePlaceholder = trackedPlaceholder ?? existingProviderPlaceholder;
             const maxTurnCount = thread.checkpoints.reduce(
               (max, c) => Math.max(max, c.checkpointTurnCount),
@@ -3290,7 +3313,10 @@ const make = Effect.gen(function* () {
       const thread = Option.getOrUndefined(
         yield* projectionSnapshotQuery.getThreadShellById(event.payload.threadId),
       );
-      const activeTurnId = thread?.session?.activeTurnId ?? undefined;
+      if (!thread) {
+        return;
+      }
+      const activeTurnId = thread.session?.activeTurnId ?? undefined;
       if (!activeTurnId) {
         return;
       }
@@ -3298,7 +3324,13 @@ const make = Effect.gen(function* () {
       const flushEvent: ProviderRuntimeEvent = {
         type: "turn.started",
         eventId: event.eventId,
-        provider: thread?.session?.providerName === "claudeAgent" ? "claudeAgent" : "codex",
+        provider:
+          (Schema.is(ProviderKind)(thread.session?.providerName)
+            ? thread.session.providerName
+            : undefined) ?? inferLegacyProviderKindFromModelSelection(thread.modelSelection),
+        providerInstanceId:
+          thread.session?.providerInstanceId ??
+          readModelSelectionProviderInstanceId(thread.modelSelection),
         createdAt: event.payload.createdAt,
         threadId: event.payload.threadId,
         turnId: activeTurnId,

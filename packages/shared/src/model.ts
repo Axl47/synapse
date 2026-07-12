@@ -1,4 +1,5 @@
 import {
+  CLAUDE_CODE_EFFORT_OPTIONS,
   DEFAULT_MODEL_BY_PROVIDER,
   MODEL_CAPABILITIES_INDEX,
   MODEL_OPTIONS_BY_PROVIDER,
@@ -25,6 +26,7 @@ import {
   type ProviderWithDefaultModel,
   CodexReasoningEffort,
 } from "@synara/contracts";
+import { inferLegacyProviderKindFromInstanceId } from "./providerInstances";
 
 const MODEL_SLUG_SET_BY_PROVIDER: Record<ProviderKind, ReadonlySet<ModelSlug>> = {
   claudeAgent: new Set(MODEL_OPTIONS_BY_PROVIDER.claudeAgent.map((option) => option.slug)),
@@ -46,6 +48,7 @@ export type GeminiThinkingConfigKind = "budget" | "level";
 
 const GEMINI_3_MODEL_PATTERN = /^(?:auto-)?gemini-3(?:[.-]|$)/i;
 const GEMINI_2_5_MODEL_PATTERN = /^(?:auto-)?gemini-2\.5(?:[.-]|$)/i;
+const CLAUDE_CODE_EFFORT_SET: ReadonlySet<string> = new Set(CLAUDE_CODE_EFFORT_OPTIONS);
 const GEMINI_THINKING_LEVEL_SET = new Set<GeminiThinkingLevel>(["LOW", "HIGH"]);
 const PI_THINKING_LEVEL_SET = new Set<PiThinkingLevel>([
   "off",
@@ -91,6 +94,10 @@ export const GEMINI_2_5_MODEL_CAPABILITIES: ModelCapabilities = {
   promptInjectedEffortLevels: [],
   contextWindowOptions: [],
 };
+
+function isClaudeCodeEffort(value: string): value is ClaudeCodeEffort {
+  return CLAUDE_CODE_EFFORT_SET.has(value);
+}
 
 function isGeminiThinkingLevel(value: string): value is GeminiThinkingLevel {
   return GEMINI_THINKING_LEVEL_SET.has(value as GeminiThinkingLevel);
@@ -758,21 +765,16 @@ interface ClaudeRequestedSpawnOptions {
   readonly fastMode: boolean;
 }
 
-function claudeRequestedSpawnOptions(
-  selection: Extract<ModelSelection, { provider: "claudeAgent" }>,
-): ClaudeRequestedSpawnOptions {
+function claudeRequestedSpawnOptions(selection: ModelSelection): ClaudeRequestedSpawnOptions {
+  const thinking = getModelSelectionBooleanOptionValue(selection, "thinking");
   return {
-    effort: trimOrNull(selection.options?.effort ?? null),
-    thinking:
-      typeof selection.options?.thinking === "boolean" ? selection.options.thinking : undefined,
-    fastMode: selection.options?.fastMode === true,
+    effort: trimOrNull(getModelSelectionStringOptionValue(selection, "effort") ?? null),
+    thinking: typeof thinking === "boolean" ? thinking : undefined,
+    fastMode: getModelSelectionBooleanOptionValue(selection, "fastMode") === true,
   };
 }
 
-function sameClaudeRequestedSpawnOptions(
-  previous: Extract<ModelSelection, { provider: "claudeAgent" }>,
-  next: Extract<ModelSelection, { provider: "claudeAgent" }>,
-): boolean {
+function sameClaudeRequestedSpawnOptions(previous: ModelSelection, next: ModelSelection): boolean {
   const prev = claudeRequestedSpawnOptions(previous);
   const desired = claudeRequestedSpawnOptions(next);
   return (
@@ -785,17 +787,21 @@ function sameClaudeRequestedSpawnOptions(
 // Mirrors the spawn-time option derivation in the Claude adapter's startSession:
 // only these inputs are fixed at subprocess spawn (query `effort` + `settings`).
 // Model and context window switch in-session via `setModel`.
-function claudeSpawnProfile(selection: Extract<ModelSelection, { provider: "claudeAgent" }>) {
+function claudeSpawnProfile(selection: ModelSelection) {
   const caps = getModelCapabilities("claudeAgent", selection.model);
-  const requestedEffort = trimOrNull(selection.options?.effort ?? null);
-  const effort = requestedEffort && hasEffortLevel(caps, requestedEffort) ? requestedEffort : null;
+  const requestedEffort = trimOrNull(
+    getModelSelectionStringOptionValue(selection, "effort") ?? null,
+  );
+  const effort =
+    requestedEffort && isClaudeCodeEffort(requestedEffort) && hasEffortLevel(caps, requestedEffort)
+      ? requestedEffort
+      : null;
+  const thinking = getModelSelectionBooleanOptionValue(selection, "thinking");
   return {
     effectiveEffort: getEffectiveClaudeCodeEffort(effort),
-    thinking:
-      typeof selection.options?.thinking === "boolean" && caps.supportsThinkingToggle
-        ? selection.options.thinking
-        : undefined,
-    fastMode: selection.options?.fastMode === true && caps.supportsFastMode,
+    thinking: typeof thinking === "boolean" && caps.supportsThinkingToggle ? thinking : undefined,
+    fastMode:
+      getModelSelectionBooleanOptionValue(selection, "fastMode") === true && caps.supportsFastMode,
     ultracode: effort === "ultracode" && hasEffortLevel(caps, "xhigh"),
   } satisfies ClaudeSpawnProfile;
 }
@@ -811,7 +817,7 @@ export function claudeSelectionRequiresRestart(
   previous: ModelSelection | undefined,
   next: ModelSelection,
 ): boolean {
-  if (next.provider !== "claudeAgent") {
+  if (inferLegacyProviderKindFromInstanceId(next.instanceId) !== "claudeAgent") {
     return false;
   }
   if (previous === undefined) {
@@ -819,7 +825,7 @@ export function claudeSelectionRequiresRestart(
     // same selection source, so treat it as unchanged rather than replaying.
     return false;
   }
-  if (previous.provider !== "claudeAgent") {
+  if (inferLegacyProviderKindFromInstanceId(previous.instanceId) !== "claudeAgent") {
     return true;
   }
   if (previous.model !== next.model && sameClaudeRequestedSpawnOptions(previous, next)) {

@@ -1,14 +1,20 @@
 # Working List
 
 ## Pending
-- [ ] Merge `upstream/main` into `main`
-- [ ] Preserve fork-specific Synara affordances
-- [ ] Run focused verification
-- [ ] Push synced `main` to `origin`
-- [ ] Summarize final sync state and manual verification checklist
+
+- [ ] Push `multiple-accounts-selection` and summarize the handoff
 
 ## In Progress
-- [~] Preflight upstream merge conflicts
+
+- [~] Publish the integrated branch
 
 ## Done
-- [x] Audit branch/remotes and local-vs-upstream divergence - current branch is clean `main`, matching `origin/main`; after fetch, `upstream/main` is 69 commits ahead while local `main` has 29 fork commits to preserve.
+
+- [x] Revert the local GPT-5.6/unified-composer patches from `main`
+- [x] Verify restored `main` matches its pre-patch content and push it to `origin`
+- [x] Create `multiple-accounts-selection` from restored `main`
+- [x] Merge `upstream/feat/multiple-accounts-selection`
+- [x] Reconcile provider-instance model options with current Claude auto-compact behavior
+- [x] Preserve current task-tracking and projection-schema migrations
+- [x] Run focused verification for provider instances, model selection, migrations, and browser pickers
+- [x] Commit the integrated feature branch

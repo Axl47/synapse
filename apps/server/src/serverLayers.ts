@@ -41,6 +41,7 @@ import { ProjectionTurnRepositoryLive } from "./persistence/Layers/ProjectionTur
 export { makeServerProviderLayer } from "./provider/runtimeLayer";
 
 export function makeServerRuntimeServicesLayer() {
+  const serverSettingsLayer = ServerSettingsLive;
   const checkpointStoreLayer = CheckpointStoreLive.pipe(Layer.provide(GitCoreLive));
 
   const checkpointDiffQueryLayer = CheckpointDiffQueryLive.pipe(
@@ -65,7 +66,7 @@ export function makeServerRuntimeServicesLayer() {
     Layer.provideMerge(studioOutputReactorLayer),
     Layer.provideMerge(GitCoreLive),
     Layer.provideMerge(TextGenerationLayerLive),
-    Layer.provideMerge(ServerSettingsLive),
+    Layer.provideMerge(serverSettingsLayer),
   );
   const checkpointReactorLayer = CheckpointReactorLive.pipe(
     Layer.provideMerge(runtimeServicesLayer),
@@ -112,7 +113,7 @@ export function makeServerRuntimeServicesLayer() {
     Layer.provideMerge(ProjectionTurnRepositoryLive),
     Layer.provideMerge(GitCoreLive),
     Layer.provideMerge(TextGenerationLayerLive),
-    Layer.provideMerge(ServerSettingsLive),
+    Layer.provideMerge(serverSettingsLayer),
     Layer.provideMerge(runtimeServicesLayer),
   );
   const automationSchedulerLayer = AutomationSchedulerLive.pipe(
@@ -136,7 +137,6 @@ export function makeServerRuntimeServicesLayer() {
     TextGenerationLayerLive,
     TerminalLayerLive,
     KeybindingsLive,
-    ServerSettingsLive,
     ServerEnvironmentLive,
     ProfileStatsQueryLive,
     authServicesLayer,
@@ -144,5 +144,5 @@ export function makeServerRuntimeServicesLayer() {
     ServerRuntimeStartupLive,
     WorkspaceLayerLive,
     ProjectFaviconResolverLive,
-  ).pipe(Layer.provideMerge(NodeServices.layer));
+  ).pipe(Layer.provideMerge(serverSettingsLayer), Layer.provideMerge(NodeServices.layer));
 }
