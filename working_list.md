@@ -10,6 +10,9 @@
 
 ## Done
 
+- [x] Validate the external Codex thread discovery ExecPlan structure, required sections, HTML element balance, and whitespace
+- [x] Write the standalone HTML ExecPlan for discovery, project matching, adoption, and reconciliation
+- [x] Trace the existing Codex import, thread/read, provider-instance, RPC, and sidebar project paths
 - [x] Confirm the integrated branch contains a combined picker component but only uses it after a thread starts
 - [x] Confirm favourites are currently nested inside individual provider model lists
 - [x] Confirm persisted Codex effort hydration rejects Max and Ultra and falls back to Medium
