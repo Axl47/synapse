@@ -170,9 +170,85 @@ describe("getComposerProviderState", () => {
 
     expect(selection.effort).toBe("ultra");
     expect(selection.effortLevels.map(({ value, label }) => ({ value, label }))).toEqual([
+      { value: "low", label: "Low" },
       { value: "medium", label: "Medium" },
+      { value: "high", label: "High" },
+      { value: "xhigh", label: "Extra High" },
       { value: "max", label: "Max" },
       { value: "ultra", label: "Ultra" },
+    ]);
+  });
+
+  it("fills stale GPT-5.6 runtime metadata from the built-in effort contract", () => {
+    const selection = getComposerTraitSelection(
+      "codex",
+      "gpt-5.6-sol",
+      "",
+      { reasoningEffort: "ultra" },
+      {
+        slug: "gpt-5.6-sol",
+        name: "GPT-5.6 Sol",
+        supportedReasoningEfforts: [
+          { value: "low" },
+          { value: "medium" },
+          { value: "high" },
+          { value: "xhigh" },
+        ],
+        defaultReasoningEffort: "medium",
+      },
+    );
+
+    expect(selection.effort).toBe("ultra");
+    expect(selection.effortLevels.map((option) => option.value)).toEqual([
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max",
+      "ultra",
+    ]);
+
+    const providerState = getComposerProviderState({
+      provider: "codex",
+      model: "gpt-5.6-sol",
+      runtimeModel: {
+        slug: "gpt-5.6-sol",
+        name: "GPT-5.6 Sol",
+        supportedReasoningEfforts: [
+          { value: "low" },
+          { value: "medium" },
+          { value: "high" },
+          { value: "xhigh" },
+        ],
+        defaultReasoningEffort: "medium",
+      },
+      prompt: "",
+      modelOptions: { codex: { reasoningEffort: "ultra" } },
+    });
+    expect(providerState.modelOptionsForDispatch).toEqual({ reasoningEffort: "ultra" });
+  });
+
+  it("does not leak Sol-only Ultra onto Terra from runtime metadata", () => {
+    const selection = getComposerTraitSelection(
+      "codex",
+      "gpt-5.6-terra",
+      "",
+      { reasoningEffort: "max" },
+      {
+        slug: "gpt-5.6-terra",
+        name: "GPT-5.6 Terra",
+        supportedReasoningEfforts: [{ value: "medium" }, { value: "max" }, { value: "ultra" }],
+        defaultReasoningEffort: "medium",
+      },
+    );
+
+    expect(selection.effort).toBe("max");
+    expect(selection.effortLevels.map((option) => option.value)).toEqual([
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max",
     ]);
   });
 

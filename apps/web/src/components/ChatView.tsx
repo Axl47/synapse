@@ -8780,7 +8780,10 @@ export default function ChatView({
       }),
     [runtimeUsageContextWindow, composerTraitSelection.contextWindow, selectedProvider],
   );
-  const useSplitComposerPickerControls = isLocalDraftThread && !hasThreadStarted;
+  // The combined model/effort control is the canonical composer surface for
+  // both fresh drafts and started threads. Keeping one path avoids the draft
+  // composer looking and behaving differently before its first send.
+  const useSplitComposerPickerControls = false;
   const composerFooterControlsPlan = useMemo(
     () => composerFooterPlanForTier(composerFooterTier, Boolean(runtimeUsageContextWindow)),
     [composerFooterTier, runtimeUsageContextWindow],
