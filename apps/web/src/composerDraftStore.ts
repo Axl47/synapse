@@ -3054,7 +3054,6 @@ function verifyPersistedAttachments(
 ): void {
   let persistedIdSet = new Set<string>();
   try {
-    composerDebouncedStorage.flush();
     persistedIdSet = new Set(readPersistedAttachmentIdsFromStorage(threadId));
   } catch {
     persistedIdSet = new Set();
@@ -3101,7 +3100,6 @@ function verifyPromptHistorySavedDraftPersistedAttachments(
 ): void {
   let persistedIdSet = new Set<string>();
   try {
-    composerDebouncedStorage.flush();
     persistedIdSet = new Set(readPersistedPromptHistoryAttachmentIdsFromStorage(threadId));
   } catch {
     persistedIdSet = new Set();

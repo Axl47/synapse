@@ -1910,9 +1910,7 @@ const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
         try: () =>
           manager.listExternalThreads({
             ...(input.providerOptions?.codex ? { codexOptions: input.providerOptions.codex } : {}),
-            ...(input.useStateDbOnly !== undefined
-              ? { useStateDbOnly: input.useStateDbOnly }
-              : {}),
+            ...(input.useStateDbOnly !== undefined ? { useStateDbOnly: input.useStateDbOnly } : {}),
             ...(input.maxThreads !== undefined ? { maxThreads: input.maxThreads } : {}),
           }),
         catch: (cause) =>

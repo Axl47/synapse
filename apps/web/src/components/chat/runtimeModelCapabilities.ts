@@ -134,13 +134,16 @@ export function getRuntimeAwareModelCapabilities(input: {
     };
   });
 
-  const normalizedModel = normalizeModelSlug(input.model, input.provider) ?? trimOrNull(input.model);
-  const resolvedRuntimeOptions =
+  const normalizedModel =
+    normalizeModelSlug(input.model, input.provider) ?? trimOrNull(input.model);
+  const resolvedRuntimeOptions: readonly EffortOption[] =
     input.provider === "codex" && normalizedModel && BUILT_IN_GPT_5_6_MODELS.has(normalizedModel)
       ? staticCapabilities.reasoningEffortLevels.map((staticOption) => {
-          const runtimeOption = runtimeOptions.find((option) => option.value === staticOption.value);
+          const runtimeOption = runtimeOptions.find(
+            (option) => option.value === staticOption.value,
+          );
           return runtimeOption
-            ? { ...staticOption, ...runtimeOption, label: staticOption.label }
+            ? ({ ...staticOption, ...runtimeOption, label: staticOption.label } as EffortOption)
             : staticOption;
         })
       : runtimeOptions;

@@ -14,13 +14,13 @@ const project = {
   name: "Pragma",
   remoteName: null,
   cwd: "/repo/pragma",
-} as Project;
+} as unknown as Project;
 
 const thread = {
   id: THREAD_ID,
   projectId: PROJECT_ID,
   title: "Implementation",
-} as Thread;
+} as unknown as Thread;
 
 function makeContext(overrides: Partial<FocusedChatContext> = {}): FocusedChatContext {
   return {

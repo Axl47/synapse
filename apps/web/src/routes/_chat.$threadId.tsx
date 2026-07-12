@@ -1564,10 +1564,13 @@ function SingleChatSurface(props: {
     requestImmediateDockHydration("browser");
     toggleSingletonPane(props.threadId, { kind: "browser" });
   }, [props.threadId, requestImmediateDockHydration, toggleSingletonPane]);
-  const handleOpenBrowserUrl = useCallback((_url: string) => {
-    requestImmediateDockHydration("browser");
-    openPane(props.threadId, { kind: "browser" });
-  }, [openPane, props.threadId, requestImmediateDockHydration]);
+  const handleOpenBrowserUrl = useCallback(
+    (_url: string) => {
+      requestImmediateDockHydration("browser");
+      openPane(props.threadId, { kind: "browser" });
+    },
+    [openPane, props.threadId, requestImmediateDockHydration],
+  );
   const handleOpenTurnDiff = useCallback(
     (turnId: TurnId, filePath?: string) => {
       requestImmediateDockHydration("diff");
@@ -2239,19 +2242,19 @@ function SingleChatSurface(props: {
               onCommentInChat={handleCommentInChat}
               onSelectProject={handleSelectEditorProject}
               diffPanel={
-              <LazyDiffPanel
-                mode="sidebar"
-                threadId={props.threadId}
-                panelState={editorDiffPanelState}
-                onUpdatePanelState={handleUpdateEditorDiffPanelState}
-                liveRefreshEnabled={editorCenterMode === "diff"}
-                // Keep diff data warm while browsing files so switching to the
-                // diff tab renders instantly instead of cold-fetching.
-                queriesEnabled
-                hideHeader
-                onRenderableFilesChange={handleEditorDiffFilesChange}
-                onEditorDiffOptionsChange={handleEditorDiffOptionsChange}
-              />
+                <LazyDiffPanel
+                  mode="sidebar"
+                  threadId={props.threadId}
+                  panelState={editorDiffPanelState}
+                  onUpdatePanelState={handleUpdateEditorDiffPanelState}
+                  liveRefreshEnabled={editorCenterMode === "diff"}
+                  // Keep diff data warm while browsing files so switching to the
+                  // diff tab renders instantly instead of cold-fetching.
+                  queriesEnabled
+                  hideHeader
+                  onRenderableFilesChange={handleEditorDiffFilesChange}
+                  onEditorDiffOptionsChange={handleEditorDiffOptionsChange}
+                />
               }
               chatPanel={
                 <SidebarInset
@@ -2267,6 +2270,7 @@ function SingleChatSurface(props: {
                     isFocusedPane
                     panelState={editorChatPanelState}
                     onToggleDiff={handleEditorToggleDiff}
+                    onOpenDiff={handleOpenDiff}
                     onToggleBrowser={noop}
                     onOpenBrowserUrl={noop}
                     onOpenTurnDiff={handleEditorOpenTurnDiff}

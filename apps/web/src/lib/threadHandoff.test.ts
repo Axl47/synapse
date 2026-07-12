@@ -180,7 +180,7 @@ describe("threadHandoff", () => {
       }),
     ).toEqual({
       instanceId: "codex_personal",
-      model: "gpt-5.5",
+      model: "gpt-5.6-sol",
     });
   });
 });

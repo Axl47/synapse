@@ -264,9 +264,7 @@ class FakeCodexManager extends CodexAppServerManager {
     return this.listModelsImpl(input);
   }
 
-  override listExternalThreads(
-    input: Parameters<CodexAppServerManager["listExternalThreads"]>[0],
-  ) {
+  override listExternalThreads(input: Parameters<CodexAppServerManager["listExternalThreads"]>[0]) {
     return this.listExternalThreadsImpl(input);
   }
 }

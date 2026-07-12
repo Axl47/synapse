@@ -58,6 +58,8 @@ function baseOptions(overrides: Record<string, unknown> = {}) {
     serverSettings: {
       getSettings: Effect.succeed(DEFAULT_SERVER_SETTINGS),
     } as never,
+    orchestrationEngine: { dispatch: () => Effect.void } as never,
+    importThread: (() => Effect.die("not configured")) as never,
     ...overrides,
   };
 }

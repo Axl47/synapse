@@ -1,8 +1,4 @@
-import {
-  DEFAULT_SERVER_SETTINGS,
-  ThreadId,
-  type ProviderInstanceId,
-} from "@synara/contracts";
+import { DEFAULT_SERVER_SETTINGS, ThreadId, type ProviderInstanceId } from "@synara/contracts";
 import { Effect, Option } from "effect";
 import { describe, expect, it, vi } from "vitest";
 
@@ -41,7 +37,10 @@ describe("makeCodexAdoptedThreadHistorySync", () => {
   });
 
   it("replays stable projections for adopted Codex history", async () => {
-    const dispatch = vi.fn(() => Effect.succeed({ sequence: 1 }));
+    const dispatch = vi.fn(
+      (_command: { readonly messages?: ReadonlyArray<{ readonly messageId: string }> }) =>
+        Effect.succeed({ sequence: 1 }),
+    );
     const readExternalThread = vi.fn(() =>
       Effect.succeed({
         threadId: ThreadId.makeUnsafe("external-1"),
@@ -59,8 +58,7 @@ describe("makeCodexAdoptedThreadHistorySync", () => {
         getByInstance: () => Effect.succeed({ readExternalThread } as never),
       } as never,
       providerSessionDirectory: {
-        getBinding: () =>
-          Effect.succeed(Option.some(binding({ adoptedExternalThread: true }))),
+        getBinding: () => Effect.succeed(Option.some(binding({ adoptedExternalThread: true }))),
       } as never,
       serverSettings: { getSettings: Effect.succeed(DEFAULT_SERVER_SETTINGS) } as never,
     });

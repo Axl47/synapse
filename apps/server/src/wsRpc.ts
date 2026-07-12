@@ -790,7 +790,9 @@ export const makeWsRpcLayer = () =>
                     cause,
                   }),
                 ),
-                Effect.andThen(projectionReadModelQuery.getThreadDetailSnapshotById(input.threadId)),
+                Effect.andThen(
+                  projectionReadModelQuery.getThreadDetailSnapshotById(input.threadId),
+                ),
                 Effect.map((snapshot) =>
                   Option.map(snapshot, (value) => ({
                     kind: "snapshot" as const,

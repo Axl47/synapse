@@ -19,22 +19,57 @@
         --code: #0a0f1c;
       }
 
-      * { box-sizing: border-box; }
+      * {
+        box-sizing: border-box;
+      }
       body {
         margin: 0;
         background: var(--bg);
         color: var(--text);
-        font: 15px/1.6 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        font:
+          15px/1.6 ui-sans-serif,
+          system-ui,
+          -apple-system,
+          BlinkMacSystemFont,
+          "Segoe UI",
+          sans-serif;
       }
-      main { width: min(1080px, calc(100% - 32px)); margin: 40px auto 80px; }
-      h1, h2, h3 { line-height: 1.2; letter-spacing: -0.02em; }
-      h1 { margin: 0 0 12px; font-size: clamp(28px, 5vw, 46px); }
-      h2 { margin-top: 42px; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
-      h3 { margin-top: 28px; }
-      p, li { max-width: 90ch; }
-      a { color: var(--accent); }
-      code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
-      code { color: #bcd4ff; }
+      main {
+        width: min(1080px, calc(100% - 32px));
+        margin: 40px auto 80px;
+      }
+      h1,
+      h2,
+      h3 {
+        line-height: 1.2;
+        letter-spacing: -0.02em;
+      }
+      h1 {
+        margin: 0 0 12px;
+        font-size: clamp(28px, 5vw, 46px);
+      }
+      h2 {
+        margin-top: 42px;
+        padding-bottom: 8px;
+        border-bottom: 1px solid var(--border);
+      }
+      h3 {
+        margin-top: 28px;
+      }
+      p,
+      li {
+        max-width: 90ch;
+      }
+      a {
+        color: var(--accent);
+      }
+      code,
+      pre {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      }
+      code {
+        color: #bcd4ff;
+      }
       pre {
         overflow: auto;
         padding: 16px;
@@ -42,36 +77,116 @@
         border-radius: 10px;
         background: var(--code);
       }
-      .lede { color: var(--muted); font-size: 18px; max-width: 72ch; }
-      .meta, .card, .phase, .decision {
+      .lede {
+        color: var(--muted);
+        font-size: 18px;
+        max-width: 72ch;
+      }
+      .meta,
+      .card,
+      .phase,
+      .decision {
         border: 1px solid var(--border);
         border-radius: 12px;
         background: var(--panel);
       }
-      .meta { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; padding: 16px; }
-      .meta strong { display: block; color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .08em; }
-      .card, .phase, .decision { padding: 18px; margin: 14px 0; }
-      .phase h3, .decision h3 { margin-top: 0; }
-      .flow { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; align-items: stretch; }
-      .flow > div { padding: 12px; border-radius: 9px; background: var(--panel-2); text-align: center; }
-      .flow .arrow { display: none; }
-      .good { color: var(--good); }
-      .warn { color: var(--warn); }
-      .tag { display: inline-block; margin: 2px 4px 2px 0; padding: 2px 8px; border-radius: 999px; background: var(--panel-2); color: var(--muted); font-size: 12px; }
-      table { width: 100%; border-collapse: collapse; display: block; overflow-x: auto; }
-      th, td { padding: 10px 12px; border: 1px solid var(--border); text-align: left; vertical-align: top; }
-      th { background: var(--panel-2); }
-      ul, ol { padding-left: 24px; }
-      .checklist li { margin: 8px 0; }
+      .meta {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+        gap: 12px;
+        padding: 16px;
+      }
+      .meta strong {
+        display: block;
+        color: var(--muted);
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+      }
+      .card,
+      .phase,
+      .decision {
+        padding: 18px;
+        margin: 14px 0;
+      }
+      .phase h3,
+      .decision h3 {
+        margin-top: 0;
+      }
+      .flow {
+        display: grid;
+        grid-template-columns: repeat(5, 1fr);
+        gap: 8px;
+        align-items: stretch;
+      }
+      .flow > div {
+        padding: 12px;
+        border-radius: 9px;
+        background: var(--panel-2);
+        text-align: center;
+      }
+      .flow .arrow {
+        display: none;
+      }
+      .good {
+        color: var(--good);
+      }
+      .warn {
+        color: var(--warn);
+      }
+      .tag {
+        display: inline-block;
+        margin: 2px 4px 2px 0;
+        padding: 2px 8px;
+        border-radius: 999px;
+        background: var(--panel-2);
+        color: var(--muted);
+        font-size: 12px;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        display: block;
+        overflow-x: auto;
+      }
+      th,
+      td {
+        padding: 10px 12px;
+        border: 1px solid var(--border);
+        text-align: left;
+        vertical-align: top;
+      }
+      th {
+        background: var(--panel-2);
+      }
+      ul,
+      ol {
+        padding-left: 24px;
+      }
+      .checklist li {
+        margin: 8px 0;
+      }
       @media (max-width: 760px) {
-        .flow { grid-template-columns: 1fr; }
-        main { width: min(100% - 20px, 1080px); margin-top: 20px; }
+        .flow {
+          grid-template-columns: 1fr;
+        }
+        main {
+          width: min(100% - 20px, 1080px);
+          margin-top: 20px;
+        }
       }
       @media (prefers-color-scheme: light) {
         :root {
-          --bg: #f5f7fb; --panel: #ffffff; --panel-2: #edf2fa; --text: #172039;
-          --muted: #58647c; --border: #d5dceb; --accent: #245fbd; --good: #147a55;
-          --warn: #946300; --code: #f1f4f9;
+          --bg: #f5f7fb;
+          --panel: #ffffff;
+          --panel-2: #edf2fa;
+          --text: #172039;
+          --muted: #58647c;
+          --border: #d5dceb;
+          --accent: #245fbd;
+          --good: #147a55;
+          --warn: #946300;
+          --code: #f1f4f9;
         }
       }
     </style>
@@ -101,19 +216,37 @@
       <div class="card">
         <p>After this work:</p>
         <ul class="checklist">
-          <li>Synara discovers recent, interactive Codex threads for every enabled Codex provider instance.</li>
-          <li>Matched threads appear under <strong>From Codex</strong> inside the appropriate expanded project.</li>
-          <li>Unmatched threads appear in a compact <strong>Other Codex tasks</strong> section below Projects.</li>
+          <li>
+            Synara discovers recent, interactive Codex threads for every enabled Codex provider
+            instance.
+          </li>
+          <li>
+            Matched threads appear under <strong>From Codex</strong> inside the appropriate expanded
+            project.
+          </li>
+          <li>
+            Unmatched threads appear in a compact <strong>Other Codex tasks</strong> section below
+            Projects.
+          </li>
           <li>Search includes external threads with an <strong>External · Codex</strong> badge.</li>
-          <li>Opening an external thread adopts it through the existing import/resume machinery and navigates to it.</li>
-          <li>Already-adopted and Synara-created Codex threads never reappear as external candidates.</li>
-          <li>Opening or reconnecting an adopted thread reconciles persisted messages added by another Codex client.</li>
+          <li>
+            Opening an external thread adopts it through the existing import/resume machinery and
+            navigates to it.
+          </li>
+          <li>
+            Already-adopted and Synara-created Codex threads never reappear as external candidates.
+          </li>
+          <li>
+            Opening or reconnecting an adopted thread reconciles persisted messages added by another
+            Codex client.
+          </li>
           <li>Failures leave the existing Synara project list untouched and offer a retry.</li>
         </ul>
       </div>
 
       <h2>2. User model and placement</h2>
-      <pre>Projects
+      <pre>
+Projects
 
 ▾ Synara
     ▾ From Codex · 2
@@ -123,7 +256,8 @@
       Existing Synara thread
       Another adopted thread
 
-  Other Codex tasks · 3                    Only when cwd has no safe project match</pre>
+  Other Codex tasks · 3                    Only when cwd has no safe project match</pre
+      >
       <p>
         The project-local section is inserted in <code>renderProjectItem()</code> immediately before
         the normal <code>visibleEntries</code>. It reuses the shared disclosure motion from
@@ -147,37 +281,62 @@
 
       <h2>4. Current state to reuse</h2>
       <table>
-        <thead><tr><th>Existing capability</th><th>Location</th><th>How this feature uses it</th></tr></thead>
+        <thead>
+          <tr>
+            <th>Existing capability</th>
+            <th>Location</th>
+            <th>How this feature uses it</th>
+          </tr>
+        </thead>
         <tbody>
           <tr>
             <td>External Codex thread read</td>
-            <td><code>codexAppServerManager.readExternalThread()</code> and <code>CodexAdapter.readExternalThread()</code></td>
+            <td>
+              <code>codexAppServerManager.readExternalThread()</code> and
+              <code>CodexAdapter.readExternalThread()</code>
+            </td>
             <td>Validate an adoption candidate and read its complete persisted turns.</td>
           </tr>
           <tr>
             <td>Manual import/resume</td>
             <td><code>apps/server/src/orchestration/importThreadRoute.ts</code></td>
-            <td>Remain the single adoption pipeline after extracting reusable server-side operations.</td>
+            <td>
+              Remain the single adoption pipeline after extracting reusable server-side operations.
+            </td>
           </tr>
           <tr>
             <td>Imported message projection</td>
             <td><code>importedThreadMessages.ts</code> and <code>thread.messages.import</code></td>
-            <td>Provide idempotent history ingestion for initial adoption and later reconciliation.</td>
+            <td>
+              Provide idempotent history ingestion for initial adoption and later reconciliation.
+            </td>
           </tr>
           <tr>
             <td>Provider identity</td>
-            <td><code>projection_thread_sessions.provider_instance_id</code> + <code>provider_thread_id</code></td>
-            <td>Suppress candidates already represented in Synara without adding a parallel identity store.</td>
+            <td>
+              <code>projection_thread_sessions.provider_instance_id</code> +
+              <code>provider_thread_id</code>
+            </td>
+            <td>
+              Suppress candidates already represented in Synara without adding a parallel identity
+              store.
+            </td>
           </tr>
           <tr>
             <td>Project/worktree matching</td>
-            <td><code>threadWorkspace</code>, <code>managedWorktree</code>, and import context resolution</td>
+            <td>
+              <code>threadWorkspace</code>, <code>managedWorktree</code>, and import context
+              resolution
+            </td>
             <td>Share one classifier between discovery display and adoption validation.</td>
           </tr>
           <tr>
             <td>Project sidebar</td>
             <td><code>apps/web/src/components/Sidebar.tsx</code></td>
-            <td>Render candidates in their project without mixing them into persisted thread selectors.</td>
+            <td>
+              Render candidates in their project without mixing them into persisted thread
+              selectors.
+            </td>
           </tr>
         </tbody>
       </table>
@@ -186,9 +345,9 @@
       <div class="decision">
         <h3>Discovery is automatic; adoption is explicit</h3>
         <p>
-          Listing an external thread never creates a Synara event, provider session, or local thread.
-          The first click performs adoption. This prevents old history and unrelated accounts from
-          silently flooding Synara.
+          Listing an external thread never creates a Synara event, provider session, or local
+          thread. The first click performs adoption. This prevents old history and unrelated
+          accounts from silently flooding Synara.
         </p>
       </div>
       <div class="decision">
@@ -197,17 +356,17 @@
           The canonical external key is <code>(providerInstanceId, providerThreadId)</code>. A raw
           Codex thread ID is not sufficient because Synara supports multiple Codex homes/accounts.
           Existing projection session columns are queried for deduplication. Add a non-unique lookup
-          index only if query measurements justify it; do not introduce a second binding table in the
-          first implementation.
+          index only if query measurements justify it; do not introduce a second binding table in
+          the first implementation.
         </p>
       </div>
       <div class="decision">
         <h3>Project matching fails closed</h3>
         <p>
           Exact project roots, paths contained by one project, and recognized managed worktrees may
-          match automatically. Ambiguous paths, missing paths, deleted directories, and paths outside
-          every project remain unmatched. Adoption revalidates the match server-side rather than
-          trusting a client-provided classification.
+          match automatically. Ambiguous paths, missing paths, deleted directories, and paths
+          outside every project remain unmatched. Adoption revalidates the match server-side rather
+          than trusting a client-provided classification.
         </p>
       </div>
       <div class="decision">
@@ -223,15 +382,19 @@
         <h3>No claim of shared live ownership</h3>
         <p>
           This feature synchronizes persisted discovery and history. A different app-server process
-          may own an in-flight turn or approval stream. Synara must show such a candidate as busy when
-          reported by Codex and avoid promising live control until it can safely resume it. True
-          simultaneous control belongs to a later shared-daemon architecture.
+          may own an in-flight turn or approval stream. Synara must show such a candidate as busy
+          when reported by Codex and avoid promising live control until it can safely resume it.
+          True simultaneous control belongs to a later shared-daemon architecture.
         </p>
       </div>
 
       <h2>6. Contract design</h2>
-      <p>Add provider-neutral orchestration RPCs, while shipping only a Codex implementation initially:</p>
-      <pre>orchestration.listExternalThreads({ refresh?: boolean })
+      <p>
+        Add provider-neutral orchestration RPCs, while shipping only a Codex implementation
+        initially:
+      </p>
+      <pre>
+orchestration.listExternalThreads({ refresh?: boolean })
   -> {
        candidates: ExternalThreadCandidate[];
        refreshedAt: IsoDateTime;
@@ -258,145 +421,357 @@ ExternalThreadCandidate = {
   updatedAt;
   matchedProjectId: ProjectId | null;
   matchKind: "exact" | "descendant" | "managed-worktree" | "unmatched";
-}</pre>
+}</pre
+      >
       <p>
-        Keep the candidate intentionally small: <code>thread/list</code> already provides the sidebar
-        metadata, so discovery must not issue <code>thread/read</code> once per row. Return per-instance
-        warnings alongside successful candidates so one broken account does not hide healthy accounts.
+        Keep the candidate intentionally small: <code>thread/list</code> already provides the
+        sidebar metadata, so discovery must not issue <code>thread/read</code> once per row. Return
+        per-instance warnings alongside successful candidates so one broken account does not hide
+        healthy accounts.
       </p>
 
       <h2>7. Execution phases</h2>
       <div class="phase">
         <h3>Phase 1 — Codex thread listing adapter</h3>
         <ol>
-          <li>Add normalized manager types and <code>listExternalThreads()</code> around app-server <code>thread/list</code>.</li>
-          <li>Send explicit interactive <code>sourceKinds</code>, <code>archived: false</code>, recency sorting, and a bounded page size.</li>
-          <li>Support pagination internally up to a documented safety cap; return newest candidates first.</li>
-          <li>Resolve discovery context independently for each enabled Codex provider instance using its configured Codex options.</li>
-          <li>Normalize protocol drift defensively and reject malformed rows individually rather than failing the whole page.</li>
+          <li>
+            Add normalized manager types and <code>listExternalThreads()</code> around app-server
+            <code>thread/list</code>.
+          </li>
+          <li>
+            Send explicit interactive <code>sourceKinds</code>, <code>archived: false</code>,
+            recency sorting, and a bounded page size.
+          </li>
+          <li>
+            Support pagination internally up to a documented safety cap; return newest candidates
+            first.
+          </li>
+          <li>
+            Resolve discovery context independently for each enabled Codex provider instance using
+            its configured Codex options.
+          </li>
+          <li>
+            Normalize protocol drift defensively and reject malformed rows individually rather than
+            failing the whole page.
+          </li>
         </ol>
-        <p><strong>Primary files:</strong> <code>codexAppServerManager.ts</code>, <code>CodexAdapter.ts</code>, <code>ProviderAdapter.ts</code>, and focused tests.</p>
+        <p>
+          <strong>Primary files:</strong> <code>codexAppServerManager.ts</code>,
+          <code>CodexAdapter.ts</code>, <code>ProviderAdapter.ts</code>, and focused tests.
+        </p>
       </div>
 
       <div class="phase">
         <h3>Phase 2 — Discovery service, deduplication, and matching</h3>
         <ol>
-          <li>Create an orchestration discovery handler/service that lists all enabled Codex instances concurrently with a small concurrency bound.</li>
-          <li>Read existing <code>projection_thread_sessions</code> identities and remove already-bound candidates.</li>
-          <li>Extract project/worktree classification from the current import route into a shared server module.</li>
-          <li>Classify every candidate deterministically and attach warnings per provider instance.</li>
-          <li>Cache normalized results briefly in memory; allow explicit refresh and invalidate on settings/account changes.</li>
+          <li>
+            Create an orchestration discovery handler/service that lists all enabled Codex instances
+            concurrently with a small concurrency bound.
+          </li>
+          <li>
+            Read existing <code>projection_thread_sessions</code> identities and remove
+            already-bound candidates.
+          </li>
+          <li>
+            Extract project/worktree classification from the current import route into a shared
+            server module.
+          </li>
+          <li>
+            Classify every candidate deterministically and attach warnings per provider instance.
+          </li>
+          <li>
+            Cache normalized results briefly in memory; allow explicit refresh and invalidate on
+            settings/account changes.
+          </li>
         </ol>
-        <p><strong>Reliability rule:</strong> a failure in one account produces a warning for that account while preserving candidates from other accounts.</p>
+        <p>
+          <strong>Reliability rule:</strong> a failure in one account produces a warning for that
+          account while preserving candidates from other accounts.
+        </p>
       </div>
 
       <div class="phase">
         <h3>Phase 3 — Atomic server-owned adoption</h3>
         <ol>
-          <li>Add <code>adoptExternalThread</code> as the authoritative operation used by discovered rows.</li>
-          <li>Lock by external identity for the duration of adoption and recheck existing bindings before creating anything.</li>
-          <li>Re-read the external thread, revalidate cwd/project compatibility, then create the Synara thread with the external title and correct Codex instance.</li>
-          <li>Reuse the import route's provider start, resume cursor, worktree patch, history mapping, and session projection.</li>
-          <li>If adoption fails after thread creation, perform the same compensating deletion used by manual import and retain the external candidate for retry.</li>
-          <li>Keep manual ID import working; refactor both paths onto shared server operations rather than maintaining two import implementations.</li>
+          <li>
+            Add <code>adoptExternalThread</code> as the authoritative operation used by discovered
+            rows.
+          </li>
+          <li>
+            Lock by external identity for the duration of adoption and recheck existing bindings
+            before creating anything.
+          </li>
+          <li>
+            Re-read the external thread, revalidate cwd/project compatibility, then create the
+            Synara thread with the external title and correct Codex instance.
+          </li>
+          <li>
+            Reuse the import route's provider start, resume cursor, worktree patch, history mapping,
+            and session projection.
+          </li>
+          <li>
+            If adoption fails after thread creation, perform the same compensating deletion used by
+            manual import and retain the external candidate for retry.
+          </li>
+          <li>
+            Keep manual ID import working; refactor both paths onto shared server operations rather
+            than maintaining two import implementations.
+          </li>
         </ol>
-        <p><strong>Race behavior:</strong> concurrent adoption requests return the already-adopted Synara thread ID instead of creating duplicates.</p>
+        <p>
+          <strong>Race behavior:</strong> concurrent adoption requests return the already-adopted
+          Synara thread ID instead of creating duplicates.
+        </p>
       </div>
 
       <div class="phase">
         <h3>Phase 4 — Project-local sidebar and Search UX</h3>
         <ol>
-          <li>Fetch discovery data through a query with stale-time, reconnect refresh, and manual refresh behavior; do not continuously poll while the app is hidden.</li>
-          <li>Group matched candidates by project without inserting them into persisted thread stores.</li>
-          <li>Render a conditional <strong>From Codex · N</strong> disclosure before normal project rows using the shared disclosure motion.</li>
-          <li>Render <strong>Other Codex tasks</strong> below Projects only when unmatched candidates exist.</li>
-          <li>Add external candidates to Search with provider/source badges and project context.</li>
-          <li>On click, show an inline pending state, call adoption, invalidate discovery, refresh the shell snapshot, and navigate to the returned thread.</li>
-          <li>For unmatched rows, offer <strong>Add project from this folder</strong> and <strong>Choose project</strong>; never guess.</li>
+          <li>
+            Fetch discovery data through a query with stale-time, reconnect refresh, and manual
+            refresh behavior; do not continuously poll while the app is hidden.
+          </li>
+          <li>
+            Group matched candidates by project without inserting them into persisted thread stores.
+          </li>
+          <li>
+            Render a conditional <strong>From Codex · N</strong> disclosure before normal project
+            rows using the shared disclosure motion.
+          </li>
+          <li>
+            Render <strong>Other Codex tasks</strong> below Projects only when unmatched candidates
+            exist.
+          </li>
+          <li>
+            Add external candidates to Search with provider/source badges and project context.
+          </li>
+          <li>
+            On click, show an inline pending state, call adoption, invalidate discovery, refresh the
+            shell snapshot, and navigate to the returned thread.
+          </li>
+          <li>
+            For unmatched rows, offer <strong>Add project from this folder</strong> and
+            <strong>Choose project</strong>; never guess.
+          </li>
         </ol>
-        <p><strong>Primary files:</strong> <code>Sidebar.tsx</code>, <code>Sidebar.logic.ts</code>, <code>SidebarSearchPalette.tsx</code>, native API wiring, and focused component/logic tests.</p>
+        <p>
+          <strong>Primary files:</strong> <code>Sidebar.tsx</code>, <code>Sidebar.logic.ts</code>,
+          <code>SidebarSearchPalette.tsx</code>, native API wiring, and focused component/logic
+          tests.
+        </p>
       </div>
 
       <div class="phase">
         <h3>Phase 5 — Persisted-history reconciliation</h3>
         <ol>
-          <li>Make Codex snapshot message IDs prefer provider turn/item IDs, with positional IDs retained as a compatibility fallback.</li>
-          <li>Extract an idempotent history-sync operation that reads <code>thread/read</code> and replays only stable message projections.</li>
-          <li>Run reconciliation after adoption and before presenting a resumed adopted thread after reconnect/open.</li>
-          <li>Ensure repeated reconciliation updates existing message IDs rather than appending duplicates.</li>
-          <li>Keep reasoning/tool/activity reconstruction out of the first slice unless existing runtime ingestion can reuse provider item IDs safely; user and assistant messages are the acceptance boundary.</li>
+          <li>
+            Make Codex snapshot message IDs prefer provider turn/item IDs, with positional IDs
+            retained as a compatibility fallback.
+          </li>
+          <li>
+            Extract an idempotent history-sync operation that reads <code>thread/read</code> and
+            replays only stable message projections.
+          </li>
+          <li>
+            Run reconciliation after adoption and before presenting a resumed adopted thread after
+            reconnect/open.
+          </li>
+          <li>
+            Ensure repeated reconciliation updates existing message IDs rather than appending
+            duplicates.
+          </li>
+          <li>
+            Keep reasoning/tool/activity reconstruction out of the first slice unless existing
+            runtime ingestion can reuse provider item IDs safely; user and assistant messages are
+            the acceptance boundary.
+          </li>
         </ol>
       </div>
 
       <div class="phase">
         <h3>Phase 6 — Hardening, documentation, and rollout</h3>
         <ol>
-          <li>Add telemetry/logging for discovery duration, candidate count, per-instance failure, adoption, dedupe, and reconciliation.</li>
-          <li>Document that discovery reflects persisted Codex state, not guaranteed shared live control.</li>
-          <li>Gate the UI behind a default-on capability only when <code>thread/list</code> succeeds for the installed Codex protocol; otherwise hide the section and retain manual import.</li>
-          <li>Run focused tests during iteration, then the repository-required final verification pass once explicitly authorized.</li>
+          <li>
+            Add telemetry/logging for discovery duration, candidate count, per-instance failure,
+            adoption, dedupe, and reconciliation.
+          </li>
+          <li>
+            Document that discovery reflects persisted Codex state, not guaranteed shared live
+            control.
+          </li>
+          <li>
+            Gate the UI behind a default-on capability only when <code>thread/list</code> succeeds
+            for the installed Codex protocol; otherwise hide the section and retain manual import.
+          </li>
+          <li>
+            Run focused tests during iteration, then the repository-required final verification pass
+            once explicitly authorized.
+          </li>
         </ol>
       </div>
 
       <h2>8. Detailed edge cases</h2>
       <table>
-        <thead><tr><th>Case</th><th>Expected behavior</th></tr></thead>
+        <thead>
+          <tr>
+            <th>Case</th>
+            <th>Expected behavior</th>
+          </tr>
+        </thead>
         <tbody>
-          <tr><td>Synara-created thread appears in Codex listing</td><td>Suppressed by provider-instance + provider-thread identity.</td></tr>
-          <tr><td>Same external thread listed twice</td><td>Normalize to one candidate per external identity; newest metadata wins.</td></tr>
-          <tr><td>Two accounts expose the same raw UUID</td><td>Remain distinct because provider instance is part of identity.</td></tr>
-          <tr><td>Codex thread cwd is a managed worktree</td><td>Match its owning project and preserve worktree metadata during adoption.</td></tr>
-          <tr><td>Thread cwd is beneath more than one project root</td><td>Use the most specific canonical root only when unambiguous; otherwise unmatched.</td></tr>
-          <tr><td>Thread path no longer exists</td><td>Show unmatched with disabled adoption and a concise explanation.</td></tr>
-          <tr><td>External thread is currently active elsewhere</td><td>Show busy status; do not imply approvals or deltas are attached to Synara.</td></tr>
-          <tr><td>Candidate disappears between listing and click</td><td>Adoption fails cleanly, removes pending UI, and prompts refresh.</td></tr>
-          <tr><td>Adoption request is double-clicked</td><td>Server identity lock returns one local thread.</td></tr>
-          <tr><td>One provider instance is misconfigured</td><td>Other accounts still populate; account-specific warning is non-blocking.</td></tr>
-          <tr><td>Codex protocol lacks <code>thread/list</code></td><td>Capability remains unavailable; manual ID import continues to work.</td></tr>
-          <tr><td>Externally appended messages after adoption</td><td>Next open/reconnect reconciles them idempotently.</td></tr>
-          <tr><td>External rollback rewrites history</td><td>Do not destructively remove Synara history in v1; log divergence and refresh stable messages only.</td></tr>
+          <tr>
+            <td>Synara-created thread appears in Codex listing</td>
+            <td>Suppressed by provider-instance + provider-thread identity.</td>
+          </tr>
+          <tr>
+            <td>Same external thread listed twice</td>
+            <td>Normalize to one candidate per external identity; newest metadata wins.</td>
+          </tr>
+          <tr>
+            <td>Two accounts expose the same raw UUID</td>
+            <td>Remain distinct because provider instance is part of identity.</td>
+          </tr>
+          <tr>
+            <td>Codex thread cwd is a managed worktree</td>
+            <td>Match its owning project and preserve worktree metadata during adoption.</td>
+          </tr>
+          <tr>
+            <td>Thread cwd is beneath more than one project root</td>
+            <td>
+              Use the most specific canonical root only when unambiguous; otherwise unmatched.
+            </td>
+          </tr>
+          <tr>
+            <td>Thread path no longer exists</td>
+            <td>Show unmatched with disabled adoption and a concise explanation.</td>
+          </tr>
+          <tr>
+            <td>External thread is currently active elsewhere</td>
+            <td>Show busy status; do not imply approvals or deltas are attached to Synara.</td>
+          </tr>
+          <tr>
+            <td>Candidate disappears between listing and click</td>
+            <td>Adoption fails cleanly, removes pending UI, and prompts refresh.</td>
+          </tr>
+          <tr>
+            <td>Adoption request is double-clicked</td>
+            <td>Server identity lock returns one local thread.</td>
+          </tr>
+          <tr>
+            <td>One provider instance is misconfigured</td>
+            <td>Other accounts still populate; account-specific warning is non-blocking.</td>
+          </tr>
+          <tr>
+            <td>Codex protocol lacks <code>thread/list</code></td>
+            <td>Capability remains unavailable; manual ID import continues to work.</td>
+          </tr>
+          <tr>
+            <td>Externally appended messages after adoption</td>
+            <td>Next open/reconnect reconciles them idempotently.</td>
+          </tr>
+          <tr>
+            <td>External rollback rewrites history</td>
+            <td>
+              Do not destructively remove Synara history in v1; log divergence and refresh stable
+              messages only.
+            </td>
+          </tr>
         </tbody>
       </table>
 
       <h2>9. Verification strategy</h2>
       <h3>Focused automated coverage</h3>
       <ul>
-        <li><code>codexAppServerManager.test.ts</code>: request shape, pagination, malformed rows, source filtering, protocol errors.</li>
-        <li><code>CodexAdapter</code> tests: normalized external summaries and provider-instance options.</li>
-        <li>Discovery service tests: multi-account partial failure, dedupe, exact/descendant/worktree/unmatched classification.</li>
-        <li><code>importThreadRoute.test.ts</code>: discovered adoption, race dedupe, compensating deletion, and manual import regression.</li>
-        <li><code>importedThreadMessages</code> tests: stable provider IDs and repeated reconciliation.</li>
+        <li>
+          <code>codexAppServerManager.test.ts</code>: request shape, pagination, malformed rows,
+          source filtering, protocol errors.
+        </li>
+        <li>
+          <code>CodexAdapter</code> tests: normalized external summaries and provider-instance
+          options.
+        </li>
+        <li>
+          Discovery service tests: multi-account partial failure, dedupe,
+          exact/descendant/worktree/unmatched classification.
+        </li>
+        <li>
+          <code>importThreadRoute.test.ts</code>: discovered adoption, race dedupe, compensating
+          deletion, and manual import regression.
+        </li>
+        <li>
+          <code>importedThreadMessages</code> tests: stable provider IDs and repeated
+          reconciliation.
+        </li>
         <li>Contract encode/decode tests for both new RPCs and warnings.</li>
-        <li><code>Sidebar.logic.test.ts</code>: grouping, counts, disappearance after adoption, unmatched ordering.</li>
-        <li>Sidebar/Search browser tests: disclosure, badges, pending/error states, keyboard access, and navigation.</li>
+        <li>
+          <code>Sidebar.logic.test.ts</code>: grouping, counts, disappearance after adoption,
+          unmatched ordering.
+        </li>
+        <li>
+          Sidebar/Search browser tests: disclosure, badges, pending/error states, keyboard access,
+          and navigation.
+        </li>
       </ul>
       <h3>Manual acceptance checklist</h3>
       <ul class="checklist">
-        <li>[ ] Create a Codex App task in an existing Synara project; it appears under that project's <strong>From Codex</strong> section after refresh/reconnect.</li>
-        <li>[ ] Create a CLI task in the same project; source badge and title/preview are correct.</li>
-        <li>[ ] Create a task in an unknown directory; it appears under <strong>Other Codex tasks</strong>.</li>
-        <li>[ ] Adopt a matched task; it moves once into the normal list and opens with prior messages.</li>
+        <li>
+          [ ] Create a Codex App task in an existing Synara project; it appears under that project's
+          <strong>From Codex</strong> section after refresh/reconnect.
+        </li>
+        <li>
+          [ ] Create a CLI task in the same project; source badge and title/preview are correct.
+        </li>
+        <li>
+          [ ] Create a task in an unknown directory; it appears under
+          <strong>Other Codex tasks</strong>.
+        </li>
+        <li>
+          [ ] Adopt a matched task; it moves once into the normal list and opens with prior
+          messages.
+        </li>
         <li>[ ] Restart Synara; the adopted task does not return as external.</li>
-        <li>[ ] Add a turn from Codex App, then reopen in Synara; the new persisted messages appear once.</li>
-        <li>[ ] Configure two Codex accounts; each discovers only its own home and one account failure does not blank the other.</li>
-        <li>[ ] Exercise a managed worktree; the task attaches to the parent project and resumes in the original worktree.</li>
-        <li>[ ] Confirm subagents, archived tasks, ephemeral tasks, and exec runs do not clutter the section.</li>
+        <li>
+          [ ] Add a turn from Codex App, then reopen in Synara; the new persisted messages appear
+          once.
+        </li>
+        <li>
+          [ ] Configure two Codex accounts; each discovers only its own home and one account failure
+          does not blank the other.
+        </li>
+        <li>
+          [ ] Exercise a managed worktree; the task attaches to the parent project and resumes in
+          the original worktree.
+        </li>
+        <li>
+          [ ] Confirm subagents, archived tasks, ephemeral tasks, and exec runs do not clutter the
+          section.
+        </li>
         <li>[ ] Confirm manual thread-ID import still works.</li>
       </ul>
       <p>
         Per repository instructions, do not run <code>bun fmt</code>, <code>bun lint</code>, or
         <code>bun typecheck</code> unless explicitly requested in the implementation conversation.
         Before implementation is considered complete, obtain authorization and run them together as
-        one final heavyweight verification pass. Use <code>bun run test</code>, never <code>bun test</code>.
+        one final heavyweight verification pass. Use <code>bun run test</code>, never
+        <code>bun test</code>.
       </p>
 
       <h2>10. Performance and failure budgets</h2>
       <ul>
         <li>No per-candidate <code>thread/read</code> during listing.</li>
         <li>Bound pages and concurrent provider-instance discovery.</li>
-        <li>Use Codex state-DB-only listing for routine refreshes when supported; reserve scan-and-repair for first/manual refresh.</li>
-        <li>Cache briefly and refresh on app reconnect, explicit refresh, or stale query focus—not on every sidebar render.</li>
-        <li>A discovery failure must never affect the orchestration shell snapshot or existing thread navigation.</li>
+        <li>
+          Use Codex state-DB-only listing for routine refreshes when supported; reserve
+          scan-and-repair for first/manual refresh.
+        </li>
+        <li>
+          Cache briefly and refresh on app reconnect, explicit refresh, or stale query focus—not on
+          every sidebar render.
+        </li>
+        <li>
+          A discovery failure must never affect the orchestration shell snapshot or existing thread
+          navigation.
+        </li>
         <li>Adoption and reconciliation errors are scoped to one external identity.</li>
       </ul>
 
@@ -404,37 +779,116 @@ ExternalThreadCandidate = {
       <ul>
         <li>Importing every historical or archived Codex thread automatically.</li>
         <li>Displaying subagent trees as independent external tasks.</li>
-        <li>Mirroring in-flight deltas or approval requests from a separately owned app-server process.</li>
+        <li>
+          Mirroring in-flight deltas or approval requests from a separately owned app-server
+          process.
+        </li>
         <li>Automatically deleting Synara messages after an external rollback.</li>
-        <li>Generalizing discovery to Claude, OpenCode, Kilo, or other providers in this implementation.</li>
+        <li>
+          Generalizing discovery to Claude, OpenCode, Kilo, or other providers in this
+          implementation.
+        </li>
         <li>Replacing manual provider-thread import.</li>
       </ul>
 
       <h2>12. Implementation file map</h2>
       <table>
-        <thead><tr><th>Area</th><th>Expected files</th></tr></thead>
+        <thead>
+          <tr>
+            <th>Area</th>
+            <th>Expected files</th>
+          </tr>
+        </thead>
         <tbody>
-          <tr><td>Protocol contracts</td><td><code>packages/contracts/src/orchestration.ts</code>, <code>ws.ts</code>, <code>rpc.ts</code>, <code>ipc.ts</code></td></tr>
-          <tr><td>Codex protocol boundary</td><td><code>apps/server/src/codexAppServerManager.ts</code> and tests</td></tr>
-          <tr><td>Provider abstraction</td><td><code>ProviderAdapter.ts</code>, <code>CodexAdapter.ts</code> and tests</td></tr>
-          <tr><td>Orchestration</td><td>new external-thread discovery module, shared import/adoption helpers, <code>wsRpc.ts</code></td></tr>
-          <tr><td>Projection lookup</td><td><code>ProjectionSnapshotQuery.ts</code> and tests; optional measured lookup index migration</td></tr>
-          <tr><td>Web transport</td><td><code>wsNativeApi.ts</code> and API contract adapters</td></tr>
-          <tr><td>Sidebar/Search</td><td><code>Sidebar.tsx</code>, sidebar logic/tests, <code>SidebarSearchPalette.tsx</code> and browser tests</td></tr>
-          <tr><td>Documentation</td><td><code>docs/providers/codex.md</code> and implementation recap if repository convention requires it</td></tr>
+          <tr>
+            <td>Protocol contracts</td>
+            <td>
+              <code>packages/contracts/src/orchestration.ts</code>, <code>ws.ts</code>,
+              <code>rpc.ts</code>, <code>ipc.ts</code>
+            </td>
+          </tr>
+          <tr>
+            <td>Codex protocol boundary</td>
+            <td><code>apps/server/src/codexAppServerManager.ts</code> and tests</td>
+          </tr>
+          <tr>
+            <td>Provider abstraction</td>
+            <td><code>ProviderAdapter.ts</code>, <code>CodexAdapter.ts</code> and tests</td>
+          </tr>
+          <tr>
+            <td>Orchestration</td>
+            <td>
+              new external-thread discovery module, shared import/adoption helpers,
+              <code>wsRpc.ts</code>
+            </td>
+          </tr>
+          <tr>
+            <td>Projection lookup</td>
+            <td>
+              <code>ProjectionSnapshotQuery.ts</code> and tests; optional measured lookup index
+              migration
+            </td>
+          </tr>
+          <tr>
+            <td>Web transport</td>
+            <td><code>wsNativeApi.ts</code> and API contract adapters</td>
+          </tr>
+          <tr>
+            <td>Sidebar/Search</td>
+            <td>
+              <code>Sidebar.tsx</code>, sidebar logic/tests,
+              <code>SidebarSearchPalette.tsx</code> and browser tests
+            </td>
+          </tr>
+          <tr>
+            <td>Documentation</td>
+            <td>
+              <code>docs/providers/codex.md</code> and implementation recap if repository convention
+              requires it
+            </td>
+          </tr>
         </tbody>
       </table>
 
       <h2>13. Progress log</h2>
       <ul>
-        <li><span class="good">2026-07-12:</span> Confirmed installed Codex CLI 0.144.1 exposes <code>thread/list</code> with cwd, source, status, timestamps, preview, provider, and pagination.</li>
-        <li><span class="good">2026-07-12:</span> Confirmed Synara already supports external <code>thread/read</code>, manual import, workspace/worktree resolution, history mapping, and resume.</li>
-        <li><span class="good">2026-07-12:</span> Chosen project-local <strong>From Codex</strong> placement with a global unmatched fallback.</li>
-        <li><span class="warn">Pending implementation:</span> Validate protocol behavior against real Codex App, CLI, multiple accounts, and an active external task.</li>
+        <li>
+          <span class="good">2026-07-12:</span> Confirmed installed Codex CLI 0.144.1 exposes
+          <code>thread/list</code> with cwd, source, status, timestamps, preview, provider, and
+          pagination.
+        </li>
+        <li>
+          <span class="good">2026-07-12:</span> Confirmed Synara already supports external
+          <code>thread/read</code>, manual import, workspace/worktree resolution, history mapping,
+          and resume.
+        </li>
+        <li>
+          <span class="good">2026-07-12:</span> Chosen project-local
+          <strong>From Codex</strong> placement with a global unmatched fallback.
+        </li>
+        <li>
+          <span class="good">2026-07-12:</span> Implemented bounded multi-account discovery,
+          fail-closed project matching, idempotent adoption, sidebar/Search UX, and adoption-only
+          persisted-history reconciliation.
+        </li>
+        <li>
+          <span class="good">2026-07-12:</span> Added focused protocol, orchestration, transport,
+          sidebar logic, browser interaction, and stable-message reconciliation coverage.
+        </li>
+        <li>
+          <span class="good">2026-07-12:</span> Completed the repository verification gate:
+          formatting, lint with zero errors, full typecheck, production builds, and 5,415 passing
+          tests with 7 skipped.
+        </li>
+        <li>
+          <span class="warn">Manual acceptance:</span> Validate the completed flow against the
+          user's real Codex App, CLI, multiple accounts, and an active external task after rollout.
+        </li>
       </ul>
 
       <h2>14. Suggested commits</h2>
-      <pre>feat(codex): discover external threads across provider instances
+      <pre>
+feat(codex): discover external threads across provider instances
 
 feat(orchestration): adopt discovered Codex threads safely
 
@@ -442,7 +896,8 @@ feat(sidebar): surface external Codex tasks by project
 
 fix(codex): reconcile adopted thread history idempotently
 
-docs(codex): document external thread discovery boundaries</pre>
+docs(codex): document external thread discovery boundaries</pre
+      >
     </main>
   </body>
 </html>

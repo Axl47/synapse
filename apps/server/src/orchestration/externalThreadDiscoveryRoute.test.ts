@@ -111,8 +111,7 @@ describe("makeExternalThreadDiscoveryHandler", () => {
       path: path as unknown as Path.Path,
       platform: "darwin",
       projectionSnapshotQuery: {
-        getShellSnapshot: () =>
-          Effect.succeed({ snapshotSequence: 1, projects: [], threads: [] }),
+        getShellSnapshot: () => Effect.succeed({ snapshotSequence: 1, projects: [], threads: [] }),
       } as never,
       providerAdapterRegistry: {
         getByInstance: () => Effect.succeed({ listExternalThreads } as never),

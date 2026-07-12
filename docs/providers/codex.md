@@ -52,3 +52,32 @@ runs against the same home are picked up automatically.
   never alias each other's credentials.
 - Threads keep the instance they started with; switching the account of a
   thread with a live session restarts the provider session.
+
+## Tasks created outside Synara
+
+When the installed Codex App Server supports `thread/list`, Synara discovers
+persisted tasks created by Codex App, the Codex CLI, and VS Code. Discovery is
+read-only and runs independently for every enabled Codex provider instance.
+
+- A task whose working directory matches a Synara project appears in that
+  project's **From Codex** section.
+- Tasks without a safe, unambiguous project match appear under **Other Codex
+  tasks**. You can add their folder as a project or explicitly choose an
+  existing project; Synara never guesses.
+- Tasks already owned by Synara or previously adopted are filtered by provider
+  instance plus Codex thread identity, so account-local IDs remain distinct.
+- A task reported as active in another client is shown as busy and cannot be
+  adopted until that turn settles.
+
+Opening a discovered task explicitly adopts it into Synara through the normal
+import/resume path. Synara imports persisted user and assistant messages, then
+reconciles those stable message records whenever the adopted task is opened or
+reconnected. This is persisted-history interoperability, not shared live
+control: approvals, partial streaming output, and in-flight state from another
+Codex client are not attached to Synara.
+
+Discovery is briefly cached and refreshes on reconnect, window focus after it
+becomes stale, or the manual refresh button. Failure in one account does not
+hide results from other accounts or affect existing Synara projects. If the
+installed Codex protocol does not support discovery, these sections stay hidden
+and manual thread-ID import remains available.

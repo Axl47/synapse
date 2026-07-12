@@ -55,14 +55,11 @@ export interface ExternalThreadDiscoveryHandlerOptions {
   readonly serverSettings: ServerSettingsShape;
 }
 
-export function makeExternalThreadDiscoveryHandler(
-  options: ExternalThreadDiscoveryHandlerOptions,
-) {
+export function makeExternalThreadDiscoveryHandler(options: ExternalThreadDiscoveryHandlerOptions) {
   const cache = new Map<ProviderInstanceId, CachedInstanceThreads>();
 
-  return Effect.fnUntraced(function* (
-    input: OrchestrationListExternalThreadsInput,
-  ) {
+  return Effect.fnUntraced(function* (input: OrchestrationListExternalThreadsInput) {
+    const startedAt = Date.now();
     const [settings, shell, bindings] = yield* Effect.all([
       options.serverSettings.getSettings,
       options.projectionSnapshotQuery.getShellSnapshot(),
@@ -109,7 +106,7 @@ export function makeExternalThreadDiscoveryHandler(
           const result = yield* adapter
             .listExternalThreads({
               providerInstanceId: instance.instanceId,
-              providerOptions,
+              ...(providerOptions ? { providerOptions } : {}),
               useStateDbOnly: input.refresh !== true,
               maxThreads: DISCOVERY_MAX_THREADS_PER_INSTANCE,
             })
@@ -133,11 +130,20 @@ export function makeExternalThreadDiscoveryHandler(
 
     const candidates: ExternalThreadCandidate[] = [];
     const seen = new Set<string>();
+    let duplicateCount = 0;
+    let adoptedCount = 0;
     for (const { instance, result } of instanceResults) {
       if (!result) continue;
       for (const thread of result.threads) {
         const externalKey = `${instance.instanceId}:${thread.externalThreadId}`;
-        if (seen.has(externalKey) || boundExternalKeys.has(externalKey)) continue;
+        if (seen.has(externalKey)) {
+          duplicateCount += 1;
+          continue;
+        }
+        if (boundExternalKeys.has(externalKey)) {
+          adoptedCount += 1;
+          continue;
+        }
         seen.add(externalKey);
         const match = yield* resolveExternalThreadWorkspaceMatch({
           cwd: thread.cwd,
@@ -166,12 +172,25 @@ export function makeExternalThreadDiscoveryHandler(
     }
 
     candidates.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+    const warnings = instanceResults.flatMap(({ instance, warning }) =>
+      warning ? [{ providerInstanceId: instance.instanceId, message: warning }] : [],
+    );
+    yield* Effect.logInfo("external Codex thread discovery completed", {
+      durationMs: Date.now() - startedAt,
+      instanceCount: instances.length,
+      candidateCount: candidates.length,
+      duplicateCount,
+      adoptedCount,
+      warningCount: warnings.length,
+      refresh: input.refresh === true,
+    });
+    for (const warning of warnings) {
+      yield* Effect.logWarning("external Codex thread discovery instance failed", warning);
+    }
     return {
       candidates,
       refreshedAt: new Date(now).toISOString(),
-      warnings: instanceResults.flatMap(({ instance, warning }) =>
-        warning ? [{ providerInstanceId: instance.instanceId, message: warning }] : [],
-      ),
+      warnings,
       truncated: instanceResults.some(({ result }) => result?.truncated === true),
     } satisfies OrchestrationListExternalThreadsResult;
   });

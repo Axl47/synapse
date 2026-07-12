@@ -559,6 +559,7 @@ import {
   buildModelSelection,
   buildNextProviderOptions,
   mergeDynamicModelOptions,
+  type ProviderModelOption,
 } from "../providerModelOptions";
 import {
   isDuplicateProjectCreateError,
@@ -575,11 +576,7 @@ const EMPTY_KEYBINDINGS: ResolvedKeybindingsConfig = [];
 const EMPTY_PROJECT_ENTRIES: ProjectEntry[] = [];
 const EMPTY_PROVIDER_NATIVE_COMMANDS: ProviderNativeCommandDescriptor[] = [];
 const EMPTY_PROVIDER_SKILLS: ProviderSkillDescriptor[] = [];
-const EMPTY_COMPOSER_SUGGESTIONS: ComposerSuggestion[] = [];
-const EMPTY_SUGGESTION_SOURCE_THREADS: Thread[] = [];
 const EMPTY_COMPOSER_PASTED_TEXTS: PastedTextDraft[] = [];
-const selectEmptyComposerSuggestionThreads: ReturnType<typeof createAllThreadsSelector> = () =>
-  EMPTY_SUGGESTION_SOURCE_THREADS;
 const LOCAL_PROJECT_DRAFT_CONTEXT = {
   envMode: "local",
   worktreePath: null,
@@ -1438,17 +1435,14 @@ export default function ChatView({
     collapseExpandedComposerCursor(prompt, prompt.length),
   );
   const composerCursorRef = useRef(composerCursor);
-  const setComposerCursor = useCallback(
-    (next: number | ((existing: number) => number)) => {
-      const resolved =
-        typeof next === "function"
-          ? (next as (existing: number) => number)(composerCursorRef.current)
-          : next;
-      composerCursorRef.current = resolved;
-      setComposerCursorState(resolved);
-    },
-    [],
-  );
+  const setComposerCursor = useCallback((next: number | ((existing: number) => number)) => {
+    const resolved =
+      typeof next === "function"
+        ? (next as (existing: number) => number)(composerCursorRef.current)
+        : next;
+    composerCursorRef.current = resolved;
+    setComposerCursorState(resolved);
+  }, []);
   const [composerTrigger, setComposerTriggerState] = useState<ComposerTrigger | null>(() =>
     detectComposerTrigger(prompt, prompt.length),
   );
@@ -4241,9 +4235,7 @@ export default function ChatView({
           type: "error",
           title: "Could not open browser",
           description:
-            error instanceof Error
-              ? error.message
-              : "The in-app browser could not open this URL.",
+            error instanceof Error ? error.message : "The in-app browser could not open this URL.",
         });
       });
       if (onOpenBrowserUrl) {
@@ -4872,8 +4864,7 @@ export default function ChatView({
         const terminalIdsToClose = groupToClose
           ? collectTerminalIdsFromLayout(groupToClose.layout)
           : [];
-        const isClosingAllTerminals =
-          terminalIdsToClose.length >= terminalState.terminalIds.length;
+        const isClosingAllTerminals = terminalIdsToClose.length >= terminalState.terminalIds.length;
         for (const terminalId of terminalIdsToClose) {
           disposeAndCloseTerminalSession({
             api,

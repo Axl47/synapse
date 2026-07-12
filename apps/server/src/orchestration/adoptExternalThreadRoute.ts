@@ -74,6 +74,11 @@ export function makeAdoptExternalThreadHandler(options: AdoptExternalThreadHandl
     );
     if (existing) {
       yield* markAdopted(existing);
+      yield* Effect.logInfo("external Codex thread adoption reused existing binding", {
+        externalThreadId,
+        providerInstanceId: input.providerInstanceId,
+        threadId: existing.threadId,
+      });
       return { threadId: existing.threadId } satisfies OrchestrationAdoptExternalThreadResult;
     }
 
@@ -186,6 +191,13 @@ export function makeAdoptExternalThreadHandler(options: AdoptExternalThreadHandl
     if (Option.isSome(importedBinding)) {
       yield* markAdopted(importedBinding.value);
     }
+    yield* Effect.logInfo("external Codex thread adopted", {
+      externalThreadId,
+      providerInstanceId: input.providerInstanceId,
+      projectId: project.id,
+      threadId: imported.threadId,
+      explicitlyAssigned: explicitlyAssignedUnmatchedProject,
+    });
     return { threadId: imported.threadId } satisfies OrchestrationAdoptExternalThreadResult;
   });
 

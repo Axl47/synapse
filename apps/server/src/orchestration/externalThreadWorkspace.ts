@@ -22,17 +22,11 @@ function containingProjectMatches(input: {
 }): ReadonlyArray<OrchestrationProjectShell> {
   return input.projects
     .filter((project) => {
-      if (
-        workspaceRootsEqual(project.workspaceRoot, input.cwd, { platform: input.platform })
-      ) {
+      if (workspaceRootsEqual(project.workspaceRoot, input.cwd, { platform: input.platform })) {
         return true;
       }
       const relative = input.path.relative(project.workspaceRoot, input.cwd);
-      return (
-        relative.length > 0 &&
-        !relative.startsWith("..") &&
-        !input.path.isAbsolute(relative)
-      );
+      return relative.length > 0 && !relative.startsWith("..") && !input.path.isAbsolute(relative);
     })
     .toSorted((left, right) => right.workspaceRoot.length - left.workspaceRoot.length);
 }

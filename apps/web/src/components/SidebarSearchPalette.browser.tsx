@@ -7,7 +7,7 @@ import { page } from "vitest/browser";
 import { describe, expect, it, vi } from "vitest";
 import { render } from "vitest-browser-react";
 
-import type { ExternalThreadCandidate } from "@synara/contracts";
+import { ProjectId, type ExternalThreadCandidate } from "@synara/contracts";
 import type { ThreadImportTarget } from "../lib/threadImport";
 import { SidebarSearchPalette } from "./SidebarSearchPalette";
 
@@ -119,7 +119,7 @@ describe("SidebarSearchPalette external threads", () => {
       modelProvider: "openai",
       createdAt: "2026-07-12T12:00:00.000Z",
       updatedAt: "2026-07-12T12:05:00.000Z",
-      matchedProjectId: "project-1",
+      matchedProjectId: ProjectId.makeUnsafe("project-1"),
       matchKind: "exact",
     } as const satisfies ExternalThreadCandidate;
     const screen = await render(

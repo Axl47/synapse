@@ -22,10 +22,9 @@ export interface CodexAdoptedThreadHistorySyncOptions {
   readonly serverSettings: ServerSettingsShape;
 }
 
-export function makeCodexAdoptedThreadHistorySync(
-  options: CodexAdoptedThreadHistorySyncOptions,
-) {
+export function makeCodexAdoptedThreadHistorySync(options: CodexAdoptedThreadHistorySyncOptions) {
   return Effect.fnUntraced(function* (threadId: ThreadId) {
+    const startedAt = Date.now();
     const bindingOption = yield* options.providerSessionDirectory.getBinding(threadId);
     if (Option.isNone(bindingOption)) return false;
     const binding = bindingOption.value;
@@ -65,6 +64,12 @@ export function makeCodexAdoptedThreadHistorySync(
         createdAt: reconciledAt,
       });
     }
+    yield* Effect.logInfo("adopted Codex thread history reconciled", {
+      threadId,
+      externalThreadId,
+      messageCount: messages.length,
+      durationMs: Date.now() - startedAt,
+    });
     return true;
   });
 }

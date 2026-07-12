@@ -13,6 +13,7 @@ export function externalThreadIdFromResumeCursor(value: unknown): string | null 
 export function isAdoptedExternalThreadBinding(binding: ProviderRuntimeBinding): boolean {
   if (!binding.runtimePayload || typeof binding.runtimePayload !== "object") return false;
   return (
-    (binding.runtimePayload as Record<string, unknown>)[ADOPTED_EXTERNAL_THREAD_RUNTIME_KEY] === true
+    (binding.runtimePayload as Record<string, unknown>)[ADOPTED_EXTERNAL_THREAD_RUNTIME_KEY] ===
+    true
   );
 }

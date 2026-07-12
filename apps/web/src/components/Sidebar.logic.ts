@@ -48,9 +48,7 @@ export const DEBUG_FEATURE_FLAGS_MENU_STORAGE_KEY = "synara:show-debug-feature-f
 export type SidebarNewThreadEnvMode = "local" | "worktree";
 export type SidebarView = "threads" | "studio" | "workspace";
 
-export function groupExternalThreadsByProject(
-  candidates: ReadonlyArray<ExternalThreadCandidate>,
-): {
+export function groupExternalThreadsByProject(candidates: ReadonlyArray<ExternalThreadCandidate>): {
   readonly byProjectId: ReadonlyMap<ProjectId, ReadonlyArray<ExternalThreadCandidate>>;
   readonly unmatched: ReadonlyArray<ExternalThreadCandidate>;
 } {

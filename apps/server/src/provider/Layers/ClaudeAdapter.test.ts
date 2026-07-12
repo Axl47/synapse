@@ -4871,7 +4871,7 @@ describe("ClaudeAdapterLive", () => {
         threadId: THREAD_ID,
         provider: "claudeAgent",
         runtimeMode: "full-access",
-        modelSelection: { provider: "claudeAgent", model: "claude-sonnet-5" },
+        modelSelection: { instanceId: "claudeAgent", model: "claude-sonnet-5" },
       });
       harness.query.emit({
         type: "result",

@@ -586,8 +586,7 @@ export function createWsNativeApi(): NativeApi {
     server: {
       getConfig: () => transport.request(WS_METHODS.serverGetConfig),
       getDesktopContext: () => transport.request(WS_METHODS.serverGetDesktopContext),
-      setDesktopContext: (input) =>
-        transport.request(WS_METHODS.serverSetDesktopContext, input),
+      setDesktopContext: (input) => transport.request(WS_METHODS.serverSetDesktopContext, input),
       getEnvironment: () => transport.request(WS_METHODS.serverGetEnvironment),
       getSettings: () => transport.request(WS_METHODS.serverGetSettings),
       updateSettings: (input) => transport.request(WS_METHODS.serverUpdateSettings, input),

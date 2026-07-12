@@ -2920,7 +2920,9 @@ export default function Sidebar() {
           type: "error",
           title: "Could not open Codex task",
           description:
-            error instanceof Error ? error.message : "The external Codex task could not be adopted.",
+            error instanceof Error
+              ? error.message
+              : "The external Codex task could not be adopted.",
         });
       } finally {
         setAdoptingExternalThreadKey((current) => (current === key ? null : current));
@@ -4187,7 +4189,8 @@ export default function Sidebar() {
 
       const nextTitle =
         project.localName === null
-          ? (pickedPath.split(/[/\\]/).findLast(isNonEmptyString) ?? project.remoteName)
+          ? (pickedPath.split(/[/\\]/).findLast((segment) => segment.length > 0) ??
+            project.remoteName)
           : undefined;
 
       try {
@@ -5904,36 +5907,38 @@ export default function Sidebar() {
     const isAdopting = adoptingExternalThreadKey === key;
     const isActiveElsewhere = candidate.status === "active";
     return (
-        <SidebarMenuSubButton
-          key={key}
-          render={<button type="button" />}
-          size="sm"
-          disabled={isAdopting || isActiveElsewhere}
-          aria-label={
-            isActiveElsewhere
-              ? `${candidate.title}, active in another Codex client`
-              : `Open external Codex task ${candidate.title}`
-          }
-          title={
-            isActiveElsewhere
-              ? "This task is active in another Codex client. It can be adopted after the turn settles."
-              : candidate.cwd
-          }
-          className="h-7 w-full translate-x-0 justify-start gap-2 rounded-lg pr-2 pl-6 text-left text-[length:var(--app-font-size-ui,12px)] text-muted-foreground/89 hover:bg-[var(--sidebar-accent)] disabled:cursor-default disabled:opacity-60"
-          onClick={() => void handleAdoptExternalThread(candidate)}
-        >
-          <ProviderIcon provider="codex" />
-          <span className="min-w-0 flex-1 truncate">{candidate.title}</span>
-          <span className="shrink-0 text-[length:var(--app-font-size-ui-meta,10px)] text-muted-foreground/58">
-            {isAdopting
-              ? "Opening…"
-              : isActiveElsewhere
-                ? "Active elsewhere"
-                : candidate.sourceKind === "appServer"
-                  ? "Codex App"
-                  : candidate.sourceKind}
-          </span>
-        </SidebarMenuSubButton>
+      <SidebarMenuSubButton
+        key={key}
+        render={<button type="button" />}
+        size="sm"
+        aria-disabled={isAdopting || isActiveElsewhere}
+        aria-label={
+          isActiveElsewhere
+            ? `${candidate.title}, active in another Codex client`
+            : `Open external Codex task ${candidate.title}`
+        }
+        title={
+          isActiveElsewhere
+            ? "This task is active in another Codex client. It can be adopted after the turn settles."
+            : candidate.cwd
+        }
+        className="h-7 w-full translate-x-0 justify-start gap-2 rounded-lg pr-2 pl-6 text-left text-[length:var(--app-font-size-ui,12px)] text-muted-foreground/89 hover:bg-[var(--sidebar-accent)] disabled:cursor-default disabled:opacity-60"
+        onClick={() => {
+          if (!isAdopting && !isActiveElsewhere) void handleAdoptExternalThread(candidate);
+        }}
+      >
+        <ProviderIcon provider="codex" />
+        <span className="min-w-0 flex-1 truncate">{candidate.title}</span>
+        <span className="shrink-0 text-[length:var(--app-font-size-ui-meta,10px)] text-muted-foreground/58">
+          {isAdopting
+            ? "Opening…"
+            : isActiveElsewhere
+              ? "Active elsewhere"
+              : candidate.sourceKind === "appServer"
+                ? "Codex App"
+                : candidate.sourceKind}
+        </span>
+      </SidebarMenuSubButton>
     );
   }
 
@@ -5942,32 +5947,32 @@ export default function Sidebar() {
     if (candidates.length === 0) return null;
     const open = !collapsedExternalProjectIds.has(projectId);
     return (
-        <SidebarMenuSubItem className="w-full">
-          <SidebarMenuSubButton
-            render={<button type="button" />}
-            size="sm"
-            aria-expanded={open}
-            className="h-7 w-full translate-x-0 justify-start gap-1 rounded-lg pr-2 pl-6 text-left text-[length:var(--app-font-size-ui-meta,10px)] font-medium text-muted-foreground/68 hover:bg-[var(--sidebar-accent)]"
-            onClick={() =>
-              setCollapsedExternalProjectIds((current) => {
-                const next = new Set(current);
-                if (next.has(projectId)) next.delete(projectId);
-                else next.add(projectId);
-                return next;
-              })
-            }
-          >
-            <span>From Codex · {candidates.length}</span>
-            <DisclosureChevron open={open} className="text-muted-foreground/58" />
-          </SidebarMenuSubButton>
-          <div className={disclosureShellClassName(open)}>
-            <div className={DISCLOSURE_INNER_CLASS}>
-              <div className={cn("space-y-0.5", disclosureContentClassName(open))}>
-                {candidates.map(renderExternalThreadRow)}
-              </div>
+      <SidebarMenuSubItem className="w-full">
+        <SidebarMenuSubButton
+          render={<button type="button" />}
+          size="sm"
+          aria-expanded={open}
+          className="h-7 w-full translate-x-0 justify-start gap-1 rounded-lg pr-2 pl-6 text-left text-[length:var(--app-font-size-ui-meta,10px)] font-medium text-muted-foreground/68 hover:bg-[var(--sidebar-accent)]"
+          onClick={() =>
+            setCollapsedExternalProjectIds((current) => {
+              const next = new Set(current);
+              if (next.has(projectId)) next.delete(projectId);
+              else next.add(projectId);
+              return next;
+            })
+          }
+        >
+          <span>From Codex · {candidates.length}</span>
+          <DisclosureChevron open={open} className="text-muted-foreground/58" />
+        </SidebarMenuSubButton>
+        <div className={disclosureShellClassName(open)}>
+          <div className={DISCLOSURE_INNER_CLASS}>
+            <div className={cn("space-y-0.5", disclosureContentClassName(open))}>
+              {candidates.map(renderExternalThreadRow)}
             </div>
           </div>
-        </SidebarMenuSubItem>
+        </div>
+      </SidebarMenuSubItem>
     );
   }
 
@@ -6020,14 +6025,22 @@ export default function Sidebar() {
                         tooltip="Choose project"
                         tooltipSide="right"
                       />
-                      <MenuPopup align="end" side="right" className="max-h-72 min-w-48 overflow-y-auto">
+                      <MenuPopup
+                        align="end"
+                        side="right"
+                        className="max-h-72 min-w-48 overflow-y-auto"
+                      >
                         <MenuGroup>
                           {sortedProjects.map((project) => (
                             <MenuItem
                               key={project.id}
                               onClick={() => void handleAdoptExternalThread(candidate, project.id)}
                             >
-                              <ProjectSidebarIcon project={project} className="size-4" />
+                              <ProjectSidebarIcon
+                                cwd={project.cwd}
+                                expanded={false}
+                                glyphClassName="size-4"
+                              />
                               <span className="truncate">{project.name}</span>
                             </MenuItem>
                           ))}
@@ -7773,10 +7786,7 @@ export default function Sidebar() {
               <MenuItem
                 className={PROJECT_CONTEXT_MENU_ITEM_CLASS_NAME}
                 onClick={() =>
-                  void handleProjectContextMenuAction(
-                    projectContextMenuState.projectId,
-                    "relocate",
-                  )
+                  void handleProjectContextMenuAction(projectContextMenuState.projectId, "relocate")
                 }
               >
                 <ProjectContextMenuIcon icon={FolderIcon} />
