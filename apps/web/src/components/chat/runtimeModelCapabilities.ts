@@ -17,8 +17,6 @@ import {
 } from "@synara/shared/model";
 import { normalizeCursorModelVariantBaseId } from "../../cursorModelVariants";
 
-const BUILT_IN_GPT_5_6_MODELS = new Set(["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]);
-
 function runtimeEffortLabel(value: string): string {
   switch (value) {
     case "none":
@@ -134,24 +132,11 @@ export function getRuntimeAwareModelCapabilities(input: {
     };
   });
 
-  // GPT-5.6 launched ahead of the app-server model metadata shipped with some
-  // Codex builds. Keep the built-in capability contract authoritative for this
-  // family so stale discovery cannot remove Max/Ultra (or leak Sol-only Ultra
-  // onto Terra/Luna), while still accepting runtime labels and descriptions.
-  const normalizedModel = normalizeModelSlug(input.model, input.provider) ?? trimOrNull(input.model);
-  const resolvedRuntimeOptions =
-    input.provider === "codex" && normalizedModel && BUILT_IN_GPT_5_6_MODELS.has(normalizedModel)
-      ? staticCapabilities.reasoningEffortLevels.map((staticOption) => {
-          const runtimeOption = runtimeOptions.find((option) => option.value === staticOption.value);
-          return runtimeOption ? { ...staticOption, ...runtimeOption } : staticOption;
-        })
-      : runtimeOptions;
-
   if (input.provider === "kilo" || input.provider === "opencode") {
     return {
       ...staticCapabilities,
       ...(optionDescriptors ? { optionDescriptors } : {}),
-      variantOptions: resolvedRuntimeOptions,
+      variantOptions: runtimeOptions,
       supportsThinkingToggle,
       contextWindowOptions,
     };
@@ -163,6 +148,6 @@ export function getRuntimeAwareModelCapabilities(input: {
     supportsFastMode,
     supportsThinkingToggle,
     contextWindowOptions,
-    reasoningEffortLevels: resolvedRuntimeOptions,
+    reasoningEffortLevels: runtimeOptions,
   };
 }
