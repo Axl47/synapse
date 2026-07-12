@@ -7,7 +7,7 @@ import {
   type ProviderInstanceId,
 } from "@synara/contracts";
 import type { FileSystem, Path } from "effect";
-import { Effect } from "effect";
+import { Effect, Option } from "effect";
 import { describe, expect, it, vi } from "vitest";
 
 import { makeAdoptExternalThreadHandler } from "./adoptExternalThreadRoute";
@@ -52,6 +52,8 @@ function baseOptions(overrides: Record<string, unknown> = {}) {
     },
     providerSessionDirectory: {
       listBindings: () => Effect.succeed([]),
+      getBinding: () => Effect.succeed(Option.none()),
+      upsert: () => Effect.void,
     } as never,
     serverSettings: {
       getSettings: Effect.succeed(DEFAULT_SERVER_SETTINGS),
@@ -64,6 +66,7 @@ describe("makeAdoptExternalThreadHandler", () => {
   it("returns an existing binding without creating another thread", async () => {
     const dispatch = vi.fn(() => Effect.void);
     const importThread = vi.fn(() => Effect.die("not used"));
+    const upsert = vi.fn(() => Effect.void);
     const handler = makeAdoptExternalThreadHandler({
       ...baseOptions({
         orchestrationEngine: { dispatch } as never,
@@ -78,6 +81,7 @@ describe("makeAdoptExternalThreadHandler", () => {
                 resumeCursor: { threadId: "external-1" },
               },
             ]),
+          upsert,
         } as never,
       }),
     });
@@ -93,6 +97,9 @@ describe("makeAdoptExternalThreadHandler", () => {
     ).resolves.toEqual({ threadId: "local-1" });
     expect(dispatch).not.toHaveBeenCalled();
     expect(importThread).not.toHaveBeenCalled();
+    expect(upsert).toHaveBeenCalledWith(
+      expect.objectContaining({ runtimePayload: { adoptedExternalThread: true } }),
+    );
   });
 
   it("serializes concurrent adoption and reuses the existing import path", async () => {

@@ -10,7 +10,7 @@ import {
   resolveProviderInstance,
 } from "@synara/shared/providerInstances";
 import type { FileSystem, Path } from "effect";
-import { Data, Effect } from "effect";
+import { Data, Effect, Option } from "effect";
 
 import type { ProviderAdapterRegistryShape } from "../provider/Services/ProviderAdapterRegistry";
 import type { ProviderSessionDirectoryShape } from "../provider/Services/ProviderSessionDirectory";
@@ -19,6 +19,10 @@ import type { OrchestrationEngineShape } from "./Services/OrchestrationEngine";
 import type { ProjectionSnapshotQueryShape } from "./Services/ProjectionSnapshotQuery";
 import { resolveExternalThreadWorkspaceMatch } from "./externalThreadWorkspace";
 import type { makeImportThreadHandler } from "./importThreadRoute";
+import {
+  ADOPTED_EXTERNAL_THREAD_RUNTIME_KEY,
+  externalThreadIdFromResumeCursor,
+} from "./adoptedExternalThread";
 
 class AdoptExternalThreadError extends Data.TaggedError("AdoptExternalThreadError")<{
   readonly message: string;
@@ -26,14 +30,6 @@ class AdoptExternalThreadError extends Data.TaggedError("AdoptExternalThreadErro
 
 function adoptError(message: string): AdoptExternalThreadError {
   return new AdoptExternalThreadError({ message });
-}
-
-function externalThreadIdFromResumeCursor(value: unknown): string | null {
-  if (!value || typeof value !== "object") return null;
-  const cursor = value as Record<string, unknown>;
-  return typeof cursor.threadId === "string" && cursor.threadId.trim().length > 0
-    ? cursor.threadId.trim()
-    : null;
 }
 
 function adoptionTitle(input: {
@@ -61,6 +57,11 @@ export interface AdoptExternalThreadHandlerOptions {
 
 export function makeAdoptExternalThreadHandler(options: AdoptExternalThreadHandlerOptions) {
   const inFlight = new Map<string, Promise<OrchestrationAdoptExternalThreadResult>>();
+  const markAdopted = (binding: Parameters<ProviderSessionDirectoryShape["upsert"]>[0]) =>
+    options.providerSessionDirectory.upsert({
+      ...binding,
+      runtimePayload: { [ADOPTED_EXTERNAL_THREAD_RUNTIME_KEY]: true },
+    });
 
   const adopt = Effect.fnUntraced(function* (input: OrchestrationAdoptExternalThreadInput) {
     const externalThreadId = input.externalThreadId.trim();
@@ -72,6 +73,7 @@ export function makeAdoptExternalThreadHandler(options: AdoptExternalThreadHandl
         externalThreadIdFromResumeCursor(binding.resumeCursor) === externalThreadId,
     );
     if (existing) {
+      yield* markAdopted(existing);
       return { threadId: existing.threadId } satisfies OrchestrationAdoptExternalThreadResult;
     }
 
@@ -180,6 +182,10 @@ export function makeAdoptExternalThreadHandler(options: AdoptExternalThreadHandl
           : Effect.fail(cause),
       ),
     );
+    const importedBinding = yield* options.providerSessionDirectory.getBinding(imported.threadId);
+    if (Option.isSome(importedBinding)) {
+      yield* markAdopted(importedBinding.value);
+    }
     return { threadId: imported.threadId } satisfies OrchestrationAdoptExternalThreadResult;
   });
 

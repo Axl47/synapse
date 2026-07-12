@@ -2,16 +2,16 @@
 
 ## Pending
 
-- [ ] Phase 5: implement idempotent persisted-history reconciliation
 - [ ] Phase 6: harden, document, and run the final required verification pass
 - [ ] Audit every ExecPlan outcome and close implementation
 
 ## In Progress
 
-- [~] Phase 5: implement idempotent persisted-history reconciliation
+- [~] Phase 6: harden, document, and run the final required verification pass
 
 ## Done
 
+- [x] Phase 5: implement stable Codex history IDs and adoption-only reconciliation before open/reconnect (17 focused import, adoption, and reconciliation tests passed)
 - [x] Phase 4: implement project-local sidebar, unmatched tasks, Search integration, and adoption UX (5 adoption tests, 131 web logic/transport tests, 3 browser tests, and package builds passed)
 - [x] Phase 3: implement server-owned idempotent adoption and shared import operations (148 focused server tests, 41 contract tests, 26 web transport tests, and package builds passed)
 - [x] Phase 2: implement multi-account discovery, deduplication, and project/worktree matching (5 focused server tests, 41 contract tests, 26 web transport tests, and package builds passed)

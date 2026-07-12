@@ -58,6 +58,7 @@ import { makeDispatchCommandNormalizer } from "./orchestration/dispatchCommandNo
 import { makeImportThreadHandler } from "./orchestration/importThreadRoute";
 import { makeExternalThreadDiscoveryHandler } from "./orchestration/externalThreadDiscoveryRoute";
 import { makeAdoptExternalThreadHandler } from "./orchestration/adoptExternalThreadRoute";
+import { makeCodexAdoptedThreadHistorySync } from "./orchestration/codexAdoptedThreadHistorySync";
 import { OrchestrationEngineService } from "./orchestration/Services/OrchestrationEngine";
 import { ProjectionSnapshotQuery } from "./orchestration/Services/ProjectionSnapshotQuery";
 import { sanitizeOrchestrationEventProviderOptions } from "./orchestration/providerOptionsSecurity";
@@ -553,6 +554,12 @@ export const makeWsRpcLayer = () =>
         providerSessionDirectory,
         serverSettings,
       });
+      const syncCodexAdoptedThreadHistory = makeCodexAdoptedThreadHistorySync({
+        orchestrationEngine,
+        providerAdapterRegistry,
+        providerSessionDirectory,
+        serverSettings,
+      });
 
       // Terminal-first threads are created with the generic "New terminal" placeholder.
       // The tracker buffers per-terminal input and, once a meaningful command is submitted,
@@ -776,7 +783,14 @@ export const makeWsRpcLayer = () =>
         [ORCHESTRATION_WS_METHODS.subscribeThread]: (input) =>
           Stream.merge(
             Stream.fromEffect(
-              projectionReadModelQuery.getThreadDetailSnapshotById(input.threadId).pipe(
+              syncCodexAdoptedThreadHistory(input.threadId).pipe(
+                Effect.catch((cause) =>
+                  Effect.logWarning("failed to reconcile adopted Codex thread history", {
+                    threadId: input.threadId,
+                    cause,
+                  }),
+                ),
+                Effect.andThen(projectionReadModelQuery.getThreadDetailSnapshotById(input.threadId)),
                 Effect.map((snapshot) =>
                   Option.map(snapshot, (value) => ({
                     kind: "snapshot" as const,

@@ -30,6 +30,7 @@ export function mapCodexSnapshotMessages(input: {
   readonly importedAt: string;
   readonly threadId: ThreadId;
   readonly turns: ReadonlyArray<{
+    readonly id?: string;
     readonly items: ReadonlyArray<unknown>;
   }>;
 }): ReadonlyArray<ThreadHandoffImportedMessage> {
@@ -38,6 +39,7 @@ export function mapCodexSnapshotMessages(input: {
       if (!item || typeof item !== "object") return [];
 
       const candidate = item as {
+        readonly id?: unknown;
         readonly type?: unknown;
         readonly content?: unknown;
       };
@@ -52,10 +54,17 @@ export function mapCodexSnapshotMessages(input: {
       const text = readCodexSnapshotMessageText(candidate);
       if (text.length === 0) return [];
 
+      const turnId = typeof turn.id === "string" && turn.id.length > 0 ? turn.id : null;
+      const itemId =
+        typeof candidate.id === "string" && candidate.id.length > 0 ? candidate.id : null;
+      const stableSourceId = turnId && itemId ? `codex:${turnId}:${itemId}` : null;
+
       return [
         {
           messageId: MessageId.makeUnsafe(
-            `import:${String(input.threadId)}:${turnIndex}:${itemIndex}`,
+            stableSourceId
+              ? `import:${String(input.threadId)}:${stableSourceId}`
+              : `import:${String(input.threadId)}:${turnIndex}:${itemIndex}`,
           ),
           role,
           text,
