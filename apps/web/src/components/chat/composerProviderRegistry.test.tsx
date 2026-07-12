@@ -101,6 +101,70 @@ describe("getComposerProviderState", () => {
     });
   });
 
+  it("fills stale GPT-5.6 runtime metadata from the built-in effort contract", () => {
+    const runtimeModel = {
+      slug: "gpt-5.6-sol",
+      name: "GPT-5.6 Sol",
+      supportedReasoningEfforts: [
+        { value: "low" },
+        { value: "medium" },
+        { value: "high" },
+        { value: "xhigh" },
+      ],
+      defaultReasoningEffort: "medium",
+    };
+    const selection = getComposerTraitSelection(
+      "codex",
+      "gpt-5.6-sol",
+      "",
+      { reasoningEffort: "ultra" },
+      runtimeModel,
+    );
+
+    expect(selection.effort).toBe("ultra");
+    expect(selection.effortLevels.map((option) => option.value)).toEqual([
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max",
+      "ultra",
+    ]);
+    expect(
+      getComposerProviderState({
+        provider: "codex",
+        model: "gpt-5.6-sol",
+        runtimeModel,
+        prompt: "",
+        modelOptions: { codex: { reasoningEffort: "ultra" } },
+      }).modelOptionsForDispatch,
+    ).toEqual({ reasoningEffort: "ultra" });
+  });
+
+  it("does not leak Sol-only Ultra onto Terra", () => {
+    const selection = getComposerTraitSelection(
+      "codex",
+      "gpt-5.6-terra",
+      "",
+      { reasoningEffort: "max" },
+      {
+        slug: "gpt-5.6-terra",
+        name: "GPT-5.6 Terra",
+        supportedReasoningEfforts: [{ value: "medium" }, { value: "max" }, { value: "ultra" }],
+        defaultReasoningEffort: "medium",
+      },
+    );
+
+    expect(selection.effort).toBe("max");
+    expect(selection.effortLevels.map((option) => option.value)).toEqual([
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max",
+    ]);
+  });
+
   it("preserves codex fast mode when it is the only active option", () => {
     const state = getComposerProviderState({
       provider: "codex",

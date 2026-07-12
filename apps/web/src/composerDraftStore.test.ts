@@ -1243,6 +1243,38 @@ describe("composerDraftStore terminal contexts", () => {
       modelSelection("grok", "grok-build"),
     );
   });
+
+  it.each(["max", "ultra"] as const)(
+    "preserves restored Codex %s reasoning effort",
+    (reasoningEffort) => {
+      const persistApi = useComposerDraftStore.persist as unknown as {
+        getOptions: () => {
+          merge: (
+            persistedState: unknown,
+            currentState: ReturnType<typeof useComposerDraftStore.getState>,
+          ) => ReturnType<typeof useComposerDraftStore.getState>;
+        };
+      };
+      const mergedState = persistApi.getOptions().merge(
+        {
+          draftsByThreadId: {
+            [threadId]: {
+              provider: "codex",
+              model: "gpt-5.6-sol",
+              modelOptions: { codex: { reasoningEffort } },
+            },
+          },
+          draftThreadsByThreadId: {},
+          projectDraftThreadIdByProjectId: {},
+        },
+        useComposerDraftStore.getInitialState(),
+      );
+
+      expect(mergedState.draftsByThreadId[threadId]?.modelSelectionByProvider.codex).toEqual(
+        modelSelection("codex", "gpt-5.6-sol", { reasoningEffort }),
+      );
+    },
+  );
 });
 
 describe("composerDraftStore project draft thread mapping", () => {

@@ -377,6 +377,38 @@ describe("ProviderModelPicker", () => {
     }
   });
 
+  it("shows settings-backed favourites before provider sections", async () => {
+    const mounted = await mountPicker({
+      provider: "claudeAgent",
+      model: "claude-opus-4-6",
+      lockedProvider: null,
+      favoriteModels: [
+        { provider: "claudeAgent", model: "claude-sonnet-4-6" },
+        { provider: "codex", model: "gpt-5.3-codex" },
+      ],
+      onFavoriteModelsChange: vi.fn(),
+    });
+
+    try {
+      await page.getByRole("button").click();
+
+      await vi.waitFor(() => {
+        const text = document.querySelector('[data-slot="menu-popup"]')?.textContent ?? "";
+        expect(text).toContain("Favourites");
+        expect(text.indexOf("Favourites")).toBeLessThan(text.indexOf("Claude"));
+      });
+
+      await page.getByText("Favourites", { exact: true }).click();
+      await vi.waitFor(() => {
+        const text = document.body.textContent ?? "";
+        expect(text).toContain("Claude Sonnet 4.6");
+        expect(text).toContain("GPT-5.3 Codex");
+      });
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("keeps account choices out of the model picker", async () => {
     const mounted = await mountPicker({
       provider: "codex",

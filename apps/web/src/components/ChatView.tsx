@@ -9293,7 +9293,10 @@ export default function ChatView({
       }),
     [runtimeUsageContextWindow, composerTraitSelection.contextWindow, selectedProvider],
   );
-  const useSplitComposerPickerControls = isLocalDraftThread && !hasThreadStarted;
+  // Keep model, reasoning, and speed in the same picker for both drafts and
+  // started threads. The former split path made new chats look and behave like
+  // the legacy composer until after the first message was sent.
+  const useSplitComposerPickerControls = false;
   const composerFooterControlsPlan = useMemo(
     () => composerFooterPlanForTier(composerFooterTier, Boolean(runtimeUsageContextWindow)),
     [composerFooterTier, runtimeUsageContextWindow],

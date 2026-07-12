@@ -17,6 +17,8 @@ import {
 } from "@synara/shared/model";
 import { normalizeCursorModelVariantBaseId } from "../../cursorModelVariants";
 
+const BUILT_IN_GPT_5_6_MODELS = new Set(["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]);
+
 function runtimeEffortLabel(value: string): string {
   switch (value) {
     case "none":
@@ -31,6 +33,10 @@ function runtimeEffortLabel(value: string): string {
       return "High";
     case "xhigh":
       return "Extra High";
+    case "max":
+      return "Max";
+    case "ultra":
+      return "Ultra";
     default:
       return value
         .split(/[-_\s]+/u)
@@ -128,11 +134,20 @@ export function getRuntimeAwareModelCapabilities(input: {
     };
   });
 
+  const normalizedModel = normalizeModelSlug(input.model, input.provider) ?? trimOrNull(input.model);
+  const resolvedRuntimeOptions =
+    input.provider === "codex" && normalizedModel && BUILT_IN_GPT_5_6_MODELS.has(normalizedModel)
+      ? staticCapabilities.reasoningEffortLevels.map((staticOption) => {
+          const runtimeOption = runtimeOptions.find((option) => option.value === staticOption.value);
+          return runtimeOption ? { ...staticOption, ...runtimeOption } : staticOption;
+        })
+      : runtimeOptions;
+
   if (input.provider === "kilo" || input.provider === "opencode") {
     return {
       ...staticCapabilities,
       ...(optionDescriptors ? { optionDescriptors } : {}),
-      variantOptions: runtimeOptions,
+      variantOptions: resolvedRuntimeOptions,
       supportsThinkingToggle,
       contextWindowOptions,
     };
@@ -144,6 +159,6 @@ export function getRuntimeAwareModelCapabilities(input: {
     supportsFastMode,
     supportsThinkingToggle,
     contextWindowOptions,
-    reasoningEffortLevels: runtimeOptions,
+    reasoningEffortLevels: resolvedRuntimeOptions,
   };
 }

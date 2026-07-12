@@ -39,6 +39,7 @@ import {
 } from "./composerPickerStyles";
 import { ShortcutKbd } from "../ui/shortcut-kbd";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
+import { StarFilledIcon } from "~/lib/icons";
 import {
   groupProviderModelOptions,
   groupProviderModelOptionsWithFavorites,
@@ -706,6 +707,95 @@ export const ProviderModelMenuItems = memo(function ProviderModelMenuItems(
     ],
   );
 
+  const globalFavoriteModels = useMemo(() => {
+    const providerByInstanceId = new Map<ProviderInstanceId, ProviderKind>();
+    const instanceLabelById = new Map<ProviderInstanceId, string>();
+    for (const instance of props.providerInstances ?? []) {
+      providerByInstanceId.set(instance.instanceId, instance.provider);
+      instanceLabelById.set(instance.instanceId, instance.label);
+    }
+
+    return normalizeFavoriteModels(props.favoriteModels ?? []).flatMap((favorite) => {
+      const provider =
+        providerByInstanceId.get(favorite.provider) ??
+        inferLegacyProviderKindFromInstanceId(favorite.provider);
+      if (
+        !provider ||
+        hiddenProviderSet.has(provider) ||
+        (props.lockedProvider !== null && props.lockedProvider !== provider)
+      ) {
+        return [];
+      }
+      const options = getModelOptionsForProviderInstance(provider, favorite.provider);
+      const option = options.find((candidate) => candidate.slug === favorite.model);
+      if (!option) {
+        return [];
+      }
+      return [
+        {
+          key: favoriteModelKey(favorite.provider, favorite.model),
+          provider,
+          instanceId: favorite.provider,
+          model: option.slug,
+          modelLabel: option.name,
+          instanceLabel:
+            instanceLabelById.get(favorite.provider) ??
+            AVAILABLE_PROVIDER_OPTIONS.find((candidate) => candidate.value === provider)?.label ??
+            provider,
+        },
+      ];
+    });
+  }, [
+    getModelOptionsForProviderInstance,
+    hiddenProviderSet,
+    props.favoriteModels,
+    props.lockedProvider,
+    props.providerInstances,
+  ]);
+
+  const renderGlobalFavorites = () => {
+    if (globalFavoriteModels.length === 0) {
+      return null;
+    }
+    const selectedKey = favoriteModelKey(selectedProviderInstanceId, props.model);
+    return (
+      <>
+        <MenuSub>
+          <MenuSubTrigger>
+            <StarFilledIcon aria-hidden="true" className="size-3 shrink-0 text-amber-400" />
+            <span>Favourites</span>
+            <span className="ms-auto rounded-full bg-[color-mix(in_srgb,var(--foreground)_6%,transparent)] px-1.5 py-px text-[9px] tabular-nums text-muted-foreground/70">
+              {globalFavoriteModels.length}
+            </span>
+          </MenuSubTrigger>
+          <ComposerPickerMenuSubPopup
+            fixedWidth
+            className={COMPOSER_PICKER_MODEL_SUBMENU_HEIGHT_CLASS_NAME}
+          >
+            <MenuRadioGroup
+              value={selectedKey}
+              onValueChange={(value) => {
+                const favorite = globalFavoriteModels.find((candidate) => candidate.key === value);
+                if (!favorite) return;
+                handleModelChange(favorite.provider, favorite.model, favorite.instanceId);
+              }}
+            >
+              {globalFavoriteModels.map((favorite) => (
+                <MenuRadioItem key={favorite.key} value={favorite.key}>
+                  <span className="min-w-0 truncate">{favorite.modelLabel}</span>
+                  <span className="ms-auto max-w-24 truncate text-[11px] text-muted-foreground/70">
+                    {favorite.instanceLabel}
+                  </span>
+                </MenuRadioItem>
+              ))}
+            </MenuRadioGroup>
+          </ComposerPickerMenuSubPopup>
+        </MenuSub>
+        <MenuSeparator />
+      </>
+    );
+  };
+
   const renderModelRadioGroup = (provider: ProviderKind) => {
     if (props.loadingModelProviders?.[provider]) {
       return (
@@ -823,6 +913,7 @@ export const ProviderModelMenuItems = memo(function ProviderModelMenuItems(
   if (props.lockedProvider !== null) {
     return (
       <>
+        {renderGlobalFavorites()}
         {renderProviderInstanceRadioGroup(props.lockedProvider)}
         {renderModelRadioGroup(props.lockedProvider)}
       </>
@@ -831,6 +922,7 @@ export const ProviderModelMenuItems = memo(function ProviderModelMenuItems(
 
   return (
     <>
+      {renderGlobalFavorites()}
       {visibleAvailableProviderOptions.map((option) => {
         const OptionIcon = PROVIDER_ICON_COMPONENT_BY_PROVIDER[option.value];
         const availability = resolveProviderOptionAvailability(option.value);

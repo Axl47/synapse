@@ -1387,13 +1387,17 @@ function normalizeProviderModelOptions(
     codexCandidate?.reasoningEffort === "low" ||
     codexCandidate?.reasoningEffort === "medium" ||
     codexCandidate?.reasoningEffort === "high" ||
-    codexCandidate?.reasoningEffort === "xhigh"
+    codexCandidate?.reasoningEffort === "xhigh" ||
+    codexCandidate?.reasoningEffort === "max" ||
+    codexCandidate?.reasoningEffort === "ultra"
       ? codexCandidate.reasoningEffort
       : provider === "codex" &&
           (legacy?.effort === "low" ||
             legacy?.effort === "medium" ||
             legacy?.effort === "high" ||
-            legacy?.effort === "xhigh")
+            legacy?.effort === "xhigh" ||
+            legacy?.effort === "max" ||
+            legacy?.effort === "ultra")
         ? legacy.effort
         : undefined;
   const codexFastMode =
