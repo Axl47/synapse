@@ -229,7 +229,7 @@ const CODEX_GPT_5_5_CAPABILITIES: ModelCapabilities = {
 const CODEX_GPT_5_6_CAPABILITIES: ModelCapabilities = {
   ...CODEX_GPT_5_CAPABILITIES,
   reasoningEffortLevels: [
-    { value: "low", label: "Low" },
+    { value: "low", label: "Light" },
     { value: "medium", label: "Medium", isDefault: true },
     { value: "high", label: "High" },
     { value: "xhigh", label: "Extra High" },

@@ -139,7 +139,9 @@ export function getRuntimeAwareModelCapabilities(input: {
     input.provider === "codex" && normalizedModel && BUILT_IN_GPT_5_6_MODELS.has(normalizedModel)
       ? staticCapabilities.reasoningEffortLevels.map((staticOption) => {
           const runtimeOption = runtimeOptions.find((option) => option.value === staticOption.value);
-          return runtimeOption ? { ...staticOption, ...runtimeOption } : staticOption;
+          return runtimeOption
+            ? { ...staticOption, ...runtimeOption, label: staticOption.label }
+            : staticOption;
         })
       : runtimeOptions;
 

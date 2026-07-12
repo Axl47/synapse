@@ -199,6 +199,15 @@ describe("getModelCapabilities reasoningEffortLevels", () => {
     expect(values("codex", "gpt-5.4")).toEqual(CODEX_REASONING_EFFORT_OPTIONS.slice(0, 4));
   });
 
+  it("labels the lowest GPT-5.6 reasoning effort as Light", () => {
+    for (const model of ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]) {
+      expect(getModelCapabilities("codex", model).reasoningEffortLevels[0]).toMatchObject({
+        value: "low",
+        label: "Light",
+      });
+    }
+  });
+
   it("returns claude effort options for Opus 4.6", () => {
     expect(values("claudeAgent", "claude-opus-4-6")).toEqual([
       "low",

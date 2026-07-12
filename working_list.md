@@ -26,3 +26,5 @@
 - [x] Verify 29 picker browser tests and 9 grouping unit tests
 - [x] Label clean publish-only Git actions as Push
 - [x] Verify all 82 Git actions logic tests
+- [x] Label GPT-5.6 low reasoning as Light while preserving the `low` protocol value
+- [x] Verify 27 composer capability tests and 79 shared model tests

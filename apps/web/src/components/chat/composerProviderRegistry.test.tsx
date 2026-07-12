@@ -130,6 +130,7 @@ describe("getComposerProviderState", () => {
       "max",
       "ultra",
     ]);
+    expect(selection.effortLevels[0]?.label).toBe("Light");
     expect(
       getComposerProviderState({
         provider: "codex",
