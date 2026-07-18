@@ -2,11 +2,15 @@
 
 ## Pending
 
+- [ ] Run one final workspace verification pass (`bun fmt`, `bun lint`, `bun typecheck`) and focused package tests
+- [ ] Advance local `main` to the integrated result and push `origin/main`
+- [ ] Confirm the pushed branch is clean and contains `upstream/main`
 - [ ] Manual acceptance against the user's real Codex App/CLI accounts after rollout
 
 ## In Progress
 
-- None.
+- [~] Integrate `upstream/main` into `multiple-accounts-selection` while preserving fork behavior (rollback branch: `backup/pre-upstream-sync-20260718`)
+- [~] Resolve and review merge conflicts by subsystem: desktop/web, provider runtime, orchestration/contracts
 
 ## Done
 
