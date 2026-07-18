@@ -3,16 +3,11 @@
 ## Pending
 
 - [ ] Run the heavyweight workspace checks (`bun fmt`, `bun lint`, `bun typecheck`) if explicitly authorized
-- [ ] Advance local `main` to the integrated result and push `origin/main`
-- [ ] Confirm the pushed branch is clean and contains `upstream/main`
 - [ ] Manual acceptance against the user's real Codex App/CLI accounts after rollout
-
-## In Progress
-
-- [~] Commit the verified merge, advance `main`, and push `origin/main`
 
 ## Done
 
+- [x] Advance local `main` to the integrated result, push `origin/main`, and confirm the remote contains `upstream/main`
 - [x] Verify the integrated workspace test suites: contracts 134, shared 367 (1 skipped), desktop 266, scripts 65, web 2,794, and server 2,607 (8 skipped)
 - [x] Verify the frozen Bun 1.3.12 lockfile, whitespace, merge index, and absence of conflict markers
 - [x] Regenerate `bun.lock` with the repository-pinned Bun 1.3.12 after merging package manifests
