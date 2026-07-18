@@ -91,7 +91,7 @@ layer("059_ScrubOrchestrationEventProviderOptions", (it) => {
         },
       ] as const;
 
-      yield* runMigrations({ toMigrationInclusive: 58 });
+      yield* runMigrations({ toMigrationInclusive: 75 });
       for (const [streamVersion, event] of events.entries()) {
         yield* sql`
           INSERT INTO orchestration_events (

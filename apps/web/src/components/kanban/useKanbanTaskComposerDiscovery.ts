@@ -156,12 +156,6 @@ export function useKanbanTaskComposerDiscovery(input: UseKanbanTaskComposerDisco
           : selectedProvider === "kilo"
             ? providerOptionsForDispatch?.kilo?.serverUrl
             : null) ?? null,
-      serverPassword:
-        (selectedProvider === "opencode"
-          ? providerOptionsForDispatch?.opencode?.serverPassword
-          : selectedProvider === "kilo"
-            ? providerOptionsForDispatch?.kilo?.serverPassword
-            : null) ?? null,
       experimentalWebSockets:
         selectedProvider === "opencode"
           ? providerOptionsForDispatch?.opencode?.experimentalWebSockets

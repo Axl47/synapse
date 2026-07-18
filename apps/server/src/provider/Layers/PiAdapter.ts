@@ -1,9 +1,15 @@
 import crypto from "node:crypto";
 import { execSync, spawnSync } from "node:child_process";
 import path from "node:path";
+import {
+  spawn as spawnChildProcess,
+  type ChildProcess,
+  type SpawnOptions,
+} from "node:child_process";
 
 import type {
   AuthStorage,
+  BashOperations,
   ModelRegistry,
   SessionManager,
   AgentSession as PiAgentSession,
@@ -37,8 +43,9 @@ import {
 import { getModelSelectionStringOptionValue } from "@synara/shared/model";
 import { Effect, FileSystem, Layer, Queue, Stream } from "effect";
 
-import { resolveAttachmentPath } from "../../attachmentStore.ts";
+import { resolveProviderAttachmentPath } from "../providerAttachmentPaths.ts";
 import { ServerConfig } from "../../config.ts";
+import { buildProviderChildEnvironment } from "../../providerChildEnvironment.ts";
 import {
   ProviderAdapterRequestError,
   ProviderAdapterSessionClosedError,
@@ -57,6 +64,10 @@ import {
 } from "../providerProcessEnv.ts";
 import { clampUsagePercent, nonNegativeFiniteNumber, positiveFiniteNumber } from "../tokenUsage.ts";
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
+import {
+  teardownChildProcessTree,
+  teardownProviderProcessTree,
+} from "../supervisedProcessTeardown.ts";
 
 const PROVIDER = "pi" as const;
 export const resolvePiStartInstanceId = resolveProviderSessionInstanceId;
@@ -91,15 +102,169 @@ type PiCodingAgentModule = typeof import("@earendil-works/pi-coding-agent");
 type PiModelRegistrySdk = Pick<PiCodingAgentModule, "AuthStorage" | "ModelRegistry"> &
   Partial<Pick<PiCodingAgentModule, "getShellConfig">>;
 type PiAgentRuntime = Awaited<ReturnType<PiCodingAgentModule["createAgentSessionRuntime"]>>;
-interface PiModelRegistryContext {
-  readonly authStorage: AuthStorage;
-  readonly registry: ModelRegistry;
+type PiShellConfig = ReturnType<PiCodingAgentModule["getShellConfig"]>;
+
+interface PiActiveProcess {
+  readonly child: ChildProcess;
+  teardown: Promise<void> | undefined;
+  teardownRequested: boolean;
+  teardownProven: boolean;
+}
+
+export interface PiBashProcessSupervisor {
+  readonly operations: BashOperations;
+  readonly setShellPath: (shellPath: string | undefined) => void;
+  readonly teardownAll: () => Promise<void>;
+}
+
+export interface PiBashProcessSupervisorOptions {
+  readonly getShellConfig: (shellPath?: string) => PiShellConfig;
+  readonly spawnProcess?: (
+    command: string,
+    args: ReadonlyArray<string>,
+    options: SpawnOptions,
+  ) => ChildProcess;
+  readonly teardownProcessTree?: typeof teardownProviderProcessTree;
+}
+
+export function makePiBashProcessSupervisor(
+  options: PiBashProcessSupervisorOptions,
+): PiBashProcessSupervisor {
+  const spawnProcess = options.spawnProcess ?? spawnChildProcess;
+  const teardownProcessTree = options.teardownProcessTree ?? teardownProviderProcessTree;
+  const activeProcesses = new Set<PiActiveProcess>();
+  let configuredShellPath: string | undefined;
+
+  const startTeardown = (active: PiActiveProcess): Promise<void> => {
+    active.teardownRequested = true;
+    active.teardown ??= teardownChildProcessTree(active.child, teardownProcessTree).then(
+      () => {
+        active.teardownProven = true;
+      },
+      (cause) => {
+        active.teardown = undefined;
+        throw cause;
+      },
+    );
+    return active.teardown;
+  };
+
+  const operations: BashOperations = {
+    exec: async (command, cwd, execution) => {
+      if (execution.signal?.aborted) {
+        throw new Error("aborted");
+      }
+      const timeoutMs = execution.timeout === undefined ? undefined : execution.timeout * 1_000;
+      if (
+        execution.timeout !== undefined &&
+        (!Number.isFinite(execution.timeout) || execution.timeout <= 0)
+      ) {
+        throw new Error("Invalid timeout: must be a finite number of seconds");
+      }
+      if (timeoutMs !== undefined && timeoutMs > 2_147_483_647) {
+        throw new Error(`Invalid timeout: maximum is ${String(2_147_483_647 / 1_000)} seconds`);
+      }
+      const shell = options.getShellConfig(configuredShellPath);
+      const commandFromStdin = shell.commandTransport === "stdin";
+      const child = spawnProcess(
+        shell.shell,
+        commandFromStdin ? shell.args : [...shell.args, command],
+        {
+          cwd,
+          detached: process.platform !== "win32",
+          env: buildProviderChildEnvironment({
+            provider: "pi",
+            baseEnv: execution.env ?? process.env,
+          }),
+          stdio: [commandFromStdin ? "pipe" : "ignore", "pipe", "pipe"],
+          windowsHide: true,
+        },
+      );
+      const active: PiActiveProcess = {
+        child,
+        teardown: undefined,
+        teardownRequested: false,
+        teardownProven: false,
+      };
+      activeProcesses.add(active);
+
+      if (commandFromStdin) {
+        child.stdin?.on("error", () => undefined);
+        child.stdin?.end(command);
+      }
+      child.stdout?.on("data", (chunk: Buffer | string) =>
+        execution.onData(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)),
+      );
+      child.stderr?.on("data", (chunk: Buffer | string) =>
+        execution.onData(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)),
+      );
+
+      let timedOut = false;
+      let timeout: ReturnType<typeof setTimeout> | undefined;
+      const requestTeardown = () => {
+        void startTeardown(active).catch(() => undefined);
+      };
+      if (timeoutMs !== undefined) {
+        timeout = setTimeout(() => {
+          timedOut = true;
+          requestTeardown();
+        }, timeoutMs);
+      }
+      execution.signal?.addEventListener("abort", requestTeardown, { once: true });
+
+      try {
+        const exitCode = await new Promise<number | null>((resolve, reject) => {
+          child.once("error", reject);
+          child.once("exit", (code) => resolve(code));
+        });
+        if (active.teardown) {
+          await active.teardown;
+        }
+        if (execution.signal?.aborted) {
+          throw new Error("aborted");
+        }
+        if (timedOut) {
+          throw new Error(`timeout:${String(execution.timeout)}`);
+        }
+        return { exitCode };
+      } finally {
+        if (timeout !== undefined) clearTimeout(timeout);
+        execution.signal?.removeEventListener("abort", requestTeardown);
+        if (!active.teardownRequested || active.teardownProven) {
+          activeProcesses.delete(active);
+        }
+      }
+    },
+  };
+
+  return {
+    operations,
+    setShellPath: (shellPath) => {
+      configuredShellPath = shellPath;
+    },
+    teardownAll: async () => {
+      const results = await Promise.allSettled(
+        Array.from(activeProcesses, (active) => startTeardown(active)),
+      );
+      const failures = results.flatMap((result) =>
+        result.status === "rejected" ? [result.reason] : [],
+      );
+      if (failures.length > 0) {
+        throw new AggregateError(failures, "Failed to prove all Pi subprocess trees exited.");
+      }
+      for (const active of Array.from(activeProcesses)) {
+        if (active.teardownProven) activeProcesses.delete(active);
+      }
+    },
+  };
 }
 
 let piCodingAgentModulePromise: Promise<PiCodingAgentModule> | undefined;
 
 interface PiSessionContext {
+  readonly lifecycleGeneration?: string;
   runtime: PiAgentRuntime;
+  readonly processSupervisor: PiBashProcessSupervisor;
   modelRegistry: PiModelRegistry;
   session: ProviderSession;
   turns: PiStoredTurn[];
@@ -173,6 +338,28 @@ export function makePiExtensionModeCoordinator(
   };
 }
 
+export function makePiRuntimeEventBase(
+  context: {
+    readonly lifecycleGeneration?: string;
+    readonly session: Pick<ProviderSession, "threadId">;
+    readonly activeTurnId: TurnId | undefined;
+  },
+  options?: { readonly includeTurnId?: boolean },
+) {
+  return {
+    eventId: EventId.makeUnsafe(crypto.randomUUID()),
+    provider: PROVIDER,
+    threadId: context.session.threadId,
+    createdAt: new Date().toISOString(),
+    ...(context.lifecycleGeneration !== undefined
+      ? { lifecycleGeneration: context.lifecycleGeneration }
+      : {}),
+    ...(options?.includeTurnId !== false && context.activeTurnId
+      ? { turnId: context.activeTurnId }
+      : {}),
+  };
+}
+
 interface PiStoredTurn {
   readonly id: TurnId;
   readonly items: unknown[];
@@ -199,6 +386,8 @@ export interface PiUserInputOptionMapping {
 export interface PiAdapterLiveOptions {
   readonly nativeEventLogPath?: string;
   readonly nativeEventLogger?: EventNdjsonLogger;
+  readonly spawnProcess?: PiBashProcessSupervisorOptions["spawnProcess"];
+  readonly teardownProcessTree?: typeof teardownProviderProcessTree;
 }
 
 function toMessage(cause: unknown, fallback: string): string {
@@ -268,6 +457,12 @@ export function getPiSupportedThinkingOptions(
   }
   const supportedLevels = getLocalSupportedThinkingLevels(model);
   return PI_THINKING_OPTIONS.filter((option) => supportedLevels.has(option.value));
+}
+
+export function getPiDiscoverableModels(
+  registry: Pick<ModelRegistry, "getAvailable">,
+): ReadonlyArray<Model<Api>> {
+  return registry.getAvailable();
 }
 
 function parseModelReference(
@@ -961,11 +1156,6 @@ interface PiInstanceResolver extends PiInstanceConfigResolver {
   readonly resolveAuth: (provider: string) => Promise<PiInstanceAuthResolution>;
 }
 
-interface PiShellConfig {
-  readonly shell: string;
-  readonly args: ReadonlyArray<string>;
-}
-
 interface PiAuthStorageInternals {
   readonly refreshOAuthTokenWithLock?: (
     provider: string,
@@ -1584,21 +1774,7 @@ const makePiAdapter = (options?: PiAdapterLiveOptions) =>
       return context;
     };
 
-    const makeEventBase = (
-      context: PiSessionContext,
-      options?: { readonly includeTurnId?: boolean },
-    ) => ({
-      eventId: EventId.makeUnsafe(crypto.randomUUID()),
-      provider: PROVIDER,
-      ...(context.session.providerInstanceId !== undefined
-        ? { providerInstanceId: context.session.providerInstanceId }
-        : {}),
-      threadId: context.session.threadId,
-      createdAt: new Date().toISOString(),
-      ...(options?.includeTurnId !== false && context.activeTurnId
-        ? { turnId: context.activeTurnId }
-        : {}),
-    });
+    const makeEventBase = makePiRuntimeEventBase;
 
     const offerRuntimeEvent = (event: ProviderRuntimeEvent) => {
       Effect.runPromise(Queue.offer(runtimeEventQueue, event)).catch(() => undefined);
@@ -1953,7 +2129,26 @@ const makePiAdapter = (options?: PiAdapterLiveOptions) =>
       }
       context.pendingUserInputs.clear();
       context.stopped = true;
-      await context.runtime.dispose();
+      let runtimeFailure: unknown;
+      try {
+        await context.runtime.dispose();
+      } catch (cause) {
+        runtimeFailure = cause;
+      }
+      let processFailure: unknown;
+      try {
+        await context.processSupervisor.teardownAll();
+      } catch (cause) {
+        processFailure = cause;
+      }
+      if (runtimeFailure !== undefined && processFailure !== undefined) {
+        throw new AggregateError(
+          [runtimeFailure, processFailure],
+          "Failed to dispose the Pi runtime and prove its subprocess trees exited.",
+        );
+      }
+      if (processFailure !== undefined) throw processFailure;
+      if (runtimeFailure !== undefined) throw runtimeFailure;
     };
 
     const handleMessageUpdate = (
@@ -2272,6 +2467,7 @@ const makePiAdapter = (options?: PiAdapterLiveOptions) =>
       sessionManager: SessionManager;
       modelId?: string;
       thinkingLevel?: ThinkingLevel;
+      processSupervisor: PiBashProcessSupervisor;
       noExtensions?: boolean;
     }) => {
       const { authStorage, registry } = await getModelRegistryContext(
@@ -2299,6 +2495,9 @@ const makePiAdapter = (options?: PiAdapterLiveOptions) =>
             `Pi model '${input.modelId}' is not available. Use a discovered model or a provider-qualified custom model slug like 'openai/gpt-5.5'.`,
           );
         }
+        const shellPath = services.settingsManager.getShellPath();
+        const commandPrefix = services.settingsManager.getShellCommandPrefix();
+        input.processSupervisor.setShellPath(shellPath);
         return {
           ...(await input.sdk.createAgentSessionFromServices({
             services,
@@ -2306,6 +2505,15 @@ const makePiAdapter = (options?: PiAdapterLiveOptions) =>
             ...(sessionStartEvent ? { sessionStartEvent } : {}),
             ...(model ? { model } : {}),
             thinkingLevel: input.thinkingLevel ?? DEFAULT_PI_THINKING_LEVEL,
+            customTools: [
+              input.sdk.defineTool(
+                input.sdk.createBashToolDefinition(cwd, {
+                  operations: input.processSupervisor.operations,
+                  ...(commandPrefix === undefined ? {} : { commandPrefix }),
+                  ...(shellPath === undefined ? {} : { shellPath }),
+                }),
+              ),
+            ],
           })),
           services,
           diagnostics: services.diagnostics,
@@ -2339,149 +2547,170 @@ const makePiAdapter = (options?: PiAdapterLiveOptions) =>
         }),
         (modeReservation) =>
           Effect.gen(function* () {
-            const cwd = trimToUndefined(input.cwd) ?? serverConfig.cwd;
-            const sessionFile = extractResumeSessionFile(input.resumeCursor);
-            const modelId = input.modelSelection?.model;
-            const thinkingLevel = normalizePiThinkingLevel(
-              getModelSelectionStringOptionValue(input.modelSelection, "thinkingLevel"),
-            );
-            const existingContext = sessions.get(input.threadId);
-            if (existingContext) {
+        const cwd = trimToUndefined(input.cwd) ?? serverConfig.cwd;
+        const piSdk = yield* loadPiSdk("session/start");
+        const processSupervisor = makePiBashProcessSupervisor({
+          getShellConfig: () => piSdk.getShellConfig(),
+          ...(options?.spawnProcess ? { spawnProcess: options.spawnProcess } : {}),
+          ...(options?.teardownProcessTree
+            ? { teardownProcessTree: options.teardownProcessTree }
+            : {}),
+        });
+        const noExtensions = modeReservation.noExtensions;
+        const storagePaths = makePiStoragePaths({
+          agentDir: piOptions?.agentDir,
+          environment: piEnvironment,
+          instanceId: resolvedProviderInstanceId,
+          stateDir: serverConfig.stateDir,
+          homeDir: serverConfig.homeDir,
+          sdkAgentDir: piSdk.getAgentDir(),
+        });
+        const agentDir = storagePaths.agentDir;
+        const sessionFile = extractResumeSessionFile(input.resumeCursor);
+        const sessionManager = sessionFile
+          ? piSdk.SessionManager.open(sessionFile, undefined, cwd)
+          : piSdk.SessionManager.create(cwd, storagePaths.sessionDir);
+        const modelId = input.modelSelection?.model;
+        const thinkingLevel = normalizePiThinkingLevel(
+          getModelSelectionStringOptionValue(input.modelSelection, "thinkingLevel"),
+        );
+        const existingContext = sessions.get(input.threadId);
+        if (existingContext) {
+          yield* Effect.tryPromise({
+            try: () => disposeSessionContext(existingContext),
+            catch: (cause) =>
+              new ProviderAdapterRequestError({
+                provider: PROVIDER,
+                method: "session/restart",
+                detail: toMessage(cause, "Failed to dispose previous Pi session."),
+                cause,
+              }),
+          });
+          if (sessions.get(input.threadId) === existingContext) {
+            sessions.delete(input.threadId);
+          }
+        }
+        if (isolatedAccount) {
+          resetApiProviders();
+          resetOAuthProviders();
+        }
+        const { runtime, modelRegistry } = yield* Effect.tryPromise({
+          try: () =>
+            createSdkRuntime({
+              sdk: piSdk,
+              cwd,
+              agentDir,
+              ...(resolvedProviderInstanceId !== undefined
+                ? { instanceId: resolvedProviderInstanceId }
+                : {}),
+              ...(piEnvironment !== undefined ? { environment: piEnvironment } : {}),
+              sessionManager,
+              ...(noExtensions ? { noExtensions: true } : {}),
+              ...(modelId ? { modelId } : {}),
+              ...(thinkingLevel ? { thinkingLevel } : {}),
+              processSupervisor,
+            }),
+          catch: (cause) =>
+            new ProviderAdapterRequestError({
+              provider: PROVIDER,
+              method: "session/start",
+              detail: cause instanceof Error ? cause.message : String(cause),
+              cause,
+            }),
+        });
+        const now = new Date().toISOString();
+        const model = runtime.session.model
+          ? `${runtime.session.model.provider}/${runtime.session.model.id}`
+          : modelId;
+        const resumeCursor = getSessionFile(runtime.session);
+        const session: ProviderSession = {
+          provider: PROVIDER,
+          ...(resolvedProviderInstanceId !== undefined
+            ? { providerInstanceId: resolvedProviderInstanceId }
+            : {}),
+          status: "ready",
+          runtimeMode: input.runtimeMode,
+          cwd,
+          threadId: input.threadId,
+          createdAt: now,
+          updatedAt: now,
+          ...(model ? { model } : {}),
+          ...(resumeCursor ? { resumeCursor } : {}),
+        };
+        const context: PiSessionContext = {
+          ...(input.lifecycleGeneration !== undefined
+            ? { lifecycleGeneration: input.lifecycleGeneration }
+            : {}),
+          runtime,
+          processSupervisor,
+          modelRegistry,
+          session,
+          turns: [],
+          activeTurnId: undefined,
+          activeAssistantItemId: undefined,
+          activeReasoningItemId: undefined,
+          activeToolItems: new Map(),
+          pendingUserInputs: new Map(),
+          stopped: false,
+          lastKnownTokenUsage: undefined,
+          unsubscribe: undefined,
+          extensionsEnabled: !noExtensions,
+        };
+        context.unsubscribe = runtime.session.subscribe((event) =>
+          handleSessionEvent(context, event),
+        );
+        sessions.set(input.threadId, context);
+        yield* Effect.tryPromise({
+          try: () =>
+            runtime.session.bindExtensions({ uiContext: makePiExtensionUIContext(context) }),
+          catch: (cause) =>
+            new ProviderAdapterRequestError({
+              provider: PROVIDER,
+              method: "extension/bind",
+              detail: toMessage(cause, "Failed to bind Pi extensions."),
+              cause,
+            }),
+        }).pipe(
+          Effect.catch((error) =>
+            Effect.gen(function* () {
               yield* Effect.tryPromise({
-                try: () => disposeSessionContext(existingContext),
+                try: () => disposeSessionContext(context),
                 catch: (cause) =>
                   new ProviderAdapterRequestError({
                     provider: PROVIDER,
-                    method: "session/restart",
-                    detail: toMessage(cause, "Failed to dispose previous Pi session."),
+                    method: "session/start-cleanup",
+                    detail: toMessage(cause, "Failed to prove Pi startup cleanup completed."),
                     cause,
                   }),
               });
-              sessions.delete(input.threadId);
-            }
-            if (isolatedAccount) {
-              resetApiProviders();
-              resetOAuthProviders();
-            }
-            const piSdk = yield* loadPiSdk("session/start");
-            const noExtensions = modeReservation.noExtensions;
-            const { runtime, modelRegistry } = yield* Effect.tryPromise({
-              try: () => {
-                const storagePaths = makePiStoragePaths({
-                  agentDir: piOptions?.agentDir,
-                  environment: piEnvironment,
-                  instanceId: resolvedProviderInstanceId,
-                  stateDir: serverConfig.stateDir,
-                  homeDir: serverConfig.homeDir,
-                  sdkAgentDir: piSdk.getAgentDir(),
-                });
-                const agentDir = storagePaths.agentDir;
-                const sessionManager = sessionFile
-                  ? piSdk.SessionManager.open(sessionFile, undefined, cwd)
-                  : piSdk.SessionManager.create(cwd, storagePaths.sessionDir);
-                return createSdkRuntime({
-                  sdk: piSdk,
-                  cwd,
-                  agentDir,
-                  ...(resolvedProviderInstanceId !== undefined
-                    ? { instanceId: resolvedProviderInstanceId }
-                    : {}),
-                  ...(piEnvironment !== undefined ? { environment: piEnvironment } : {}),
-                  sessionManager,
-                  ...(noExtensions ? { noExtensions: true } : {}),
-                  ...(modelId ? { modelId } : {}),
-                  ...(thinkingLevel ? { thinkingLevel } : {}),
-                });
+              if (sessions.get(input.threadId) === context) {
+                sessions.delete(input.threadId);
+              }
+              return yield* Effect.fail(error);
+            }),
+          ),
+        );
+        const loadedExtensions = runtime.session.resourceLoader.getExtensions().extensions;
+        if (loadedExtensions.length > 0) {
+          const extensionNames = loadedExtensions.map(extensionDisplayName);
+          offerRuntimeEvent({
+            ...makeEventBase(context, { includeTurnId: false }),
+            type: "runtime.warning",
+            payload: {
+              message:
+                "Pi extensions are loaded with Synara's limited UI bridge. select/confirm/input/notify/status are supported; TUI-only widgets and editor hooks are ignored.",
+              detail: {
+                extensionCount: loadedExtensions.length,
+                extensions: extensionNames,
               },
-              catch: (cause) =>
-                new ProviderAdapterRequestError({
-                  provider: PROVIDER,
-                  method: "session/start",
-                  detail: toMessage(cause, "Failed to start Pi session."),
-                  cause,
-                }),
-            });
-            const now = new Date().toISOString();
-            const model = runtime.session.model
-              ? `${runtime.session.model.provider}/${runtime.session.model.id}`
-              : modelId;
-            const resumeCursor = getSessionFile(runtime.session);
-            const session: ProviderSession = {
-              provider: PROVIDER,
-              ...(resolvedProviderInstanceId !== undefined
-                ? { providerInstanceId: resolvedProviderInstanceId }
-                : {}),
-              status: "ready",
-              runtimeMode: input.runtimeMode,
-              cwd,
-              threadId: input.threadId,
-              createdAt: now,
-              updatedAt: now,
-              ...(model ? { model } : {}),
-              ...(resumeCursor ? { resumeCursor } : {}),
-            };
-            const context: PiSessionContext = {
-              runtime,
-              modelRegistry,
-              session,
-              turns: [],
-              activeTurnId: undefined,
-              activeAssistantItemId: undefined,
-              activeReasoningItemId: undefined,
-              activeToolItems: new Map(),
-              pendingUserInputs: new Map(),
-              stopped: false,
-              lastKnownTokenUsage: undefined,
-              unsubscribe: undefined,
-              extensionsEnabled: !noExtensions,
-            };
-            context.unsubscribe = runtime.session.subscribe((event) =>
-              handleSessionEvent(context, event),
-            );
-            sessions.set(input.threadId, context);
-            yield* Effect.tryPromise({
-              try: () =>
-                runtime.session.bindExtensions({ uiContext: makePiExtensionUIContext(context) }),
-              catch: (cause) =>
-                new ProviderAdapterRequestError({
-                  provider: PROVIDER,
-                  method: "extension/bind",
-                  detail: toMessage(cause, "Failed to bind Pi extensions."),
-                  cause,
-                }),
-            }).pipe(
-              Effect.catch((error) =>
-                Effect.gen(function* () {
-                  sessions.delete(input.threadId);
-                  yield* Effect.tryPromise({
-                    try: () => disposeSessionContext(context),
-                    catch: () => error,
-                  }).pipe(Effect.catch(() => Effect.void));
-                  return yield* Effect.fail(error);
-                }),
-              ),
-            );
-            const loadedExtensions = runtime.session.resourceLoader.getExtensions().extensions;
-            if (loadedExtensions.length > 0) {
-              const extensionNames = loadedExtensions.map(extensionDisplayName);
-              offerRuntimeEvent({
-                ...makeEventBase(context, { includeTurnId: false }),
-                type: "runtime.warning",
-                payload: {
-                  message:
-                    "Pi extensions are loaded with Synara's limited UI bridge. select/confirm/input/notify/status are supported; TUI-only widgets and editor hooks are ignored.",
-                  detail: {
-                    extensionCount: loadedExtensions.length,
-                    extensions: extensionNames,
-                  },
-                },
-                raw: {
-                  source: "pi.sdk.event",
-                  method: "extension/ui-limited-warning",
-                  payload: { extensionCount: loadedExtensions.length, extensions: extensionNames },
-                },
-              } satisfies ProviderRuntimeEvent);
-            }
+            },
+            raw: {
+              source: "pi.sdk.event",
+              method: "extension/ui-limited-warning",
+              payload: { extensionCount: loadedExtensions.length, extensions: extensionNames },
+            },
+          } satisfies ProviderRuntimeEvent);
+        }
             offerRuntimeEvent({
               ...makeEventBase(context),
               type: "session.started",
@@ -2527,7 +2756,7 @@ const makePiAdapter = (options?: PiAdapterLiveOptions) =>
           (attachment) =>
             Effect.gen(function* () {
               if (attachment.type !== "image" || !attachment.mimeType) return undefined;
-              const attachmentPath = resolveAttachmentPath({
+              const attachmentPath = resolveProviderAttachmentPath({
                 attachmentsDir: serverConfig.attachmentsDir,
                 attachment,
               });
@@ -2754,38 +2983,35 @@ const makePiAdapter = (options?: PiAdapterLiveOptions) =>
       });
 
     const stopSession: PiAdapterShape["stopSession"] = (threadId) =>
-      requireSession(threadId).pipe(
-        Effect.flatMap((context) =>
-          Effect.tryPromise({
-            try: () => disposeSessionContext(context),
-            catch: (cause) =>
-              new ProviderAdapterRequestError({
-                provider: PROVIDER,
-                method: "session/stop",
-                detail: toMessage(cause, "Failed to stop Pi session."),
-                cause,
-              }),
-          }).pipe(
-            Effect.tap(() =>
-              Effect.sync(() => {
-                context.stopped = true;
-                sessions.delete(threadId);
-                offerRuntimeEvent({
-                  ...makeEventBase(context),
-                  type: "thread.state.changed",
-                  payload: { state: "closed", detail: { reason: "stopped" } },
-                } satisfies ProviderRuntimeEvent);
-                offerRuntimeEvent({
-                  ...makeEventBase(context),
-                  type: "session.exited",
-                  payload: { reason: "stopped", exitKind: "graceful" },
-                } satisfies ProviderRuntimeEvent);
-              }),
-            ),
-          ),
-        ),
-        Effect.asVoid,
-      );
+      Effect.gen(function* () {
+        const context = sessions.get(threadId);
+        if (!context) {
+          return yield* new ProviderAdapterSessionNotFoundError({ provider: PROVIDER, threadId });
+        }
+        yield* Effect.tryPromise({
+          try: () => disposeSessionContext(context),
+          catch: (cause) =>
+            new ProviderAdapterRequestError({
+              provider: PROVIDER,
+              method: "session/stop",
+              detail: toMessage(cause, "Failed to stop Pi session."),
+              cause,
+            }),
+        });
+        if (sessions.get(threadId) === context) {
+          sessions.delete(threadId);
+        }
+        offerRuntimeEvent({
+          ...makeEventBase(context),
+          type: "thread.state.changed",
+          payload: { state: "closed", detail: { reason: "stopped" } },
+        } satisfies ProviderRuntimeEvent);
+        offerRuntimeEvent({
+          ...makeEventBase(context),
+          type: "session.exited",
+          payload: { reason: "stopped", exitKind: "graceful" },
+        } satisfies ProviderRuntimeEvent);
+      });
 
     const listSessions: PiAdapterShape["listSessions"] = () =>
       Effect.sync(() => Array.from(sessions.values()).map(makeSessionSnapshot));
@@ -2888,7 +3114,7 @@ const makePiAdapter = (options?: PiAdapterLiveOptions) =>
               ...(noExtensions ? { resourceLoaderOptions: { noExtensions: true } } : {}),
             });
             const extensionCount = services.resourceLoader.getExtensions().extensions.length;
-            const models = services.modelRegistry.getAvailable().map((model) => {
+            const models = getPiDiscoverableModels(services.modelRegistry).map((model) => {
               const supportedThinkingOptions = getPiSupportedThinkingOptions(model);
               return {
                 slug: `${model.provider}/${model.id}`,
@@ -3108,13 +3334,13 @@ const makePiAdapter = (options?: PiAdapterLiveOptions) =>
 
     yield* Effect.addFinalizer(() =>
       stopAll().pipe(
-        Effect.ignore,
-        Effect.andThen(
+        Effect.orDie,
+        Effect.ensuring(
           ownsNativeEventLogger && nativeEventLogger
             ? nativeEventLogger.close().pipe(Effect.ignore)
             : Effect.void,
         ),
-        Effect.andThen(Queue.shutdown(runtimeEventQueue)),
+        Effect.ensuring(Queue.shutdown(runtimeEventQueue)),
       ),
     );
 

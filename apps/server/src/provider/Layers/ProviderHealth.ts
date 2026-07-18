@@ -57,6 +57,10 @@ import {
 } from "../codexCliVersion";
 import { buildClaudeProcessEnv } from "../claudeEnvironment";
 import { ServerConfig } from "../../config";
+import {
+  buildProviderChildEnvironment,
+  type ProviderChildKind,
+} from "../../providerChildEnvironment.ts";
 import { ServerSettingsService } from "../../serverSettings";
 import { isWindowsShellCommandMissingResult } from "../../shell-command-detection";
 import {
@@ -70,6 +74,7 @@ import {
   DEFAULT_CURSOR_AGENT_BINARY,
   resolveCursorAgentBinaryPath,
 } from "../acp/CursorAcpCommand";
+import { hasDroidApiKeyEnv, resolveDroidCliBinaryPath } from "../acp/DroidAcpSupport";
 import { hasGrokApiKeyEnv } from "../acp/GrokAcpSupport";
 import {
   claudeAuthMetadata,
@@ -98,6 +103,7 @@ import {
 import { makeProviderMaintenanceCommandCoordinator } from "../providerMaintenanceCommandCoordinator";
 import {
   enrichProviderStatusWithVersionAdvisory,
+  compareSemverVersions,
   makeProviderMaintenanceCapabilities,
   normalizeCommandPath,
   parseGenericCliVersion,
@@ -118,27 +124,49 @@ const CODEX_PROVIDER = "codex" as const;
 const CLAUDE_AGENT_PROVIDER = "claudeAgent" as const;
 const CURSOR_PROVIDER = "cursor" as const;
 const GEMINI_PROVIDER = "gemini" as const;
+const ANTIGRAVITY_PROVIDER = "antigravity" as const;
 const GROK_PROVIDER = "grok" as const;
+const DROID_PROVIDER = "droid" as const;
 const KILO_PROVIDER = "kilo" as const;
 const OPENCODE_PROVIDER = "opencode" as const;
 const PI_PROVIDER = "pi" as const;
 type ProviderStatuses = ReadonlyArray<ServerProviderStatus>;
 const DISABLED_PROVIDER_STATUS_MESSAGE = "Provider is disabled in Synara settings.";
+const MINIMUM_ANTIGRAVITY_CLI_VERSION = "1.0.12";
 
 const PROVIDERS = [
   CODEX_PROVIDER,
   CLAUDE_AGENT_PROVIDER,
   CURSOR_PROVIDER,
-  GEMINI_PROVIDER,
+  ANTIGRAVITY_PROVIDER,
   GROK_PROVIDER,
+  DROID_PROVIDER,
   KILO_PROVIDER,
   OPENCODE_PROVIDER,
   PI_PROVIDER,
 ] as const satisfies ReadonlyArray<ProviderKind>;
 
+const providerChildKind = (provider: ProviderKind): ProviderChildKind =>
+  provider === CLAUDE_AGENT_PROVIDER ? "claude" : provider;
+
+const providerCommandEnv = (provider: ProviderKind): NodeJS.ProcessEnv =>
+  buildProviderChildEnvironment({ provider: providerChildKind(provider) });
+
 const UPDATE_OUTPUT_MAX_BYTES = 10_000;
-const UPDATE_TIMEOUT_MS = 5 * 60_000;
+export const PROVIDER_UPDATE_TIMEOUT_MS = 2 * 60_000;
 export const PROVIDER_HEALTH_PROBE_CONCURRENCY = 4;
+
+function formatProviderUpdateTimeout(timeoutMs: number): string {
+  if (timeoutMs < 1_000) {
+    return `${timeoutMs} ${timeoutMs === 1 ? "millisecond" : "milliseconds"}`;
+  }
+  if (timeoutMs % 60_000 === 0) {
+    const minutes = timeoutMs / 60_000;
+    return `${minutes} ${minutes === 1 ? "minute" : "minutes"}`;
+  }
+  const seconds = timeoutMs / 1_000;
+  return `${seconds} ${seconds === 1 ? "second" : "seconds"}`;
+}
 
 export function runProviderHealthProbes<A, E, R>(
   probes: ReadonlyArray<Effect.Effect<A, E, R>>,
@@ -187,7 +215,16 @@ function isOpenCodeNativeCommandPath(commandPath: string): boolean {
   );
 }
 
-const PACKAGE_MANAGED_PROVIDER_UPDATES: Partial<
+function isKiloNativeCommandPath(commandPath: string): boolean {
+  const normalized = normalizeCommandPath(commandPath);
+  return (
+    normalized.endsWith("/.kilo/bin/kilo") ||
+    normalized.endsWith("/.local/bin/kilo") ||
+    normalized.includes("/.local/share/kilo/bin/")
+  );
+}
+
+export const PACKAGE_MANAGED_PROVIDER_UPDATES: Partial<
   Record<ProviderKind, PackageManagedProviderMaintenanceDefinition>
 > = {
   codex: {
@@ -210,12 +247,31 @@ const PACKAGE_MANAGED_PROVIDER_UPDATES: Partial<
       isCommandPath: isClaudeNativeCommandPath,
     },
   },
-  gemini: {
-    provider: GEMINI_PROVIDER,
-    binaryName: "gemini",
-    npmPackageName: "@google/gemini-cli",
-    homebrew: { name: "gemini-cli", kind: "formula" },
-    nativeUpdate: null,
+  antigravity: {
+    provider: ANTIGRAVITY_PROVIDER,
+    binaryName: "agy",
+    // Antigravity is distributed as a native binary and owns its update channel.
+    npmPackageName: null,
+    homebrew: null,
+    latestVersionSource: null,
+    nativeUpdate: {
+      executable: "agy",
+      args: () => ["update"],
+      lockKey: "antigravity-native",
+      strategy: "always",
+    },
+  },
+  droid: {
+    provider: DROID_PROVIDER,
+    binaryName: "droid",
+    npmPackageName: "@factory/cli",
+    homebrew: null,
+    nativeUpdate: {
+      executable: "droid",
+      args: () => ["update"],
+      lockKey: "droid-native",
+      strategy: "always",
+    },
   },
   kilo: {
     provider: KILO_PROVIDER,
@@ -226,7 +282,8 @@ const PACKAGE_MANAGED_PROVIDER_UPDATES: Partial<
       executable: "kilo",
       args: () => ["upgrade"],
       lockKey: "kilo-native",
-      strategy: "always",
+      strategy: "matching-path",
+      isCommandPath: isKiloNativeCommandPath,
     },
   },
   opencode: {
@@ -689,14 +746,18 @@ const collectStreamAsString = <E>(stream: Stream.Stream<Uint8Array, E>): Effect.
 const runProviderCommand = (
   executable: string,
   args: ReadonlyArray<string>,
-  env: NodeJS.ProcessEnv = process.env,
+  env: NodeJS.ProcessEnv,
 ) =>
   Effect.gen(function* () {
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
     const prepared = prepareWindowsSafeProcess(executable, args, { env });
     const command = ChildProcess.make(prepared.command, prepared.args, {
       shell: prepared.shell,
+      ...(prepared.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}),
       env,
+      // Health probes are non-interactive. Leaving stdin as a pipe can keep CLIs
+      // such as Antigravity waiting even after a read-only subcommand has finished.
+      stdin: "ignore",
     });
 
     const child = yield* spawner.spawn(command);
@@ -716,7 +777,7 @@ const runProviderCommand = (
 const runCodexCommand = (
   args: ReadonlyArray<string>,
   executable = "codex",
-  env: NodeJS.ProcessEnv = process.env,
+  env: NodeJS.ProcessEnv = providerCommandEnv(CODEX_PROVIDER),
 ) =>
   runProviderCommand(executable, args, env).pipe(
     Effect.flatMap((result) =>
@@ -868,9 +929,14 @@ const runCursorCommand = (
   args: ReadonlyArray<string>,
   executable = DEFAULT_CURSOR_AGENT_BINARY,
   env: NodeJS.ProcessEnv = process.env,
+  inheritedSynaraKeys?: ReadonlyArray<string>,
 ) => {
   const command = buildCursorAgentCommand(executable, args);
-  return runProviderCommand(command.command, command.args, buildCursorAgentHeadlessEnv(env)).pipe(
+  return runProviderCommand(
+    command.command,
+    command.args,
+    buildCursorAgentHeadlessEnv(env, inheritedSynaraKeys),
+  ).pipe(
     Effect.flatMap((result) =>
       isWindowsShellCommandMissingResult({ code: result.code, stderr: result.stderr })
         ? Effect.fail(new Error(`spawn ${command.command} ENOENT`))
@@ -957,6 +1023,15 @@ const runPiCommand = (
   env: NodeJS.ProcessEnv = process.env,
 ) =>
   runProviderCommand(executable, args, env).pipe(
+    Effect.flatMap((result) =>
+      isWindowsShellCommandMissingResult({ code: result.code, stderr: result.stderr })
+        ? Effect.fail(new Error(`spawn ${executable} ENOENT`))
+        : Effect.succeed(result),
+    ),
+  );
+
+const runAntigravityCommand = (args: ReadonlyArray<string>, executable = "agy") =>
+  runProviderCommand(executable, args, providerCommandEnv(ANTIGRAVITY_PROVIDER)).pipe(
     Effect.flatMap((result) =>
       isWindowsShellCommandMissingResult({ code: result.code, stderr: result.stderr })
         ? Effect.fail(new Error(`spawn ${executable} ENOENT`))
@@ -1957,6 +2032,97 @@ export const checkPiProviderStatus = (
     } satisfies ServerProviderStatus;
   });
 
+// ── Antigravity CLI health check ──────────────────────────────────
+
+export const checkAntigravityProviderStatus = (
+  binaryPath?: string,
+): Effect.Effect<ServerProviderStatus, never, ChildProcessSpawner.ChildProcessSpawner> =>
+  Effect.gen(function* () {
+    const checkedAt = new Date().toISOString();
+    const executable = nonEmptyTrimmed(binaryPath) ?? "agy";
+    const versionProbe = yield* runAntigravityCommand(["--version"], executable).pipe(
+      Effect.timeoutOption(DEFAULT_TIMEOUT_MS),
+      Effect.result,
+    );
+    if (Result.isFailure(versionProbe)) {
+      return {
+        provider: ANTIGRAVITY_PROVIDER,
+        status: "error",
+        available: false,
+        authStatus: "unknown",
+        checkedAt,
+        message: isCommandMissingCause(versionProbe.failure)
+          ? "Antigravity CLI (`agy`) is not installed or is not on PATH."
+          : `Antigravity CLI health check failed: ${String(versionProbe.failure)}`,
+      } satisfies ServerProviderStatus;
+    }
+    if (Option.isNone(versionProbe.success)) {
+      return {
+        provider: ANTIGRAVITY_PROVIDER,
+        status: "warning",
+        available: true,
+        authStatus: "unknown",
+        checkedAt,
+        message: "Antigravity CLI version check timed out.",
+      } satisfies ServerProviderStatus;
+    }
+    const version = versionProbe.success.value;
+    if (version.code !== 0) {
+      return {
+        provider: ANTIGRAVITY_PROVIDER,
+        status: "error",
+        available: false,
+        authStatus: "unknown",
+        checkedAt,
+        message: detailFromResult(version) ?? "Antigravity CLI version check failed.",
+      } satisfies ServerProviderStatus;
+    }
+    const parsedVersion = parseGenericCliVersion(`${version.stdout}\n${version.stderr}`);
+    if (
+      parsedVersion !== null &&
+      compareSemverVersions(parsedVersion, MINIMUM_ANTIGRAVITY_CLI_VERSION) < 0
+    ) {
+      return {
+        provider: ANTIGRAVITY_PROVIDER,
+        status: "error",
+        available: false,
+        authStatus: "unknown",
+        version: parsedVersion,
+        checkedAt,
+        message: `Antigravity CLI ${parsedVersion} is too old for Synara. Upgrade to ${MINIMUM_ANTIGRAVITY_CLI_VERSION} or newer.`,
+      } satisfies ServerProviderStatus;
+    }
+    const models = yield* runAntigravityCommand(["models"], executable).pipe(
+      Effect.timeoutOption(CLAUDE_HEALTH_TIMEOUT_MS),
+      Effect.result,
+    );
+    if (
+      Result.isSuccess(models) &&
+      Option.isSome(models.success) &&
+      models.success.value.code === 0 &&
+      models.success.value.stdout.trim().length > 0
+    ) {
+      return {
+        provider: ANTIGRAVITY_PROVIDER,
+        status: "ready",
+        available: true,
+        authStatus: "authenticated",
+        version: parsedVersion,
+        checkedAt,
+        message: "Antigravity CLI is installed, authenticated, and returned available models.",
+      } satisfies ServerProviderStatus;
+    }
+    return {
+      provider: ANTIGRAVITY_PROVIDER,
+      status: "warning",
+      available: true,
+      authStatus: "unknown",
+      version: parsedVersion,
+      checkedAt,
+      message: "Antigravity CLI is installed, but Synara could not verify login by listing models.",
+    } satisfies ServerProviderStatus;
+  });
+
 // ── Cursor health check ─────────────────────────────────────────────
 
 export const makeCheckCursorProviderStatus = (
@@ -1974,7 +2140,15 @@ export const makeCheckCursorProviderStatus = (
     }
     const probeEnv = probeEnvResult.env;
 
-    const versionProbe = yield* runCursorCommand(["--version"], executable, probeEnv).pipe(
+    const inheritedSynaraKeys = Object.keys(environment ?? {}).filter((key) =>
+      key.startsWith("SYNARA_"),
+    );
+    const versionProbe = yield* runCursorCommand(
+      ["--version"],
+      executable,
+      probeEnv,
+      inheritedSynaraKeys,
+    ).pipe(
       Effect.timeoutOption(DEFAULT_TIMEOUT_MS),
       Effect.result,
     );
@@ -2027,7 +2201,12 @@ export const makeCheckCursorProviderStatus = (
     }
     const parsedVersion = parseGenericCliVersion(`${version.stdout}\n${version.stderr}`);
 
-    const authProbe = yield* runCursorCommand(["status"], executable, probeEnv).pipe(
+    const authProbe = yield* runCursorCommand(
+      ["status"],
+      executable,
+      probeEnv,
+      inheritedSynaraKeys,
+    ).pipe(
       Effect.timeoutOption(DEFAULT_TIMEOUT_MS),
       Effect.result,
     );
@@ -2080,7 +2259,12 @@ export const makeCheckCursorProviderStatus = (
       } satisfies ServerProviderStatus;
     }
 
-    const modelsProbe = yield* runCursorCommand(["models"], executable, probeEnv).pipe(
+    const modelsProbe = yield* runCursorCommand(
+      ["models"],
+      executable,
+      probeEnv,
+      inheritedSynaraKeys,
+    ).pipe(
       Effect.timeoutOption(DEFAULT_TIMEOUT_MS),
       Effect.result,
     );
@@ -2283,7 +2467,9 @@ export function isProviderEnabledForSettings(
   provider: ProviderKind,
   settings: ServerSettings,
 ): boolean {
-  return settings.providers[provider].enabled !== false;
+  return (
+    settings.providers[provider]?.enabled !== false && settings.providers[provider] !== undefined
+  );
 }
 
 export function makeDisabledProviderStatus(
@@ -2539,20 +2725,22 @@ export function projectProviderStatusesForSettings(
 
 // ── Layer ───────────────────────────────────────────────────────────
 
-export const ProviderHealthLive = Layer.effect(
-  ProviderHealth,
-  Effect.gen(function* () {
-    const fileSystem = yield* FileSystem.FileSystem;
-    const path = yield* Path.Path;
-    const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-    const serverConfig = yield* ServerConfig;
-    const serverSettings = yield* ServerSettingsService;
-    const changesPubSub = yield* Effect.acquireRelease(
-      PubSub.unbounded<ReadonlyArray<ServerProviderStatus>>(),
-      PubSub.shutdown,
-    );
-    const refreshScope = yield* Scope.make("sequential");
-    yield* Effect.addFinalizer(() => Scope.close(refreshScope, Exit.void));
+export function makeProviderHealthLive(options?: { readonly providerUpdateTimeoutMs?: number }) {
+  const providerUpdateTimeoutMs = options?.providerUpdateTimeoutMs ?? PROVIDER_UPDATE_TIMEOUT_MS;
+  return Layer.effect(
+    ProviderHealth,
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+      const serverConfig = yield* ServerConfig;
+      const serverSettings = yield* ServerSettingsService;
+      const changesPubSub = yield* Effect.acquireRelease(
+        PubSub.unbounded<ReadonlyArray<ServerProviderStatus>>(),
+        PubSub.shutdown,
+      );
+      const refreshScope = yield* Scope.make("sequential");
+      yield* Effect.addFinalizer(() => Scope.close(refreshScope, Exit.void));
 
     const cachePathForProviderTarget = (input: {
       readonly provider: ServerProviderStatus["provider"];
@@ -3011,10 +3199,12 @@ export const ProviderHealthLive = Layer.effect(
         Effect.provideService(Path.Path, path),
         Effect.map((statuses) =>
           orderProviderStatuses(
-            statuses.flatMap((status) => (Option.isSome(status) ? [status.value] : [])),
+            statuses.filter(
+              (status): status is ServerProviderStatus =>
+                status !== undefined && !isDisabledProviderStatusOverlay(status),
+            ),
           ),
         ),
-        Effect.flatMap(enrichStatuses),
       );
 
     const persistStatuses = (statuses: ProviderStatuses) =>
@@ -3237,7 +3427,7 @@ export const ProviderHealthLive = Layer.effect(
             runUpdateCommand({ command: update.executable, args: update.args, env }),
           ),
           Effect.scoped,
-          Effect.timeoutOption(Duration.millis(UPDATE_TIMEOUT_MS)),
+          Effect.timeoutOption(Duration.millis(providerUpdateTimeoutMs)),
           Effect.result,
         );
         const finishedAt = yield* nowIso;
@@ -3260,7 +3450,7 @@ export const ProviderHealthLive = Layer.effect(
         const failed = Option.isNone(result) || result.value.exitCode !== 0;
         if (failed) {
           const message = Option.isNone(result)
-            ? "Update timed out."
+            ? `Update timed out after ${formatProviderUpdateTimeout(providerUpdateTimeoutMs)}. The provider process was stopped.`
             : `Update command exited with code ${result.value.exitCode}.`;
           const providers = yield* setProviderUpdateState(
             target,
@@ -3314,8 +3504,8 @@ export const ProviderHealthLive = Layer.effect(
     });
 
     return {
-      // Mirror upstream's behavior here: reads consume the latest stable
-      // snapshot, while refreshes happen explicitly or from provider streams.
+      // Reads consume the latest stable snapshot, while refreshes happen
+      // explicitly or from provider streams.
       getStatuses: Ref.get(statusesRef).pipe(Effect.flatMap(projectStatusesForCurrentSettings)),
       refresh,
       updateProvider,
@@ -3324,4 +3514,7 @@ export const ProviderHealthLive = Layer.effect(
       },
     } satisfies ProviderHealthShape;
   }),
-);
+  );
+}
+
+export const ProviderHealthLive = makeProviderHealthLive();

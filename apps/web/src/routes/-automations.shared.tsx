@@ -28,6 +28,7 @@ import {
   resolveSelectableProviderInstanceId,
   useAppSettings,
 } from "~/appSettings";
+import type { Thread } from "~/types";
 import {
   ComposerPickerMenuPopup,
   ComposerPickerMenuSubPopup,
@@ -502,15 +503,6 @@ export function useAutomations(onRunStarted?: (threadId: ThreadId) => void) {
   });
   const data = automationsQuery.data ?? EMPTY_AUTOMATION_LIST;
 
-  useEffect(() => {
-    const api = ensureNativeApi();
-    return api.automation.onEvent((event) => {
-      queryClient.setQueryData<AutomationListResult>(automationQueryKey, (prev) =>
-        applyAutomationEvent(prev, event),
-      );
-    });
-  }, [queryClient]);
-
   const createMutation = useMutation({
     mutationFn: (input: AutomationCreateInput) => ensureNativeApi().automation.create(input),
     onSuccess: () => void queryClient.invalidateQueries({ queryKey: automationQueryKey }),
@@ -826,7 +818,7 @@ export function AutomationDialog({
   readonly editing: boolean;
   readonly form: AutomationFormState;
   readonly projects: ReturnType<typeof useStore.getState>["projects"];
-  readonly threads: ReturnType<typeof useStore.getState>["threads"];
+  readonly threads: readonly Thread[];
   readonly warnings?: readonly AutomationDraftWarning[];
   readonly acknowledgedWarningIds?: ReadonlySet<AutomationDraftWarningId>;
   readonly onOpenChange: (open: boolean) => void;
@@ -1120,7 +1112,7 @@ export function AutomationDialog({
                           value={form.cronExpression}
                           onChange={(event) => setField("cronExpression", event.target.value)}
                           placeholder="0 9 * * *"
-                          className="w-full rounded-md border border-border bg-transparent px-2 py-1.5 font-mono text-xs outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                          className="w-full rounded-md border border-border bg-transparent px-2 py-1.5 text-xs outline-none focus-visible:ring-1 focus-visible:ring-ring"
                         />
                       </div>
                     </MenuGroup>

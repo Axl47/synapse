@@ -4,7 +4,6 @@ import {
   ProjectId,
   ThreadId,
   type ModelSelection,
-  type ProviderInstanceId,
   type ProviderKind,
   type ProviderModelOptions,
 } from "@synara/contracts";
@@ -17,6 +16,8 @@ import {
   type QueuedComposerTurn,
   captureComposerPromptHistorySavedDraft,
   deriveEffectiveComposerModelState,
+  findSupersededComposerImageBlobAttachments,
+  isComposerImageBlobReferenced,
   markPromotedDraftThreads,
   resolvePreferredComposerModelSelection,
   useComposerDraftStore,
@@ -27,8 +28,8 @@ import {
   insertInlineTerminalContextPlaceholder,
   type TerminalContextDraft,
 } from "./lib/terminalContext";
-import { createDebouncedJsonPersistStorage, createDebouncedStorage } from "./lib/storage";
-import { buildModelSelection, type ProviderOptions } from "./providerModelOptions";
+import { createDebouncedStorage } from "./lib/storage";
+import { buildModelSelection } from "./providerModelOptions";
 
 function makeImage(input: {
   id: string;
@@ -114,7 +115,7 @@ function makeQueuedTurn(id: string): QueuedComposerTurn {
     selectedModel: "gpt-5",
     selectedPromptEffort: null,
     modelSelection: {
-      instanceId: "codex",
+      provider: "codex",
       model: "gpt-5",
     },
     runtimeMode: "full-access",
@@ -140,7 +141,7 @@ function makeQueuedChatTurn(id: string, image?: ComposerImageAttachment): Queued
     selectedModel: "gpt-5",
     selectedPromptEffort: null,
     modelSelection: {
-      instanceId: "codex",
+      provider: "codex",
       model: "gpt-5",
     },
     sourceProposedPlan: {
@@ -166,14 +167,9 @@ function resetComposerDraftStore() {
 function modelSelection(
   provider: ProviderKind,
   model: string,
-  options?: ProviderOptions,
-  instanceId?: string,
+  options?: ProviderModelOptions[ProviderKind],
 ): ModelSelection {
-  return buildModelSelection(provider, model, options, { instanceId });
-}
-
-function providerInstanceId(value: string): ProviderInstanceId {
-  return value as ProviderInstanceId;
+  return buildModelSelection(provider, model, options, { instanceId: provider });
 }
 
 function providerModelOptions(options: ProviderModelOptions): ProviderModelOptions {
@@ -217,92 +213,23 @@ describe("resolvePreferredComposerModelSelection", () => {
     ).toEqual(modelSelection("grok", "grok-build"));
   });
 
-  it("prefers the exact active draft provider instance selection", () => {
+  it("uses only the active provider selection for terminal-first promotion", () => {
+    const cursorSelection = modelSelection("cursor", "cursor-auto", {
+      reasoningEffort: "high",
+    });
     expect(
       resolvePreferredComposerModelSelection({
         draft: {
           modelSelectionByProvider: {
-            claude_work: modelSelection(
-              "claudeAgent",
-              "claude-sonnet-work",
-              { effort: "max" },
-              "claude_work",
-            ),
+            codex: modelSelection("codex", "gpt-5.6-sol", { reasoningEffort: "ultra" }),
+            cursor: cursorSelection,
           },
-          activeProvider: providerInstanceId("claude_work"),
+          activeProvider: "cursor",
         },
-        threadModelSelection: modelSelection("claudeAgent", "claude-sonnet-default"),
-        projectModelSelection: modelSelection("codex", "gpt-5"),
+        threadModelSelection: null,
+        projectModelSelection: null,
       }),
-    ).toEqual(
-      modelSelection("claudeAgent", "claude-sonnet-work", { effort: "max" }, "claude_work"),
-    );
-  });
-
-  it("does not infer an active instance from arbitrary same-provider draft selections", () => {
-    const resolved = resolvePreferredComposerModelSelection({
-      draft: {
-        modelSelectionByProvider: {
-          claude_work: modelSelection(
-            "claudeAgent",
-            "claude-sonnet-work",
-            undefined,
-            "claude_work",
-          ),
-          claude_personal: modelSelection(
-            "claudeAgent",
-            "claude-sonnet-personal",
-            undefined,
-            "claude_personal",
-          ),
-        },
-        activeProvider: null,
-      },
-      threadModelSelection: null,
-      projectModelSelection: null,
-      defaultProvider: "claudeAgent",
-      resolveProviderForInstanceId: (instanceId) =>
-        instanceId === providerInstanceId("claude_work") ||
-        instanceId === providerInstanceId("claude_personal")
-          ? "claudeAgent"
-          : null,
-    });
-
-    expect(resolved).toEqual({
-      instanceId: "claudeAgent",
-      model: "claude-sonnet-5",
-    });
-  });
-
-  it("falls back to the exact active draft provider instance when no draft model exists", () => {
-    const resolved = resolvePreferredComposerModelSelection({
-      draft: {
-        modelSelectionByProvider: {},
-        activeProvider: providerInstanceId("claude_work"),
-      },
-      threadModelSelection: null,
-      projectModelSelection: null,
-    });
-
-    expect(resolved.instanceId).toBe("claude_work");
-  });
-
-  it("uses configured provider instances for opaque active draft instance ids", () => {
-    const resolved = resolvePreferredComposerModelSelection({
-      draft: {
-        modelSelectionByProvider: {},
-        activeProvider: providerInstanceId("work"),
-      },
-      threadModelSelection: modelSelection("codex", "gpt-5"),
-      projectModelSelection: null,
-      resolveProviderForInstanceId: (instanceId) =>
-        instanceId === providerInstanceId("work") ? "claudeAgent" : null,
-    });
-
-    expect(resolved).toEqual({
-      instanceId: providerInstanceId("work"),
-      model: "claude-sonnet-5",
-    });
+    ).toEqual(cursorSelection);
   });
 });
 
@@ -750,6 +677,162 @@ describe("composerDraftStore prompt history saved draft", () => {
     expect(savedDraft?.persistedAttachments.map((entry) => entry.id)).toEqual(["img-sync-history"]);
     expect(savedDraft?.nonPersistedImageIds).toEqual([]);
   });
+
+  it("preserves saved-draft AppSnap metadata when persisted storage is unreadable", async () => {
+    const store = useComposerDraftStore.getState();
+    const image = makeImage({ id: "appsnap-history-unverified", previewUrl: "blob:history" });
+    const attachment = {
+      id: image.id,
+      name: image.name,
+      mimeType: image.mimeType,
+      sizeBytes: image.sizeBytes,
+      blobKey: `${threadId}:${image.id}`,
+      source: {
+        kind: "appsnap" as const,
+        captureId: "capture-history-unverified",
+        capturedAt: "2026-07-12T20:00:00.000Z",
+        appName: "ChatGPT",
+        windowTitle: "ChatGPT",
+      },
+    };
+    store.setPrompt(threadId, "saved before browsing history");
+    store.addImage(threadId, image);
+    const draft = useComposerDraftStore.getState().draftsByThreadId[threadId]!;
+    store.setPromptHistorySavedDraft(
+      threadId,
+      captureComposerPromptHistorySavedDraft({ threadId, draft, prompt: draft.prompt }),
+    );
+    setLocalStorageItem(COMPOSER_DRAFT_STORAGE_KEY, { version: 2, state: {} }, Schema.Unknown);
+
+    await expect(
+      store.syncPromptHistorySavedDraftPersistedAttachments(threadId, [attachment]),
+    ).resolves.toBe("unverified");
+
+    const savedDraft =
+      useComposerDraftStore.getState().draftsByThreadId[threadId]?.promptHistorySavedDraft;
+    expect(savedDraft?.persistedAttachments).toEqual([attachment]);
+    expect(savedDraft?.nonPersistedImageIds).toEqual([image.id]);
+  });
+
+  it("adds a hydrated AppSnap image back to a prompt-history snapshot", () => {
+    const store = useComposerDraftStore.getState();
+    const originalImage = makeImage({
+      id: "appsnap-history-hydrated",
+      previewUrl: "blob:appsnap-history-original",
+    });
+    store.setPrompt(threadId, "saved before history navigation");
+    store.addImage(threadId, originalImage);
+    const draft = useComposerDraftStore.getState().draftsByThreadId[threadId]!;
+    store.setPromptHistorySavedDraft(
+      threadId,
+      captureComposerPromptHistorySavedDraft({ threadId, draft, prompt: draft.prompt }),
+    );
+    useComposerDraftStore.setState((state) => ({
+      draftsByThreadId: {
+        ...state.draftsByThreadId,
+        [threadId]: {
+          ...state.draftsByThreadId[threadId]!,
+          promptHistorySavedDraft: {
+            ...state.draftsByThreadId[threadId]!.promptHistorySavedDraft!,
+            images: [],
+          },
+        },
+      },
+    }));
+
+    const hydratedImage = makeImage({
+      id: originalImage.id,
+      previewUrl: "blob:appsnap-history-restored",
+    });
+    store.addPromptHistorySavedDraftImage(threadId, hydratedImage);
+
+    expect(
+      useComposerDraftStore.getState().draftsByThreadId[threadId]?.promptHistorySavedDraft?.images,
+    ).toEqual([hydratedImage]);
+  });
+
+  it("removes stale AppSnap rows before retrying a capture with missing blob bytes", async () => {
+    const liveThreadId = ThreadId.makeUnsafe("thread-appsnap-retry-live");
+    const savedThreadId = ThreadId.makeUnsafe("thread-appsnap-retry-saved");
+    const captureId = "capture-missing-blob";
+    const source = {
+      kind: "appsnap" as const,
+      captureId,
+      capturedAt: "2026-07-14T08:00:00.000Z",
+      appName: "Safari",
+      windowTitle: "Synara",
+    };
+    const staleLiveImage = {
+      ...makeImage({ id: "appsnap-stale-live", previewUrl: "blob:appsnap-stale-live" }),
+      source,
+    };
+    const staleSavedImage = {
+      ...makeImage({ id: "appsnap-stale-saved", previewUrl: "blob:appsnap-stale-saved" }),
+      source,
+    };
+    const unrelatedLiveImage = makeImage({
+      id: "unrelated-live",
+      previewUrl: "blob:unrelated-live",
+      name: "unrelated-live.png",
+    });
+    const unrelatedSavedImage = makeImage({
+      id: "unrelated-saved",
+      previewUrl: "blob:unrelated-saved",
+      name: "unrelated-saved.png",
+    });
+    const persistedAttachment = (image: ComposerImageAttachment) => ({
+      id: image.id,
+      name: image.name,
+      mimeType: image.mimeType,
+      sizeBytes: image.sizeBytes,
+      dataUrl: "data:image/png;base64,aGk=",
+      ...(image.source ? { source: image.source } : {}),
+    });
+    const store = useComposerDraftStore.getState();
+
+    store.setPrompt(liveThreadId, "live draft");
+    store.addImages(liveThreadId, [staleLiveImage, unrelatedLiveImage]);
+    await store.syncPersistedAttachments(liveThreadId, [
+      persistedAttachment(staleLiveImage),
+      persistedAttachment(unrelatedLiveImage),
+    ]);
+
+    store.setPrompt(savedThreadId, "saved draft");
+    store.addImages(savedThreadId, [staleSavedImage, unrelatedSavedImage]);
+    await store.syncPersistedAttachments(savedThreadId, [
+      persistedAttachment(staleSavedImage),
+      persistedAttachment(unrelatedSavedImage),
+    ]);
+    const savedDraft = useComposerDraftStore.getState().draftsByThreadId[savedThreadId]!;
+    store.setPromptHistorySavedDraft(
+      savedThreadId,
+      captureComposerPromptHistorySavedDraft({
+        threadId: savedThreadId,
+        draft: savedDraft,
+        prompt: savedDraft.prompt,
+      }),
+    );
+
+    expect(
+      useComposerDraftStore
+        .getState()
+        .draftsByThreadId[liveThreadId]?.images.map((image) => image.id),
+    ).toEqual([staleLiveImage.id, unrelatedLiveImage.id]);
+
+    store.removeAppSnapCapture(captureId);
+
+    const liveDraft = useComposerDraftStore.getState().draftsByThreadId[liveThreadId]!;
+    expect(liveDraft.images.map((image) => image.id)).toEqual([unrelatedLiveImage.id]);
+    expect(liveDraft.persistedAttachments.map((attachment) => attachment.id)).toEqual([
+      unrelatedLiveImage.id,
+    ]);
+    const promptHistoryDraft =
+      useComposerDraftStore.getState().draftsByThreadId[savedThreadId]?.promptHistorySavedDraft;
+    expect(promptHistoryDraft?.images.map((image) => image.id)).toEqual([unrelatedSavedImage.id]);
+    expect(promptHistoryDraft?.persistedAttachments.map((attachment) => attachment.id)).toEqual([
+      unrelatedSavedImage.id,
+    ]);
+  });
 });
 
 describe("composerDraftStore restored source proposed plan", () => {
@@ -890,6 +973,75 @@ describe("composerDraftStore copyTransferableComposerState", () => {
     }
   });
 
+  it("keeps a shared AppSnap blob referenced until every copied draft removes it", async () => {
+    const blobKey = `${sourceThreadId}:appsnap-shared`;
+    const sourceImage = {
+      ...makeImage({ id: "appsnap-shared", previewUrl: "blob:source-appsnap" }),
+      source: {
+        kind: "appsnap" as const,
+        captureId: "capture-shared",
+        capturedAt: "2026-07-12T20:00:00.000Z",
+        appName: "Safari",
+        windowTitle: "Synara",
+      },
+    };
+    const store = useComposerDraftStore.getState();
+    store.addImage(sourceThreadId, sourceImage);
+    useComposerDraftStore.setState((state) => ({
+      draftsByThreadId: {
+        ...state.draftsByThreadId,
+        [sourceThreadId]: {
+          ...state.draftsByThreadId[sourceThreadId]!,
+          persistedAttachments: [
+            {
+              id: sourceImage.id,
+              name: sourceImage.name,
+              mimeType: sourceImage.mimeType,
+              sizeBytes: sourceImage.sizeBytes,
+              blobKey,
+              source: sourceImage.source,
+            },
+          ],
+        },
+      },
+    }));
+
+    store.copyTransferableComposerState(sourceThreadId, targetThreadId);
+    store.removeImage(sourceThreadId, sourceImage.id);
+    await Promise.resolve();
+
+    expect(
+      isComposerImageBlobReferenced(useComposerDraftStore.getState().draftsByThreadId, blobKey),
+    ).toBe(true);
+
+    store.removeImage(targetThreadId, sourceImage.id);
+    await Promise.resolve();
+    expect(
+      isComposerImageBlobReferenced(useComposerDraftStore.getState().draftsByThreadId, blobKey),
+    ).toBe(false);
+  });
+
+  it("identifies a replaced thread-scoped blob key for cleanup", () => {
+    const previousAttachment = {
+      id: "appsnap-rekeyed",
+      name: "AppSnap.png",
+      mimeType: "image/png",
+      sizeBytes: 4,
+      blobKey: `${sourceThreadId}:appsnap-rekeyed`,
+    };
+    const nextAttachment = {
+      ...previousAttachment,
+      blobKey: `${targetThreadId}:appsnap-rekeyed`,
+    };
+
+    expect(
+      findSupersededComposerImageBlobAttachments([previousAttachment], [nextAttachment]),
+    ).toEqual([previousAttachment]);
+    expect(
+      findSupersededComposerImageBlobAttachments([previousAttachment], [previousAttachment]),
+    ).toEqual([]);
+  });
+
   it("preserves unrelated target draft state while replacing transferred composer content", () => {
     useComposerDraftStore.getState().setPrompt(sourceThreadId, "follow-up for the other provider");
     useComposerDraftStore.getState().setModelSelection(
@@ -904,9 +1056,7 @@ describe("composerDraftStore copyTransferableComposerState", () => {
     expect(useComposerDraftStore.getState().draftsByThreadId[targetThreadId]).toMatchObject({
       prompt: "follow-up for the other provider",
       modelSelectionByProvider: {
-        claudeAgent: modelSelection("claudeAgent", "claude-sonnet-4-6", {
-          effort: "high",
-        }),
+        claudeAgent: modelSelection("claudeAgent", "claude-sonnet-4-6", { effort: "high" }),
       },
       activeProvider: "claudeAgent",
     });
@@ -996,6 +1146,51 @@ describe("composerDraftStore syncPersistedAttachments", () => {
     removeLocalStorageItem(COMPOSER_DRAFT_STORAGE_KEY);
   });
 
+  it("stages overlapping attachment syncs immediately and serializes verification", async () => {
+    const firstImage = makeImage({
+      id: "appsnap-sync-first",
+      previewUrl: "blob:appsnap-sync-first",
+      name: "appsnap-sync-first.png",
+    });
+    const secondImage = makeImage({
+      id: "appsnap-sync-second",
+      previewUrl: "blob:appsnap-sync-second",
+      name: "appsnap-sync-second.png",
+    });
+    const attachmentFor = (image: ComposerImageAttachment) => ({
+      id: image.id,
+      name: image.name,
+      mimeType: image.mimeType,
+      sizeBytes: image.sizeBytes,
+      dataUrl: "data:image/png;base64,aGk=",
+    });
+    const store = useComposerDraftStore.getState();
+    store.addImages(threadId, [firstImage, secondImage]);
+
+    const firstSync = store.syncPersistedAttachments(threadId, [attachmentFor(firstImage)]);
+    const secondSync = store.syncPersistedAttachments(threadId, [
+      attachmentFor(firstImage),
+      attachmentFor(secondImage),
+    ]);
+
+    // Staging is synchronous even while an earlier sync is still verifying, so
+    // a reload in that window cannot lose the newer attachment metadata.
+    expect(
+      useComposerDraftStore
+        .getState()
+        .draftsByThreadId[threadId]?.persistedAttachments.map((attachment) => attachment.id),
+    ).toEqual([firstImage.id, secondImage.id]);
+    await expect(Promise.all([firstSync, secondSync])).resolves.toEqual([
+      "unverified",
+      "unverified",
+    ]);
+    expect(
+      useComposerDraftStore
+        .getState()
+        .draftsByThreadId[threadId]?.persistedAttachments.map((attachment) => attachment.id),
+    ).toEqual([firstImage.id, secondImage.id]);
+  });
+
   it("treats malformed persisted draft storage as empty", async () => {
     const image = makeImage({
       id: "img-persisted",
@@ -1017,7 +1212,7 @@ describe("composerDraftStore syncPersistedAttachments", () => {
       Schema.Unknown,
     );
 
-    useComposerDraftStore.getState().syncPersistedAttachments(threadId, [
+    const persisted = await useComposerDraftStore.getState().syncPersistedAttachments(threadId, [
       {
         id: image.id,
         name: image.name,
@@ -1026,14 +1221,274 @@ describe("composerDraftStore syncPersistedAttachments", () => {
         dataUrl: image.previewUrl,
       },
     ]);
-    await Promise.resolve();
+    expect(persisted).toBe("unverified");
 
     expect(
       useComposerDraftStore.getState().draftsByThreadId[threadId]?.persistedAttachments,
-    ).toEqual([]);
+    ).toHaveLength(1);
     expect(
       useComposerDraftStore.getState().draftsByThreadId[threadId]?.nonPersistedImageIds,
     ).toEqual([image.id]);
+  });
+
+  it("warns when AppSnap bytes exist but their draft metadata cannot be verified", async () => {
+    const image = makeImage({
+      id: "appsnap-persisted",
+      previewUrl: "blob:appsnap-persisted",
+    });
+    useComposerDraftStore.getState().addImage(threadId, image);
+    setLocalStorageItem(
+      COMPOSER_DRAFT_STORAGE_KEY,
+      {
+        version: 2,
+        state: {
+          draftsByThreadId: {
+            [threadId]: {
+              attachments: "not-an-array",
+            },
+          },
+        },
+      },
+      Schema.Unknown,
+    );
+
+    const persisted = await useComposerDraftStore.getState().syncPersistedAttachments(threadId, [
+      {
+        id: image.id,
+        name: image.name,
+        mimeType: image.mimeType,
+        sizeBytes: image.sizeBytes,
+        blobKey: `${threadId}:${image.id}`,
+        source: {
+          kind: "appsnap",
+          captureId: "capture-persisted",
+          capturedAt: "2026-07-12T20:00:00.000Z",
+          appName: "ChatGPT",
+          windowTitle: "ChatGPT",
+        },
+      },
+    ]);
+    expect(persisted).toBe("unverified");
+
+    expect(
+      useComposerDraftStore.getState().draftsByThreadId[threadId]?.persistedAttachments,
+    ).toHaveLength(1);
+    expect(
+      useComposerDraftStore.getState().draftsByThreadId[threadId]?.nonPersistedImageIds,
+    ).toEqual([image.id]);
+  });
+
+  it("clears the warning after AppSnap blob metadata is readable from storage", async () => {
+    const image = makeImage({
+      id: "appsnap-verified",
+      previewUrl: "blob:appsnap-verified",
+    });
+    useComposerDraftStore.getState().addImage(threadId, image);
+
+    setLocalStorageItem(
+      COMPOSER_DRAFT_STORAGE_KEY,
+      {
+        version: 5,
+        state: {
+          draftsByThreadId: {
+            [threadId]: {
+              prompt: "",
+              attachments: [
+                {
+                  id: image.id,
+                  name: image.name,
+                  mimeType: image.mimeType,
+                  sizeBytes: image.sizeBytes,
+                  blobKey: `${threadId}:${image.id}`,
+                  source: {
+                    kind: "appsnap",
+                    captureId: "capture-verified",
+                    capturedAt: "2026-07-12T20:00:00.000Z",
+                    appName: "ChatGPT",
+                    windowTitle: "ChatGPT",
+                  },
+                },
+              ],
+            },
+          },
+          draftThreadsByThreadId: {},
+          projectDraftThreadIdByProjectId: {},
+        },
+      },
+      Schema.Unknown,
+    );
+
+    const persisted = await useComposerDraftStore.getState().syncPersistedAttachments(threadId, [
+      {
+        id: image.id,
+        name: image.name,
+        mimeType: image.mimeType,
+        sizeBytes: image.sizeBytes,
+        blobKey: `${threadId}:${image.id}`,
+        source: {
+          kind: "appsnap",
+          captureId: "capture-verified",
+          capturedAt: "2026-07-12T20:00:00.000Z",
+          appName: "ChatGPT",
+          windowTitle: "ChatGPT",
+        },
+      },
+    ]);
+    expect(persisted).toBe("persisted");
+
+    expect(
+      useComposerDraftStore.getState().draftsByThreadId[threadId]?.persistedAttachments,
+    ).toHaveLength(1);
+    expect(
+      useComposerDraftStore.getState().draftsByThreadId[threadId]?.nonPersistedImageIds,
+    ).toEqual([]);
+  });
+
+  it("verifies AppSnap metadata without rejecting unrelated malformed drafts", async () => {
+    const image = makeImage({
+      id: "appsnap-valid-among-malformed",
+      previewUrl: "blob:appsnap-valid-among-malformed",
+    });
+    const attachment = {
+      id: image.id,
+      name: image.name,
+      mimeType: image.mimeType,
+      sizeBytes: image.sizeBytes,
+      blobKey: `${threadId}:${image.id}`,
+      source: {
+        kind: "appsnap" as const,
+        captureId: "capture-valid-among-malformed",
+        capturedAt: "2026-07-12T20:00:00.000Z",
+        appName: "ChatGPT",
+        windowTitle: "ChatGPT",
+      },
+    };
+    useComposerDraftStore.getState().addImage(threadId, image);
+    setLocalStorageItem(
+      COMPOSER_DRAFT_STORAGE_KEY,
+      {
+        version: 5,
+        state: {
+          draftsByThreadId: {
+            [threadId]: {
+              prompt: "",
+              attachments: [attachment],
+            },
+            "unrelated-malformed-thread": {
+              prompt: 42,
+              attachments: "not-an-array",
+            },
+          },
+        },
+      },
+      Schema.Unknown,
+    );
+
+    await expect(
+      useComposerDraftStore.getState().syncPersistedAttachments(threadId, [attachment]),
+    ).resolves.toBe("persisted");
+    expect(
+      useComposerDraftStore.getState().draftsByThreadId[threadId]?.nonPersistedImageIds,
+    ).toEqual([]);
+  });
+
+  it("keeps AppSnap blob metadata and migrates former provenance", () => {
+    const persistApi = useComposerDraftStore.persist as unknown as {
+      getOptions: () => {
+        merge: (
+          persistedState: unknown,
+          currentState: ReturnType<typeof useComposerDraftStore.getState>,
+        ) => ReturnType<typeof useComposerDraftStore.getState>;
+      };
+    };
+    const source = {
+      kind: "appsnap",
+      captureId: "capture-1",
+      capturedAt: "2026-07-12T19:59:33.000Z",
+      appName: "Safari",
+      bundleIdentifier: null,
+      appIconDataUrl: null,
+      windowTitle: "Synara",
+    };
+    const mergedState = persistApi.getOptions().merge(
+      {
+        draftsByThreadId: {
+          [threadId]: {
+            prompt: "",
+            attachments: [
+              {
+                id: "appsnap-1",
+                name: "appsnap.png",
+                mimeType: "image/png",
+                sizeBytes: 2048,
+                blobKey: `${threadId}:appsnap-1`,
+                source: { ...source, kind: "appshot" },
+              },
+            ],
+          },
+        },
+      },
+      useComposerDraftStore.getInitialState(),
+    );
+
+    expect(mergedState.draftsByThreadId[threadId]?.images).toEqual([]);
+    expect(mergedState.draftsByThreadId[threadId]?.persistedAttachments).toEqual([
+      expect.objectContaining({
+        id: "appsnap-1",
+        blobKey: `${threadId}:appsnap-1`,
+        source,
+      }),
+    ]);
+  });
+
+  it("omits inline AppSnap icons from localStorage metadata", () => {
+    const image = makeImage({ id: "appsnap-icon", previewUrl: "blob:appsnap-icon" });
+    useComposerDraftStore.getState().addImage(threadId, image);
+    useComposerDraftStore.setState((state) => ({
+      draftsByThreadId: {
+        ...state.draftsByThreadId,
+        [threadId]: {
+          ...state.draftsByThreadId[threadId]!,
+          persistedAttachments: [
+            {
+              id: image.id,
+              name: image.name,
+              mimeType: image.mimeType,
+              sizeBytes: image.sizeBytes,
+              blobKey: `${threadId}:${image.id}`,
+              source: {
+                kind: "appsnap",
+                captureId: "capture-icon",
+                capturedAt: "2026-07-12T20:00:00.000Z",
+                appName: "Safari",
+                bundleIdentifier: "com.apple.Safari",
+                appIconDataUrl: "data:image/png;base64,aWNvbg==",
+                windowTitle: "Synara",
+              },
+            },
+          ],
+        },
+      },
+    }));
+
+    const persistApi = useComposerDraftStore.persist as unknown as {
+      getOptions: () => {
+        partialize: (state: ReturnType<typeof useComposerDraftStore.getState>) => unknown;
+      };
+    };
+    const persistedState = persistApi.getOptions().partialize(useComposerDraftStore.getState()) as {
+      draftsByThreadId?: Record<
+        string,
+        { attachments?: Array<{ source?: Record<string, unknown> }> }
+      >;
+    };
+
+    expect(persistedState.draftsByThreadId?.[threadId]?.attachments?.[0]?.source).toMatchObject({
+      bundleIdentifier: "com.apple.Safari",
+    });
+    expect(
+      persistedState.draftsByThreadId?.[threadId]?.attachments?.[0]?.source,
+    ).not.toHaveProperty("appIconDataUrl");
   });
 });
 
@@ -1244,37 +1699,72 @@ describe("composerDraftStore terminal contexts", () => {
     );
   });
 
-  it.each(["max", "ultra"] as const)(
-    "preserves restored Codex %s reasoning effort",
-    (reasoningEffort) => {
-      const persistApi = useComposerDraftStore.persist as unknown as {
-        getOptions: () => {
-          merge: (
-            persistedState: unknown,
-            currentState: ReturnType<typeof useComposerDraftStore.getState>,
-          ) => ReturnType<typeof useComposerDraftStore.getState>;
-        };
+  it("trims a runtime-discovered Codex effort from legacy draft storage", () => {
+    const persistApi = useComposerDraftStore.persist as unknown as {
+      getOptions: () => {
+        merge: (
+          persistedState: unknown,
+          currentState: ReturnType<typeof useComposerDraftStore.getState>,
+        ) => ReturnType<typeof useComposerDraftStore.getState>;
       };
-      const mergedState = persistApi.getOptions().merge(
-        {
-          draftsByThreadId: {
-            [threadId]: {
-              provider: "codex",
-              model: "gpt-5.6-sol",
-              modelOptions: { codex: { reasoningEffort } },
-            },
+    };
+    const mergedState = persistApi.getOptions().merge(
+      {
+        draftsByThreadId: {
+          [threadId]: {
+            provider: "codex",
+            model: "gpt-5.6-sol",
+            effort: "  ultra  ",
           },
-          draftThreadsByThreadId: {},
-          projectDraftThreadIdByProjectId: {},
         },
-        useComposerDraftStore.getInitialState(),
-      );
+        draftThreadsByThreadId: {},
+        projectDraftThreadIdByProjectId: {},
+      },
+      useComposerDraftStore.getInitialState(),
+    );
 
-      expect(mergedState.draftsByThreadId[threadId]?.modelSelectionByProvider.codex).toEqual(
-        modelSelection("codex", "gpt-5.6-sol", { reasoningEffort }),
-      );
-    },
-  );
+    expect(mergedState.draftsByThreadId[threadId]?.modelSelectionByProvider.codex).toEqual(
+      modelSelection("codex", "gpt-5.6-sol"),
+    );
+  });
+
+  it("restores provider-scoped selections without leaking effort across providers", () => {
+    const persistApi = useComposerDraftStore.persist as unknown as {
+      getOptions: () => {
+        merge: (
+          persistedState: unknown,
+          currentState: ReturnType<typeof useComposerDraftStore.getState>,
+        ) => ReturnType<typeof useComposerDraftStore.getState>;
+      };
+    };
+    const codexSelection = modelSelection("codex", "gpt-5.6-sol", {
+      reasoningEffort: "ultra",
+    });
+    const cursorSelection = modelSelection("cursor", "cursor-auto", {
+      reasoningEffort: "high",
+    });
+    const mergedState = persistApi.getOptions().merge(
+      {
+        draftsByThreadId: {
+          [threadId]: {
+            modelSelectionByProvider: {
+              codex: codexSelection,
+              cursor: cursorSelection,
+            },
+            activeProvider: "cursor",
+          },
+        },
+        draftThreadsByThreadId: {},
+        projectDraftThreadIdByProjectId: {},
+      },
+      useComposerDraftStore.getInitialState(),
+    );
+
+    const draft = mergedState.draftsByThreadId[threadId];
+    expect(draft?.modelSelectionByProvider.codex).toEqual(codexSelection);
+    expect(draft?.modelSelectionByProvider.cursor).toEqual(cursorSelection);
+    expect(draft?.activeProvider).toBe("cursor");
+  });
 });
 
 describe("composerDraftStore project draft thread mapping", () => {
@@ -1708,6 +2198,36 @@ describe("composerDraftStore modelSelection", () => {
     );
   });
 
+  it.each(["max", "ultra"])(
+    "retains runtime-discovered Codex %s effort in thread and sticky selections",
+    (reasoningEffort) => {
+      const store = useComposerDraftStore.getState();
+      const selection = modelSelection("codex", "gpt-5.6-sol", { reasoningEffort });
+
+      store.setModelSelection(threadId, selection);
+      store.setStickyModelSelection(selection);
+
+      const state = useComposerDraftStore.getState();
+      expect(state.draftsByThreadId[threadId]?.modelSelectionByProvider.codex).toEqual(selection);
+      expect(state.stickyModelSelectionByProvider.codex).toEqual(selection);
+    },
+  );
+
+  it("drops malformed Codex reasoning efforts while preserving other options", () => {
+    const store = useComposerDraftStore.getState();
+
+    store.setProviderModelOptions(
+      threadId,
+      "codex",
+      { reasoningEffort: "   ", fastMode: true },
+      { model: "gpt-5.6-sol" },
+    );
+
+    expect(
+      useComposerDraftStore.getState().draftsByThreadId[threadId]?.modelSelectionByProvider.codex,
+    ).toEqual(modelSelection("codex", "gpt-5.6-sol", { fastMode: true }));
+  });
+
   it("keeps default-only model selections on the draft", () => {
     const store = useComposerDraftStore.getState();
     store.setModelSelection(threadId, modelSelection("codex", "gpt-5.4"));
@@ -1715,76 +2235,6 @@ describe("composerDraftStore modelSelection", () => {
     expect(
       useComposerDraftStore.getState().draftsByThreadId[threadId]?.modelSelectionByProvider.codex,
     ).toEqual(modelSelection("codex", "gpt-5.4"));
-  });
-
-  it("preserves provider instance ids when reusing existing model options", () => {
-    const store = useComposerDraftStore.getState();
-    store.setModelSelection(
-      threadId,
-      modelSelection(
-        "codex",
-        "gpt-5.3-codex",
-        {
-          reasoningEffort: "xhigh",
-        },
-        "codex_work",
-      ),
-    );
-
-    store.setModelSelection(threadId, modelSelection("codex", "gpt-5.4", undefined, "codex_work"));
-
-    expect(
-      useComposerDraftStore.getState().draftsByThreadId[threadId]?.modelSelectionByProvider
-        .codex_work,
-    ).toEqual(
-      modelSelection(
-        "codex",
-        "gpt-5.4",
-        {
-          reasoningEffort: "xhigh",
-        },
-        "codex_work",
-      ),
-    );
-  });
-
-  it("keeps same-provider instance selections in separate draft slots", () => {
-    const store = useComposerDraftStore.getState();
-
-    store.setModelSelection(
-      threadId,
-      modelSelection("claudeAgent", "claude-sonnet-personal", undefined, "claude_personal"),
-    );
-    store.setModelSelection(
-      threadId,
-      modelSelection("claudeAgent", "claude-sonnet-work", { effort: "max" }, "claude_work"),
-    );
-
-    const selections =
-      useComposerDraftStore.getState().draftsByThreadId[threadId]?.modelSelectionByProvider;
-    expect(selections?.claude_personal).toEqual(
-      modelSelection("claudeAgent", "claude-sonnet-personal", undefined, "claude_personal"),
-    );
-    expect(selections?.claude_work).toEqual(
-      modelSelection("claudeAgent", "claude-sonnet-work", { effort: "max" }, "claude_work"),
-    );
-    expect(useComposerDraftStore.getState().draftsByThreadId[threadId]?.activeProvider).toBe(
-      "claude_work",
-    );
-  });
-
-  it("keeps sticky selections scoped to the exact provider instance", () => {
-    const store = useComposerDraftStore.getState();
-
-    store.setStickyModelSelection(
-      modelSelection("claudeAgent", "claude-sonnet-work", { effort: "max" }, "claude_work"),
-    );
-
-    const state = useComposerDraftStore.getState();
-    expect(state.stickyModelSelectionByProvider.claude_work).toEqual(
-      modelSelection("claudeAgent", "claude-sonnet-work", { effort: "max" }, "claude_work"),
-    );
-    expect(state.stickyActiveProvider).toBe("claude_work");
   });
 
   it("stores Grok selections instead of dropping them during normalization", () => {
@@ -1800,6 +2250,24 @@ describe("composerDraftStore modelSelection", () => {
     expect(state.draftsByThreadId[threadId]?.activeProvider).toBe("grok");
     expect(state.stickyModelSelectionByProvider.grok).toEqual(modelSelection("grok", "grok-build"));
     expect(state.stickyActiveProvider).toBe("grok");
+  });
+
+  it("stores Antigravity base models and effort options separately", () => {
+    const store = useComposerDraftStore.getState();
+    const selection = modelSelection("antigravity", "Gemini 3.5 Flash", {
+      reasoningEffort: "high",
+    });
+
+    store.setModelSelection(threadId, selection);
+    store.setStickyModelSelection(selection);
+
+    const state = useComposerDraftStore.getState();
+    expect(state.draftsByThreadId[threadId]?.modelSelectionByProvider.antigravity).toEqual(
+      selection,
+    );
+    expect(state.draftsByThreadId[threadId]?.activeProvider).toBe("antigravity");
+    expect(state.stickyModelSelectionByProvider.antigravity).toEqual(selection);
+    expect(state.stickyActiveProvider).toBe("antigravity");
   });
 
   it("replaces only the targeted provider options on the current model selection", () => {
@@ -1841,36 +2309,6 @@ describe("composerDraftStore modelSelection", () => {
         thinking: false,
       }),
     );
-  });
-
-  it("persists provider option changes to the targeted provider instance", () => {
-    const store = useComposerDraftStore.getState();
-    store.setModelSelection(
-      threadId,
-      modelSelection("claudeAgent", "claude-sonnet-work", { effort: "max" }, "claude_work"),
-    );
-
-    store.setProviderModelOptions(
-      threadId,
-      "claudeAgent",
-      { fastMode: true },
-      {
-        instanceId: providerInstanceId("claude_work"),
-        model: "claude-sonnet-work",
-        persistSticky: true,
-      },
-    );
-
-    expect(
-      useComposerDraftStore.getState().draftsByThreadId[threadId]?.modelSelectionByProvider
-        .claude_work,
-    ).toEqual(
-      modelSelection("claudeAgent", "claude-sonnet-work", { fastMode: true }, "claude_work"),
-    );
-    expect(useComposerDraftStore.getState().stickyModelSelectionByProvider.claude_work).toEqual(
-      modelSelection("claudeAgent", "claude-sonnet-work", { fastMode: true }, "claude_work"),
-    );
-    expect(useComposerDraftStore.getState().stickyActiveProvider).toBe("claude_work");
   });
 
   it("keeps explicit default-state overrides on the selection", () => {
@@ -1962,12 +2400,12 @@ describe("composerDraftStore modelSelection", () => {
     store.setModelOptions(threadId, providerModelOptions({ codex: { reasoningEffort: "xhigh" } }));
 
     const draft = useComposerDraftStore.getState().draftsByThreadId[threadId];
-    expect(draft?.modelSelectionByProvider.codex?.options).toEqual([
-      { id: "reasoningEffort", value: "xhigh" },
-    ]);
-    expect(draft?.modelSelectionByProvider.claudeAgent?.options).toEqual([
-      { id: "effort", value: "max" },
-    ]);
+    expect(draft?.modelSelectionByProvider.codex?.options).toEqual(
+      modelSelection("codex", "gpt-5.4", { reasoningEffort: "xhigh" }).options,
+    );
+    expect(draft?.modelSelectionByProvider.claudeAgent?.options).toEqual(
+      modelSelection("claudeAgent", "claude-opus-4-6", { effort: "max" }).options,
+    );
   });
 
   it("preserves other provider options when switching the active model selection", () => {
@@ -1987,9 +2425,9 @@ describe("composerDraftStore modelSelection", () => {
     expect(draft?.modelSelectionByProvider.claudeAgent).toEqual(
       modelSelection("claudeAgent", "claude-opus-4-6", { effort: "max" }),
     );
-    expect(draft?.modelSelectionByProvider.codex?.options).toEqual([
-      { id: "fastMode", value: true },
-    ]);
+    expect(draft?.modelSelectionByProvider.codex?.options).toEqual(
+      modelSelection("codex", "gpt-5.4", { fastMode: true }).options,
+    );
     expect(draft?.activeProvider).toBe("claudeAgent");
   });
 
@@ -2029,8 +2467,9 @@ describe("composerDraftStore modelSelection", () => {
         codex: [],
         claudeAgent: [],
         cursor: [],
-        gemini: [],
+        antigravity: [],
         grok: [],
+        droid: [],
         kilo: [],
         opencode: [],
         pi: [],
@@ -2056,8 +2495,9 @@ describe("composerDraftStore modelSelection", () => {
         codex: [],
         claudeAgent: [],
         cursor: [],
-        gemini: [],
+        antigravity: [],
         grok: [],
+        droid: [],
         kilo: [],
         opencode: [],
         pi: [],
@@ -2088,8 +2528,9 @@ describe("composerDraftStore modelSelection", () => {
         codex: [],
         claudeAgent: [],
         cursor: [],
-        gemini: [],
+        antigravity: [],
         grok: [],
+        droid: [],
         kilo: [],
         opencode: [],
         pi: [],
@@ -2103,45 +2544,6 @@ describe("composerDraftStore modelSelection", () => {
     });
 
     expect(state.selectedModel).toBe("opencode/gpt-5-nano");
-  });
-
-  it("ignores same-provider draft models and options from a different provider instance", () => {
-    const state = deriveEffectiveComposerModelState({
-      draft: {
-        modelSelectionByProvider: {
-          codex_personal: modelSelection(
-            "codex",
-            "gpt-5-personal",
-            { effort: "high" },
-            "codex_personal",
-          ),
-        },
-        activeProvider: "codex",
-      },
-      selectedProvider: "codex",
-      selectedProviderInstanceId: "codex_work",
-      threadModelSelection: null,
-      projectModelSelection: null,
-      customModelsByProvider: {
-        codex: [],
-        claudeAgent: [],
-        cursor: [],
-        gemini: [],
-        grok: [],
-        kilo: [],
-        opencode: [],
-        pi: [],
-      },
-      availableModelOptionsByProvider: {
-        codex: [
-          { slug: "gpt-5-work", name: "GPT-5 Work" },
-          { slug: "gpt-5-personal", name: "GPT-5 Personal" },
-        ],
-      },
-    });
-
-    expect(state.selectedModel).toBe("gpt-5-work");
-    expect(state.modelOptions?.codex).toBeUndefined();
   });
 
   it("preserves a selected Pi custom model when discovery omits it", () => {
@@ -2159,8 +2561,9 @@ describe("composerDraftStore modelSelection", () => {
         codex: [],
         claudeAgent: [],
         cursor: [],
-        gemini: [],
+        antigravity: [],
         grok: [],
+        droid: [],
         kilo: [],
         opencode: [],
         pi: [],
@@ -2397,6 +2800,136 @@ describe("composerDraftStore setModelSelection", () => {
       useComposerDraftStore.getState().draftsByThreadId[threadId]?.modelSelectionByProvider.codex,
     ).toEqual(modelSelection("codex", "gpt-5.3-codex"));
   });
+
+  it("preserves newly discovered Droid effort strings in composer state", () => {
+    const store = useComposerDraftStore.getState();
+    store.setModelSelection(threadId, modelSelection("droid", "future-droid-model"));
+
+    store.setProviderModelOptions(threadId, "droid", { reasoningEffort: "ultra" });
+
+    expect(
+      useComposerDraftStore.getState().draftsByThreadId[threadId]?.modelSelectionByProvider.droid,
+    ).toEqual(modelSelection("droid", "future-droid-model", { reasoningEffort: "ultra" }));
+  });
+
+  it("drops a runtime Codex effort when switching models before terminal promotion", () => {
+    const store = useComposerDraftStore.getState();
+    store.setModelSelectionAndSticky(
+      threadId,
+      modelSelection("codex", "gpt-5.6-sol", {
+        reasoningEffort: "ultra",
+        fastMode: true,
+      }),
+    );
+
+    store.setModelSelectionAndSticky(threadId, modelSelection("codex", "gpt-5.4"));
+
+    const state = useComposerDraftStore.getState();
+    const draft = state.draftsByThreadId[threadId];
+    const expectedSelection = modelSelection("codex", "gpt-5.4", { fastMode: true });
+    expect(draft?.modelSelectionByProvider.codex).toEqual(expectedSelection);
+    expect(state.stickyModelSelectionByProvider.codex).toEqual(expectedSelection);
+    expect(
+      resolvePreferredComposerModelSelection({
+        draft,
+        threadModelSelection: null,
+        projectModelSelection: null,
+      }),
+    ).toEqual(expectedSelection);
+  });
+
+  it("retains a runtime Codex effort when reselecting the same model", () => {
+    const store = useComposerDraftStore.getState();
+    const selection = modelSelection("codex", "gpt-5.6-sol", {
+      reasoningEffort: "max",
+      fastMode: true,
+    });
+    store.setModelSelectionAndSticky(threadId, selection);
+
+    store.setModelSelectionAndSticky(threadId, modelSelection("codex", "gpt-5.6-sol"));
+
+    const state = useComposerDraftStore.getState();
+    expect(state.draftsByThreadId[threadId]?.modelSelectionByProvider.codex).toEqual(selection);
+    expect(state.stickyModelSelectionByProvider.codex).toEqual(selection);
+  });
+
+  it("preserves a built-in Codex effort supported by both models", () => {
+    const store = useComposerDraftStore.getState();
+    store.setModelSelectionAndSticky(
+      threadId,
+      modelSelection("codex", "gpt-5.5", { reasoningEffort: "xhigh", fastMode: true }),
+    );
+
+    store.setModelSelectionAndSticky(threadId, modelSelection("codex", "gpt-5.4"));
+
+    const expectedSelection = modelSelection("codex", "gpt-5.4", {
+      reasoningEffort: "xhigh",
+      fastMode: true,
+    });
+    const state = useComposerDraftStore.getState();
+    expect(state.draftsByThreadId[threadId]?.modelSelectionByProvider.codex).toEqual(
+      expectedSelection,
+    );
+    expect(state.stickyModelSelectionByProvider.codex).toEqual(expectedSelection);
+  });
+
+  it("restores Cursor state without transferring the active Codex effort", () => {
+    const store = useComposerDraftStore.getState();
+    const cursorSelection = modelSelection("cursor", "cursor-auto", {
+      reasoningEffort: "high",
+    });
+    store.setModelSelectionAndSticky(threadId, cursorSelection);
+    store.setModelSelectionAndSticky(
+      threadId,
+      modelSelection("codex", "gpt-5.6-sol", { reasoningEffort: "ultra" }),
+    );
+
+    store.setModelSelectionAndSticky(threadId, modelSelection("cursor", "cursor-auto"));
+
+    const state = useComposerDraftStore.getState();
+    expect(state.draftsByThreadId[threadId]?.modelSelectionByProvider.cursor).toEqual(
+      cursorSelection,
+    );
+    expect(state.stickyModelSelectionByProvider.cursor).toEqual(cursorSelection);
+  });
+
+  it("restores Codex state without transferring the active Cursor effort", () => {
+    const store = useComposerDraftStore.getState();
+    const codexSelection = modelSelection("codex", "gpt-5.4", {
+      reasoningEffort: "xhigh",
+    });
+    store.setModelSelectionAndSticky(threadId, codexSelection);
+    store.setModelSelectionAndSticky(
+      threadId,
+      modelSelection("cursor", "cursor-auto", { reasoningEffort: "high" }),
+    );
+
+    store.setModelSelectionAndSticky(threadId, modelSelection("codex", "gpt-5.4"));
+
+    const state = useComposerDraftStore.getState();
+    expect(state.draftsByThreadId[threadId]?.modelSelectionByProvider.codex).toEqual(
+      codexSelection,
+    );
+    expect(state.stickyModelSelectionByProvider.codex).toEqual(codexSelection);
+  });
+
+  it("uses destination defaults when switching providers without saved state", () => {
+    const store = useComposerDraftStore.getState();
+    store.setModelSelectionAndSticky(
+      threadId,
+      modelSelection("codex", "gpt-5.6-sol", { reasoningEffort: "ultra" }),
+    );
+
+    store.setModelSelectionAndSticky(threadId, modelSelection("claudeAgent", "claude-opus-4-6"));
+
+    const state = useComposerDraftStore.getState();
+    expect(state.draftsByThreadId[threadId]?.modelSelectionByProvider.claudeAgent).toEqual(
+      modelSelection("claudeAgent", "claude-opus-4-6"),
+    );
+    expect(state.stickyModelSelectionByProvider.claudeAgent).toEqual(
+      modelSelection("claudeAgent", "claude-opus-4-6"),
+    );
+  });
 });
 
 describe("composerDraftStore sticky composer settings", () => {
@@ -2456,8 +2989,8 @@ describe("composerDraftStore sticky composer settings", () => {
       },
       4,
     ) as {
-      stickyModelSelectionByProvider: Partial<Record<ProviderKind, ModelSelection>>;
-      stickyActiveProvider: ProviderKind | null;
+      stickyModelSelectionByProvider: Partial<Record<ModelSelection["provider"], ModelSelection>>;
+      stickyActiveProvider: ModelSelection["provider"] | null;
     };
 
     expect(migratedState.stickyModelSelectionByProvider.claudeAgent).toEqual(
@@ -2481,6 +3014,40 @@ describe("composerDraftStore sticky composer settings", () => {
       },
       activeProvider: "claudeAgent",
     });
+  });
+
+  it("does not overwrite existing model-scoped options with another sticky model", () => {
+    const store = useComposerDraftStore.getState();
+    const threadId = ThreadId.makeUnsafe("thread-sticky-model-scope");
+    const currentSelection = modelSelection("codex", "gpt-5.4", {
+      reasoningEffort: "xhigh",
+    });
+    store.setStickyModelSelection(
+      modelSelection("codex", "gpt-5.6-sol", { reasoningEffort: "ultra" }),
+    );
+    store.setModelSelection(threadId, currentSelection);
+
+    store.applyStickyState(threadId);
+
+    expect(
+      useComposerDraftStore.getState().draftsByThreadId[threadId]?.modelSelectionByProvider.codex,
+    ).toEqual(currentSelection);
+  });
+
+  it("restores sticky options for the same provider and model", () => {
+    const store = useComposerDraftStore.getState();
+    const threadId = ThreadId.makeUnsafe("thread-sticky-same-model");
+    const stickySelection = modelSelection("codex", "gpt-5.4", {
+      reasoningEffort: "xhigh",
+    });
+    store.setStickyModelSelection(stickySelection);
+    store.setModelSelection(threadId, modelSelection("codex", "gpt-5.4"));
+
+    store.applyStickyState(threadId);
+
+    expect(
+      useComposerDraftStore.getState().draftsByThreadId[threadId]?.modelSelectionByProvider.codex,
+    ).toEqual(stickySelection);
   });
 
   it("strips the Claude context window from sticky selections", () => {
@@ -2524,10 +3091,12 @@ describe("composerDraftStore sticky composer settings", () => {
     expect(
       useComposerDraftStore.getState().draftsByThreadId[threadId]?.modelSelectionByProvider
         .claudeAgent?.options,
-    ).toEqual([
-      { id: "effort", value: "xhigh" },
-      { id: "autoCompactWindow", value: "1m" },
-    ]);
+    ).toEqual(
+      modelSelection("claudeAgent", "claude-opus-4-7", {
+        effort: "xhigh",
+        autoCompactWindow: "1m",
+      }).options,
+    );
     expect(useComposerDraftStore.getState().stickyModelSelectionByProvider.claudeAgent).toEqual(
       modelSelection("claudeAgent", "claude-opus-4-7", { effort: "xhigh" }),
     );
@@ -2547,10 +3116,10 @@ describe("composerDraftStore sticky composer settings", () => {
     const state = useComposerDraftStore.getState();
     // The thread keeps its own choice and migrates the legacy field name.
     expect(state.draftsByThreadId[threadId]?.modelSelectionByProvider.claudeAgent?.options).toEqual(
-      [
-        { id: "effort", value: "xhigh" },
-        { id: "autoCompactWindow", value: "1m" },
-      ],
+      modelSelection("claudeAgent", "claude-opus-4-7", {
+        effort: "xhigh",
+        autoCompactWindow: "1m",
+      }).options,
     );
     // The sticky snapshot only carries options that are safe to inherit.
     expect(state.stickyModelSelectionByProvider.claudeAgent).toEqual(
@@ -2579,7 +3148,7 @@ describe("composerDraftStore sticky composer settings", () => {
       },
       useComposerDraftStore.getState(),
     ) as {
-      stickyModelSelectionByProvider: Partial<Record<ProviderKind, ModelSelection>>;
+      stickyModelSelectionByProvider: Partial<Record<ModelSelection["provider"], ModelSelection>>;
     };
 
     expect(merged.stickyModelSelectionByProvider.claudeAgent).toEqual(
@@ -2608,9 +3177,9 @@ describe("composerDraftStore provider-scoped option updates", () => {
     expect(draft?.modelSelectionByProvider.codex).toEqual(
       modelSelection("codex", "gpt-5.3-codex", { reasoningEffort: "medium" }),
     );
-    expect(draft?.modelSelectionByProvider.claudeAgent?.options).toEqual([
-      { id: "effort", value: "max" },
-    ]);
+    expect(draft?.modelSelectionByProvider.claudeAgent?.options).toEqual(
+      modelSelection("claudeAgent", "claude-opus-4-6", { effort: "max" }).options,
+    );
     expect(draft?.activeProvider).toBe("codex");
   });
 
@@ -2809,46 +3378,5 @@ describe("createDebouncedStorage", () => {
     vi.advanceTimersByTime(300);
     expect(base.setItem).toHaveBeenCalledTimes(1);
     expect(base.setItem).toHaveBeenCalledWith("key", "v2");
-  });
-});
-
-describe("createDebouncedJsonPersistStorage", () => {
-  beforeEach(() => {
-    vi.useFakeTimers();
-  });
-
-  afterEach(() => {
-    vi.useRealTimers();
-  });
-
-  it("debounces JSON serialization until the storage write fires", () => {
-    const base = createMockStorage();
-    const storage = createDebouncedJsonPersistStorage<{ prompt: string }>(base);
-    const expectedSerialized = JSON.stringify({ state: { prompt: "v2" }, version: 1 });
-    const stringifySpy = vi.spyOn(JSON, "stringify");
-
-    storage.setItem("key", { state: { prompt: "v1" }, version: 1 });
-    storage.setItem("key", { state: { prompt: "v2" }, version: 1 });
-
-    expect(base.setItem).not.toHaveBeenCalled();
-    expect(stringifySpy).not.toHaveBeenCalled();
-
-    vi.advanceTimersByTime(300);
-
-    expect(stringifySpy).toHaveBeenCalledTimes(1);
-    expect(base.setItem).toHaveBeenCalledWith("key", expectedSerialized);
-
-    stringifySpy.mockRestore();
-  });
-
-  it("flush serializes and writes the pending value immediately", () => {
-    const base = createMockStorage();
-    const storage = createDebouncedJsonPersistStorage<{ prompt: string }>(base);
-
-    storage.setItem("key", { state: { prompt: "draft" }, version: 1 });
-    storage.flush();
-
-    expect(base.setItem).toHaveBeenCalledTimes(1);
-    expect(storage.getItem("key")).toEqual({ state: { prompt: "draft" }, version: 1 });
   });
 });

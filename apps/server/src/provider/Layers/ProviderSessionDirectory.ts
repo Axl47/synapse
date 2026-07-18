@@ -102,6 +102,7 @@ const makeProviderSessionDirectory = Effect.gen(function* () {
                   adapterKey: value.adapterKey,
                   runtimeMode: value.runtimeMode,
                   status: value.status,
+                  lifecycleGeneration: value.lifecycleGeneration,
                   lastSeenAt: value.lastSeenAt,
                   resumeCursor: value.resumeCursor,
                   runtimePayload: value.runtimePayload,
@@ -129,6 +130,7 @@ const makeProviderSessionDirectory = Effect.gen(function* () {
     const now = new Date().toISOString();
     const providerChanged =
       existingRuntime !== undefined && existingRuntime.providerName !== binding.provider;
+    const compatibleRuntime = providerChanged ? undefined : existingRuntime;
     const providerInstanceId =
       binding.providerInstanceId ?? existingRuntime?.providerInstanceId ?? undefined;
     if (!providerInstanceId) {
@@ -149,7 +151,9 @@ const makeProviderSessionDirectory = Effect.gen(function* () {
           binding.adapterKey ??
           (providerChanged ? binding.provider : (existingRuntime?.adapterKey ?? binding.provider)),
         runtimeMode: binding.runtimeMode ?? existingRuntime?.runtimeMode ?? "full-access",
-        status: binding.status ?? existingRuntime?.status ?? "running",
+        status: binding.status ?? compatibleRuntime?.status ?? "running",
+        lifecycleGeneration:
+          binding.lifecycleGeneration ?? compatibleRuntime?.lifecycleGeneration ?? "legacy",
         lastSeenAt: now,
         resumeCursor:
           binding.resumeCursor !== undefined
@@ -208,6 +212,7 @@ const makeProviderSessionDirectory = Effect.gen(function* () {
                 adapterKey: row.adapterKey,
                 runtimeMode: row.runtimeMode,
                 status: row.status,
+                lifecycleGeneration: row.lifecycleGeneration,
                 lastSeenAt: row.lastSeenAt,
                 resumeCursor: row.resumeCursor,
                 runtimePayload: row.runtimePayload,

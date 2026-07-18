@@ -12,8 +12,9 @@ const ProviderDiscoveryKind = Schema.Literals([
   "codex",
   "claudeAgent",
   "cursor",
-  "gemini",
+  "antigravity",
   "grok",
+  "droid",
   "kilo",
   "opencode",
   "pi",
@@ -118,7 +119,6 @@ export const ProviderListCommandsInput = Schema.Struct({
   shadowHomePath: Schema.optional(TrimmedNonEmptyString),
   accountId: Schema.optional(TrimmedNonEmptyString),
   serverUrl: Schema.optional(TrimmedNonEmptyString),
-  serverPassword: Schema.optional(TrimmedNonEmptyString),
   experimentalWebSockets: Schema.optional(Schema.Boolean),
   agentDir: Schema.optional(TrimmedNonEmptyString),
   environment: Schema.optional(ProcessEnvRecord),
@@ -243,6 +243,8 @@ export const ProviderReadPluginInput = Schema.Struct({
   shadowHomePath: Schema.optional(TrimmedNonEmptyString),
   accountId: Schema.optional(TrimmedNonEmptyString),
   environment: Schema.optional(ProcessEnvRecord),
+  cwd: Schema.optional(TrimmedNonEmptyString),
+  threadId: Schema.optional(TrimmedNonEmptyString),
 });
 export type ProviderReadPluginInput = typeof ProviderReadPluginInput.Type;
 
@@ -298,6 +300,7 @@ export type ProviderContextWindowDescriptor = typeof ProviderContextWindowDescri
 export const ProviderModelDescriptor = Schema.Struct({
   slug: TrimmedNonEmptyString,
   name: TrimmedNonEmptyString,
+  description: Schema.optional(TrimmedNonEmptyString),
   upstreamProviderId: Schema.optional(TrimmedNonEmptyString),
   upstreamProviderName: Schema.optional(TrimmedNonEmptyString),
   optionDescriptors: Schema.optional(Schema.Array(ProviderOptionDescriptor)),

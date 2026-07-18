@@ -5,6 +5,11 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { ServerConfig } from "../config";
 import type { SecretStoreError } from "../auth/Services/ServerSecretStore";
 import { ServerSecretStoreLive } from "../auth/Layers/ServerSecretStore";
+import {
+  makeProviderServerPasswordResolver,
+  ProviderCredentials,
+  ProviderCredentialsLive,
+} from "../providerCredentials";
 import { ServerSettingsLive } from "../serverSettings";
 import { AnalyticsService } from "../telemetry/Services/AnalyticsService";
 import { ProviderUnsupportedError } from "./Errors";
@@ -12,19 +17,21 @@ import { makeClaudeAdapterLive } from "./Layers/ClaudeAdapter";
 import { makeCodexAdapterLive } from "./Layers/CodexAdapter";
 import { makeCursorAdapterLive } from "./Layers/CursorAdapter";
 import { makeEventNdjsonLogger } from "./Layers/EventNdjsonLogger";
-import { makeGeminiAdapterLive } from "./Layers/GeminiAdapter";
+import { makeAntigravityAdapterLive } from "./Layers/AntigravityAdapter";
+import { makeDroidAdapterLive } from "./Layers/DroidAdapter";
 import { makeGrokAdapterLive } from "./Layers/GrokAdapter";
 import { makeKiloAdapterLive, makeOpenCodeAdapterLive } from "./Layers/OpenCodeAdapter";
 import { makePiAdapterLive } from "./Layers/PiAdapter";
 import { ProviderAdapterRegistryLive } from "./Layers/ProviderAdapterRegistry";
 import { ProviderDiscoveryServiceLive } from "./Layers/ProviderDiscoveryService";
-import { makeProviderServiceLive } from "./Layers/ProviderService";
+import { makeDurableProviderServiceLive } from "./Layers/ProviderService";
 import { ProviderSessionDirectoryLive } from "./Layers/ProviderSessionDirectory";
+import { ProviderSessionRuntimeRepositoryLive } from "../persistence/Layers/ProviderSessionRuntime";
+import { ProviderRuntimeEventRepositoryLive } from "../persistence/Layers/ProviderRuntimeEvents";
 import { ProviderAdapterRegistry } from "./Services/ProviderAdapterRegistry";
 import { ProviderDiscoveryService } from "./Services/ProviderDiscoveryService";
 import { ProviderService } from "./Services/ProviderService";
 import { ProviderSessionDirectory } from "./Services/ProviderSessionDirectory";
-import { ProviderSessionRuntimeRepositoryLive } from "../persistence/Layers/ProviderSessionRuntime";
 
 export function makeServerProviderLayer(): Layer.Layer<
   ProviderService | ProviderDiscoveryService | ProviderAdapterRegistry | ProviderSessionDirectory,
@@ -37,6 +44,8 @@ export function makeServerProviderLayer(): Layer.Layer<
   | ChildProcessSpawner.ChildProcessSpawner
 > {
   return Effect.gen(function* () {
+    const credentials = yield* ProviderCredentials;
+    const resolveProviderServerPassword = makeProviderServerPasswordResolver(credentials);
     const { logProviderEvents, providerEventLogPath } = yield* ServerConfig;
     const nativeEventLogger = logProviderEvents
       ? yield* makeEventNdjsonLogger(providerEventLogPath, {
@@ -57,16 +66,20 @@ export function makeServerProviderLayer(): Layer.Layer<
     const claudeAdapterLayer = makeClaudeAdapterLive(
       nativeEventLogger ? { nativeEventLogger } : undefined,
     );
-    const openCodeAdapterLayer = makeOpenCodeAdapterLive(
-      nativeEventLogger ? { nativeEventLogger } : undefined,
-    );
-    const kiloAdapterLayer = makeKiloAdapterLive(
-      nativeEventLogger ? { nativeEventLogger } : undefined,
-    );
-    const geminiAdapterLayer = makeGeminiAdapterLive(
-      nativeEventLogger ? { nativeEventLogger } : undefined,
-    );
+    const openCodeAdapterLayer = makeOpenCodeAdapterLive({
+      ...(nativeEventLogger ? { nativeEventLogger } : {}),
+      resolveServerPassword: resolveProviderServerPassword,
+    });
+    const kiloAdapterLayer = makeKiloAdapterLive({
+      ...(nativeEventLogger ? { nativeEventLogger } : {}),
+      resolveServerPassword: resolveProviderServerPassword,
+    });
+    const antigravityAdapterLayer = makeAntigravityAdapterLive();
     const grokAdapterLayer = makeGrokAdapterLive(
+      {},
+      nativeEventLogger ? { nativeEventLogger } : undefined,
+    );
+    const droidAdapterLayer = makeDroidAdapterLive(
       {},
       nativeEventLogger ? { nativeEventLogger } : undefined,
     );
@@ -79,19 +92,21 @@ export function makeServerProviderLayer(): Layer.Layer<
       Layer.provide(codexAdapterLayer),
       Layer.provide(claudeAdapterLayer),
       Layer.provide(cursorAdapterLayer),
-      Layer.provide(geminiAdapterLayer),
+      Layer.provide(antigravityAdapterLayer),
       Layer.provide(grokAdapterLayer),
+      Layer.provide(droidAdapterLayer),
       Layer.provide(kiloAdapterLayer),
       Layer.provide(openCodeAdapterLayer),
       Layer.provide(piAdapterLayer),
       Layer.provideMerge(providerSessionDirectoryLayer),
       Layer.provide(ServerSettingsLive),
     );
-    const providerServiceLayer = makeProviderServiceLive(
+    const providerServiceLayer = makeDurableProviderServiceLive(
       canonicalEventLogger ? { canonicalEventLogger } : undefined,
     ).pipe(
       Layer.provide(adapterRegistryLayer),
       Layer.provide(providerSessionDirectoryLayer),
+      Layer.provide(ProviderRuntimeEventRepositoryLive),
       // Provider sessions resolve persisted provider-instance settings before launch.
       Layer.provide(ServerSettingsLive),
       Layer.provide(ServerSecretStoreLive),
@@ -108,5 +123,5 @@ export function makeServerProviderLayer(): Layer.Layer<
       adapterRegistryLayer,
       providerSessionDirectoryLayer,
     );
-  }).pipe(Layer.unwrap);
+  }).pipe(Effect.provide(ProviderCredentialsLive.pipe(Layer.orDie)), Layer.unwrap);
 }

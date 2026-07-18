@@ -4,6 +4,10 @@ import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import nodePath from "node:path";
 import { pathToFileURL } from "node:url";
+// FILE: importThreadRoute.ts
+// Purpose: Imports provider-native sessions and binds them to Synara thread projections.
+// Layer: Orchestration command handler
+// Exports: makeImportThreadHandler.
 
 import {
   getSessionInfo as getClaudeSessionInfo,
@@ -18,6 +22,7 @@ import {
   type ProviderInstanceId,
   type ProviderStartOptions,
   type ServerSettings,
+  type ProviderKind,
   type ThreadHandoffImportedMessage,
   type ThreadId,
 } from "@synara/contracts";
@@ -46,6 +51,7 @@ import { parseManagedWorktreeWorkspaceRoot } from "../workspace/managedWorktree"
 import {
   mapClaudeSessionMessages,
   mapCodexSnapshotMessages,
+  mapFactorySnapshotMessages,
   mapOpenCodeSnapshotMessages,
 } from "./importedThreadMessages";
 
@@ -166,6 +172,20 @@ export function claudeHistoricalSessionEnvironment(
   });
 }
 
+function providerResumeCursorForImport(provider: ProviderKind, externalId: string): unknown {
+  switch (provider) {
+    case "claudeAgent":
+      return { resume: externalId };
+    case "droid":
+      return { schemaVersion: 1, sessionId: externalId };
+    case "kilo":
+    case "opencode":
+      return { openCodeSessionId: externalId };
+    default:
+      return { threadId: externalId };
+  }
+}
+
 function mapProviderSessionStatusToOrchestrationStatus(
   status: "connecting" | "ready" | "running" | "error" | "closed",
 ): "starting" | "ready" | "running" | "error" | "stopped" {
@@ -280,7 +300,7 @@ export function makeImportThreadHandler(options: ImportThreadHandlerOptions) {
   });
 
   const resolveImportedProviderThreadContext = Effect.fn(function* (input: {
-    readonly provider: "codex" | "kilo" | "opencode";
+    readonly provider: "codex" | "droid" | "kilo" | "opencode";
     readonly externalId: string;
     readonly providerInstanceId: ProviderInstanceId;
     readonly projectWorkspaceRoot: string;
@@ -487,6 +507,37 @@ export function makeImportThreadHandler(options: ImportThreadHandlerOptions) {
     });
   });
 
+  const importDroidThreadHistory = Effect.fn(function* (input: {
+    readonly externalId: string;
+    readonly importedAt: string;
+    readonly threadId: ThreadId;
+  }) {
+    const adapter = yield* options.providerAdapterRegistry.getByProvider("droid");
+    if (!adapter.readExternalThread) {
+      return yield* Effect.fail(importMessagesError("Droid session import is unavailable."));
+    }
+    const snapshot = yield* adapter
+      .readExternalThread({ externalThreadId: input.externalId })
+      .pipe(
+        Effect.mapError((cause) =>
+          importMessagesError(
+            cause instanceof Error && cause.message.length > 0
+              ? cause.message
+              : "Failed to read Droid session history.",
+          ),
+        ),
+      );
+    yield* dispatchImportedMessages({
+      threadId: input.threadId,
+      messages: mapFactorySnapshotMessages({
+        threadId: input.threadId,
+        turns: snapshot.turns,
+        importedAt: input.importedAt,
+      }),
+      createdAt: input.importedAt,
+    });
+  });
+
   return Effect.fnUntraced(function* (body: ImportThreadRequest) {
     const threadOption = yield* options.projectionSnapshotQuery.getThreadDetailById(body.threadId);
     if (Option.isNone(threadOption)) {
@@ -561,36 +612,45 @@ export function makeImportThreadHandler(options: ImportThreadHandlerOptions) {
         : {}),
       modelSelection: thread.modelSelection,
       ...(providerOptions ? { providerOptions } : {}),
-      resumeCursor:
-        provider === "claudeAgent"
-          ? { resume: externalId }
-          : provider === "kilo" || provider === "opencode"
-            ? { openCodeSessionId: externalId }
-            : { threadId: externalId },
+      resumeCursor: providerResumeCursorForImport(provider, externalId),
       runtimeMode: thread.runtimeMode,
     });
 
-    if (provider === "codex") {
-      yield* importCodexThreadHistory({
-        threadId: thread.id,
-        importedAt: session.updatedAt,
-      });
-    } else if (provider === "claudeAgent") {
-      yield* importClaudeThreadHistory({
-        threadId: thread.id,
-        externalId,
-        cwd,
-        providerInstanceId: resolvedProvider.instance.instanceId,
-        ...(providerOptions ? { providerOptions } : {}),
-        importedAt: session.updatedAt,
-      });
-    } else if (provider === "kilo" || provider === "opencode") {
-      yield* importOpenCodeCompatibleThreadHistory({
-        provider,
-        threadId: thread.id,
-        importedAt: session.updatedAt,
-      });
-    }
+    yield* Effect.gen(function* () {
+      if (provider === "codex") {
+        yield* importCodexThreadHistory({
+          threadId: thread.id,
+          importedAt: session.updatedAt,
+        });
+      } else if (provider === "claudeAgent") {
+        yield* importClaudeThreadHistory({
+          threadId: thread.id,
+          externalId,
+          cwd,
+          providerInstanceId: resolvedProvider.instance.instanceId,
+          ...(providerOptions ? { providerOptions } : {}),
+          importedAt: session.updatedAt,
+        });
+      } else if (provider === "droid") {
+        yield* importDroidThreadHistory({
+          threadId: thread.id,
+          externalId,
+          importedAt: session.updatedAt,
+        });
+      } else if (provider === "kilo" || provider === "opencode") {
+        yield* importOpenCodeCompatibleThreadHistory({
+          provider,
+          threadId: thread.id,
+          importedAt: session.updatedAt,
+        });
+      }
+    }).pipe(
+      Effect.onError(() =>
+        // Startup precedes history materialization. Roll it back when import
+        // cannot finish so no provider child or persisted binding is orphaned.
+        options.providerService.stopSession({ threadId: thread.id }).pipe(Effect.ignore),
+      ),
+    );
 
     yield* options.orchestrationEngine.dispatch({
       type: "thread.session.set",

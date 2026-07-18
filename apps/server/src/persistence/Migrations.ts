@@ -13,7 +13,7 @@ import * as Layer from "effect/Layer";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
-import { MigrationLineageError } from "./Errors.ts";
+import { MigrationLineageError, MigrationSchemaTooNewError } from "./Errors.ts";
 
 // Import all migrations statically
 import Migration0001 from "./Migrations/001_OrchestrationEvents.ts";
@@ -68,17 +68,34 @@ import Migration0049 from "./Migrations/049_ProjectionThreadMessagesDispatchOrig
 import Migration0050 from "./Migrations/050_ProfileStatsArchive.ts";
 import Migration0051 from "./Migrations/051_ProfileStatsDeletedTokensModel.ts";
 import Migration0052 from "./Migrations/052_ProjectionThreadUserMessageSummaryIndex.ts";
-// These PR migrations were authored before upstream claimed loader IDs 51/52.
-// Keep their source filenames for review history, but shift their loader IDs
-// after the released upstream lineage so every migration remains ordered and unique.
-import Migration0053 from "./Migrations/051_ProjectionThreadSessionProviderInstance.ts";
-import Migration0054 from "./Migrations/052_ProviderSessionRuntimeInstanceId.ts";
-import Migration0055 from "./Migrations/054_ProfileStatsDeletedTurnsProviderInstance.ts";
-import Migration0056 from "./Migrations/055_ProfileStatsDeletedTokensProviderInstance.ts";
-import Migration0057 from "./Migrations/056_ClearAutomationDefinitionProviderOptions.ts";
-import Migration0058 from "./Migrations/057_ClearAutomationRunProviderOptions.ts";
-import Migration0059 from "./Migrations/059_ScrubOrchestrationEventProviderOptions.ts";
-import Migration0060 from "./Migrations/060_ReconcileProjectionSchemaDrift.ts";
+import Migration0053 from "./Migrations/053_BackfillThreadActivitySequence.ts";
+import Migration0054 from "./Migrations/054_ReservedDurableProviderCommandDelivery.ts";
+import Migration0055 from "./Migrations/055_ManagedAttachments.ts";
+import Migration0056 from "./Migrations/056_CommandReceiptFingerprints.ts";
+import Migration0057 from "./Migrations/057_ThreadScopedProjectionMessageIdentity.ts";
+import Migration0058 from "./Migrations/058_ThreadScopedPendingApprovalIdentity.ts";
+import Migration0059 from "./Migrations/059_ProviderSessionLifecycleGeneration.ts";
+import Migration0060 from "./Migrations/060_PendingApprovalLifecycleGeneration.ts";
+import Migration0061 from "./Migrations/061_PendingApprovalSettlementState.ts";
+import Migration0062 from "./Migrations/062_PendingInteractionSettlementParity.ts";
+import Migration0063 from "./Migrations/063_ProjectionMessageCausalSequence.ts";
+import Migration0064 from "./Migrations/064_DurableProviderCommandDelivery.ts";
+import Migration0065 from "./Migrations/065_DurableQueuedTurnPromotions.ts";
+import Migration0066 from "./Migrations/066_DurableProviderRuntimeEvents.ts";
+import Migration0067 from "./Migrations/067_ProviderDeliveryReconciliation.ts";
+import Migration0068 from "./Migrations/068_GitHandoffOperations.ts";
+import Migration0069 from "./Migrations/069_ProjectPullRequestPins.ts";
+// Fork migrations were authored while upstream's 53-69 lineage was still
+// private. Their original filenames remain for review continuity, but their
+// loader identities must be strictly later than upstream's released IDs.
+import Migration0070 from "./Migrations/051_ProjectionThreadSessionProviderInstance.ts";
+import Migration0071 from "./Migrations/052_ProviderSessionRuntimeInstanceId.ts";
+import Migration0072 from "./Migrations/054_ProfileStatsDeletedTurnsProviderInstance.ts";
+import Migration0073 from "./Migrations/055_ProfileStatsDeletedTokensProviderInstance.ts";
+import Migration0074 from "./Migrations/056_ClearAutomationDefinitionProviderOptions.ts";
+import Migration0075 from "./Migrations/057_ClearAutomationRunProviderOptions.ts";
+import Migration0076 from "./Migrations/059_ScrubOrchestrationEventProviderOptions.ts";
+import Migration0077 from "./Migrations/060_ReconcileProjectionSchemaDrift.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -143,14 +160,34 @@ export const migrationEntries = [
   [50, "ProfileStatsArchive", Migration0050],
   [51, "ProfileStatsDeletedTokensModel", Migration0051],
   [52, "ProjectionThreadUserMessageSummaryIndex", Migration0052],
-  [53, "ProjectionThreadSessionProviderInstance", Migration0053],
-  [54, "ProviderSessionRuntimeInstanceId", Migration0054],
-  [55, "ProfileStatsDeletedTurnsProviderInstance", Migration0055],
-  [56, "ProfileStatsDeletedTokensProviderInstance", Migration0056],
-  [57, "ClearAutomationDefinitionProviderOptions", Migration0057],
-  [58, "ClearAutomationRunProviderOptions", Migration0058],
-  [59, "ScrubOrchestrationEventProviderOptions", Migration0059],
-  [60, "ReconcileProjectionSchemaDrift", Migration0060],
+  [53, "BackfillThreadActivitySequence", Migration0053],
+  // Private development builds briefly recorded this tracker identity while
+  // exercising provider delivery. Keep the ID/name canonical as a no-op; the
+  // production cutover is registered independently at migration 64.
+  [54, "DurableProviderCommandDelivery", Migration0054],
+  [55, "ManagedAttachments", Migration0055],
+  [56, "CommandReceiptFingerprints", Migration0056],
+  [57, "ThreadScopedProjectionMessageIdentity", Migration0057],
+  [58, "ThreadScopedPendingApprovalIdentity", Migration0058],
+  [59, "ProviderSessionLifecycleGeneration", Migration0059],
+  [60, "PendingApprovalLifecycleGeneration", Migration0060],
+  [61, "PendingApprovalSettlementState", Migration0061],
+  [62, "PendingInteractionSettlementParity", Migration0062],
+  [63, "ProjectionMessageCausalSequence", Migration0063],
+  [64, "DurableProviderCommandDeliveryCutover", Migration0064],
+  [65, "DurableQueuedTurnPromotions", Migration0065],
+  [66, "DurableProviderRuntimeEvents", Migration0066],
+  [67, "ProviderDeliveryReconciliation", Migration0067],
+  [68, "GitHandoffOperations", Migration0068],
+  [69, "ProjectPullRequestPins", Migration0069],
+  [70, "ProjectionThreadSessionProviderInstance", Migration0070],
+  [71, "ProviderSessionRuntimeInstanceId", Migration0071],
+  [72, "ProfileStatsDeletedTurnsProviderInstance", Migration0072],
+  [73, "ProfileStatsDeletedTokensProviderInstance", Migration0073],
+  [74, "ClearAutomationDefinitionProviderOptions", Migration0074],
+  [75, "ClearAutomationRunProviderOptions", Migration0075],
+  [76, "ScrubOrchestrationEventProviderOptions", Migration0076],
+  [77, "ReconcileProjectionSchemaDrift", Migration0077],
 ] as const;
 
 export const makeMigrationLoader = (throughId?: number) =>
@@ -169,6 +206,7 @@ export const makeMigrationLoader = (throughId?: number) =>
  * migrations could destroy data — refuse to start instead.
  */
 const LAST_SHARED_LINEAGE_MIGRATION_ID = 16;
+const LATEST_MIGRATION_ID = Math.max(...migrationEntries.map(([id]) => id));
 
 const legacyT3ShiftedSynaraLineage = [
   [14, "ProjectionThreadContextWindow"],
@@ -265,8 +303,18 @@ export const reconcileMigrationLineage = Effect.gen(function* () {
     ([id, name]) => id <= highWaterMark && recordedNamesById.get(id) !== name,
   );
   if (diverged === undefined) {
-    // Healthy tracker. Recorded IDs beyond our latest migration mean the
-    // database was written by a newer build; leave those rows for it.
+    // An exact known prefix followed by unknown migrations is a database from
+    // a newer Synara build. Continuing would expose it to stale writable
+    // repositories and background services, so fail before the migrator can
+    // mutate either schema or tracker state.
+    if (highWaterMark > LATEST_MIGRATION_ID) {
+      return yield* Effect.fail(
+        new MigrationSchemaTooNewError({
+          databaseMigrationId: highWaterMark,
+          latestSupportedMigrationId: LATEST_MIGRATION_ID,
+        }),
+      );
+    }
     return;
   }
 

@@ -20,8 +20,9 @@ export const BUILT_IN_PROVIDER_KINDS = [
   "codex",
   "claudeAgent",
   "cursor",
-  "gemini",
+  "antigravity",
   "grok",
+  "droid",
   "kilo",
   "opencode",
   "pi",
@@ -117,10 +118,12 @@ function normalizeBinaryPathOverride(provider: ProviderKind, value: unknown): st
       return trimmed === "claude" ? "" : trimmed;
     case "cursor":
       return trimmed === "cursor-agent" ? "" : trimmed;
-    case "gemini":
-      return trimmed === "gemini" ? "" : trimmed;
+    case "antigravity":
+      return trimmed === "agy" ? "" : trimmed;
     case "grok":
       return trimmed === "grok" ? "" : trimmed;
+    case "droid":
+      return trimmed === "droid" ? "" : trimmed;
     case "kilo":
       return trimmed === "kilo" ? "" : trimmed;
     case "opencode":
@@ -158,10 +161,16 @@ export function inferLegacyProviderKindFromInstanceId(
     return "cursor";
   }
   if (lowerInstanceId.startsWith("gemini")) {
-    return "gemini";
+    return "antigravity";
+  }
+  if (lowerInstanceId.startsWith("antigravity")) {
+    return "antigravity";
   }
   if (lowerInstanceId.startsWith("grok")) {
     return "grok";
+  }
+  if (lowerInstanceId.startsWith("droid") || lowerInstanceId.startsWith("factory")) {
+    return "droid";
   }
   if (lowerInstanceId.startsWith("kilo")) {
     return "kilo";
@@ -186,7 +195,7 @@ export function inferLegacyProviderKindFromModel(model: string | null | undefine
     return "claudeAgent";
   }
   if (lowerModel.includes("gemini")) {
-    return "gemini";
+    return "antigravity";
   }
   if (lowerModel.includes("grok")) {
     return "grok";
@@ -574,13 +583,17 @@ export function providerStartOptionsFromInstance(
           }
         : undefined;
     }
-    case "gemini":
+    case "antigravity":
       return binaryPath || environment.environment
-        ? { gemini: { ...environment, ...(binaryPath ? { binaryPath } : {}) } }
+        ? { antigravity: { ...environment, ...(binaryPath ? { binaryPath } : {}) } }
         : undefined;
     case "grok":
       return binaryPath || environment.environment
         ? { grok: { ...environment, ...(binaryPath ? { binaryPath } : {}) } }
+        : undefined;
+    case "droid":
+      return binaryPath
+        ? { droid: { binaryPath } }
         : undefined;
     case "kilo": {
       const serverUrl = trimString(config.serverUrl);
@@ -591,9 +604,13 @@ export function providerStartOptionsFromInstance(
               ...environment,
               ...(binaryPath ? { binaryPath } : {}),
               ...(serverUrl ? { serverUrl } : {}),
+              // Passwords are deliberately absent from the transport schema,
+              // but server settings materializes this value only inside the
+              // process. Keep it transient so adapters can authenticate without
+              // making a secret serializable through orchestration events.
               ...(serverPassword ? { serverPassword } : {}),
             },
-          }
+          } as ProviderStartOptions
         : undefined;
     }
     case "opencode": {
@@ -610,10 +627,12 @@ export function providerStartOptionsFromInstance(
               ...environment,
               ...(binaryPath ? { binaryPath } : {}),
               ...(serverUrl ? { serverUrl } : {}),
+              // See the Kilo branch above: this is an in-process credential,
+              // not a value accepted by or persisted through ProviderStartOptions.
               ...(serverPassword ? { serverPassword } : {}),
               ...(experimentalWebSockets ? { experimentalWebSockets } : {}),
             },
-          }
+          } as ProviderStartOptions
         : undefined;
     }
     case "pi": {

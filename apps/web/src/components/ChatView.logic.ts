@@ -53,6 +53,41 @@ export const PROMPT_HISTORY_MAX_ENTRIES = 100;
 export const LastInvokedScriptByProjectSchema = Schema.Record(ProjectId, Schema.String);
 export const DismissedProviderHealthBannersSchema = Schema.Array(Schema.String);
 
+export interface PendingFileUndo {
+  readonly threadId: ThreadIdType;
+  readonly turnCount: number;
+  readonly existingFailureActivityIds: readonly string[];
+}
+
+export function hasFileUndoSettled(input: {
+  readonly pending: PendingFileUndo;
+  readonly thread: Pick<Thread, "id" | "turnDiffSummaries" | "activities"> | null;
+}): boolean {
+  if (!input.thread || input.thread.id !== input.pending.threadId) {
+    return false;
+  }
+
+  const targetSummary = input.thread.turnDiffSummaries.find(
+    (summary) => summary.checkpointTurnCount === input.pending.turnCount,
+  );
+  if (targetSummary?.files.length === 0) {
+    return true;
+  }
+
+  return input.thread.activities.some((activity) => {
+    if (
+      activity.kind !== "checkpoint.revert.failed" ||
+      input.pending.existingFailureActivityIds.includes(activity.id) ||
+      typeof activity.payload !== "object" ||
+      activity.payload === null ||
+      !("turnCount" in activity.payload)
+    ) {
+      return false;
+    }
+    return activity.payload.turnCount === input.pending.turnCount;
+  });
+}
+
 const ALWAYS_ALLOW_RUNTIME_MODE: RuntimeMode = "full-access";
 
 /**
@@ -362,18 +397,63 @@ export function resolvePromptHistoryNavigation(input: {
 }
 
 // Default-open policy for the Environment panel; render-time visibility is resolved separately.
+// `settingsDefaultOpen` is the user preference (Settings → Environment panel). Landing,
+// terminal-primary, and constrained layouts always start closed regardless of that setting.
 export function resolveDefaultEnvironmentPanelOpen(input: {
   environmentEnabled: boolean;
   isCenteredEmptyLanding: boolean;
   isTerminalPrimarySurface: boolean;
   isConstrainedChatLayout: boolean;
+  settingsDefaultOpen?: boolean;
 }): boolean {
+  const settingsDefaultOpen = input.settingsDefaultOpen ?? false;
   return (
     input.environmentEnabled &&
+    settingsDefaultOpen &&
     !input.isCenteredEmptyLanding &&
     !input.isTerminalPrimarySurface &&
     !input.isConstrainedChatLayout
   );
+}
+
+// Build the ordered model list used by model.next / model.previous: favorites first
+// (stable user order), then remaining discovered options. Returns null when cycling is
+// a no-op (fewer than two selectable models).
+export function resolveCycledModelSlug(input: {
+  currentModel: string;
+  options: ReadonlyArray<{ slug: string }>;
+  favoriteSlugs?: ReadonlyArray<string>;
+  direction: "next" | "previous";
+}): string | null {
+  const optionSlugs = new Set(
+    input.options.map((option) => option.slug.trim()).filter((slug) => slug.length > 0),
+  );
+  const seen = new Set<string>();
+  const ordered: string[] = [];
+  const push = (slug: string) => {
+    const trimmed = slug.trim();
+    if (trimmed.length === 0 || seen.has(trimmed)) return;
+    seen.add(trimmed);
+    ordered.push(trimmed);
+  };
+  for (const favorite of input.favoriteSlugs ?? []) {
+    if (optionSlugs.has(favorite.trim())) {
+      push(favorite);
+    }
+  }
+  for (const option of input.options) {
+    push(option.slug);
+  }
+  if (ordered.length < 2) {
+    return null;
+  }
+  const currentIndex = ordered.indexOf(input.currentModel.trim());
+  if (currentIndex < 0) {
+    return input.direction === "next" ? (ordered[0] ?? null) : (ordered.at(-1) ?? null);
+  }
+  const delta = input.direction === "next" ? 1 : -1;
+  const nextIndex = (currentIndex + delta + ordered.length) % ordered.length;
+  return ordered[nextIndex] ?? null;
 }
 
 export function resolveEnvironmentPanelOpen(input: {
@@ -381,6 +461,30 @@ export function resolveEnvironmentPanelOpen(input: {
   userPreferenceOpen: boolean | null;
 }): boolean {
   return input.userPreferenceOpen ?? input.defaultOpen;
+}
+
+export function resolveEnvironmentPanelPreferenceUpdate(input: {
+  open: boolean;
+  persist: boolean;
+}): {
+  userPreferenceOpen: boolean;
+  settingsDefaultOpen: boolean | null;
+} {
+  return {
+    userPreferenceOpen: input.open,
+    settingsDefaultOpen: input.persist ? input.open : null,
+  };
+}
+
+export function resolveEnvironmentPanelPreferenceAfterFirstSend(input: {
+  isCenteredEmptyLanding: boolean;
+  settingsDefaultOpen: boolean;
+  currentPreferenceOpen: boolean | null;
+}): boolean | null {
+  if (!input.isCenteredEmptyLanding) {
+    return input.currentPreferenceOpen;
+  }
+  return input.settingsDefaultOpen ? null : false;
 }
 
 export function resolveEnvironmentPanelVisible(input: {
@@ -621,8 +725,8 @@ export function describeVoiceRecordingStartError(error: unknown): string {
 }
 
 export function deriveComposerVoiceState(input: {
-  enabled: boolean | undefined;
-  available: boolean;
+  enabled?: boolean | undefined;
+  available?: boolean;
   authStatus: ServerProviderAuthStatus | null | undefined;
   voiceTranscriptionAvailable: boolean | undefined;
   isRecording: boolean;
@@ -633,7 +737,7 @@ export function deriveComposerVoiceState(input: {
   showVoiceNotesControl: boolean;
 } {
   const canRenderVoiceNotes =
-    input.enabled !== false && input.available && input.authStatus !== "unauthenticated";
+    input.enabled !== false && input.available !== false && input.authStatus !== "unauthenticated";
   const canStartVoiceNotes = canRenderVoiceNotes && input.voiceTranscriptionAvailable === true;
 
   return {
@@ -658,7 +762,8 @@ export function shouldShowComposerModelBootstrapSkeleton(input: {
   const draftSelection = input.draftModelSelection;
   if (
     draftSelection &&
-    inferLegacyProviderKindFromModelSelection(draftSelection) === input.selectedProvider
+    ((draftSelection as ModelSelection & { provider?: ProviderKind }).provider ??
+      inferLegacyProviderKindFromModelSelection(draftSelection)) === input.selectedProvider
   ) {
     return false;
   }
@@ -668,7 +773,9 @@ export function shouldShowComposerModelBootstrapSkeleton(input: {
     return false;
   }
 
-  const persistedProvider = inferLegacyProviderKindFromModelSelection(persistedSelection);
+  const persistedProvider =
+    (persistedSelection as ModelSelection & { provider?: ProviderKind }).provider ??
+    inferLegacyProviderKindFromModelSelection(persistedSelection);
   if (persistedProvider !== input.selectedProvider) {
     return true;
   }
@@ -1051,9 +1158,11 @@ export function resolveProjectScriptTerminalTarget(options: {
   baseTerminalId: string;
   createTerminalId: () => string;
   preferNewTerminal?: boolean | undefined;
-  runningTerminalIds: readonly string[];
+  runningTerminalIds?: readonly string[];
+  /** Legacy caller input retained while workspaces hydrate their terminal list. */
+  hasRunningTerminal?: boolean;
   terminalOpen: boolean;
-  terminalIds: readonly string[];
+  terminalIds?: readonly string[];
 }): { shouldCreateNewTerminal: boolean; terminalId: string } {
   // Project scripts require their requested cwd/env before the command write;
   // live PTYs keep their launch context, so busy terminals still get a new tab.
@@ -1064,11 +1173,18 @@ export function resolveProjectScriptTerminalTarget(options: {
     };
   }
 
-  const runningTerminalIds = new Set(options.runningTerminalIds);
+  // Older callers only knew that a workspace terminal was visible, not which
+  // tab was idle. Reusing the base terminal there can inherit a stale cwd/env.
+  if (options.terminalOpen && options.terminalIds === undefined) {
+    return { shouldCreateNewTerminal: true, terminalId: options.createTerminalId() };
+  }
+
+  const runningTerminalIds = new Set(options.runningTerminalIds ?? []);
+  if (options.hasRunningTerminal) runningTerminalIds.add(options.baseTerminalId);
   if (options.terminalOpen) {
     const candidateTerminalIds = [
       options.baseTerminalId,
-      ...options.terminalIds.filter((terminalId) => terminalId !== options.baseTerminalId),
+      ...(options.terminalIds ?? []).filter((terminalId) => terminalId !== options.baseTerminalId),
     ];
     const idleTerminalId = candidateTerminalIds.find(
       (terminalId) => !runningTerminalIds.has(terminalId),

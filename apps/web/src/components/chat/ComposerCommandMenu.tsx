@@ -84,6 +84,8 @@ function commandMenuTitle(
       return "Status";
     case "subagents":
       return "Subagents";
+    case "feedback":
+      return "Feedback Synara";
     default:
       return humanizeProviderCommandName(item.command);
   }
@@ -425,6 +427,7 @@ const SLASH_COMMAND_ICONS: Record<string, LucideIcon> = {
   side: TemporaryThreadIcon,
   status: InfoIcon,
   subagents: BotIcon,
+  feedback: BugIcon,
   automation: ClockIcon,
 };
 

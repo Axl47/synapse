@@ -377,7 +377,19 @@ const createInput = (
 });
 
 const orchestrationEngine = {
+  quiesce: Effect.void,
+  drain: Effect.void,
+  stop: Effect.void,
+  getProjectionCatchUpStatus: Effect.succeed({
+    state: "healthy" as const,
+    inFlight: false,
+    retryAttempts: 0,
+    lastFailure: null,
+  }),
   readEvents: () => Stream.empty,
+  readEventsThrough: () => Stream.empty,
+  getEventHighWaterSequence: Effect.succeed(0),
+  subscribeDomainEvents: Effect.succeed(Stream.empty),
   getReadModel: () =>
     Effect.succeed({
       snapshotSequence: 0,
@@ -2581,8 +2593,8 @@ layer("AutomationService", (it) => {
         mode: "heartbeat",
         targetThreadId,
         modelSelection: {
-          instanceId: "gemini",
-          model: "gemini-2.5-pro",
+          instanceId: "grok",
+          model: "grok-code-fast-1",
         },
         completionPolicy: heartbeatCompletionPolicy("the PR is ready"),
       });
@@ -2862,8 +2874,8 @@ layer("AutomationService", (it) => {
         mode: "heartbeat",
         targetThreadId,
         modelSelection: {
-          instanceId: "gemini",
-          model: "gemini-2.5-pro",
+          instanceId: "grok",
+          model: "grok-code-fast-1",
         },
         providerOptions: {
           codex: {
@@ -4055,6 +4067,57 @@ layer("AutomationService", (it) => {
       const recovered = reloaded.runs.find((entry) => entry.automationId === automationId);
       assert.strictEqual(recovered?.status, "succeeded");
       assert.strictEqual(recovered?.threadId, threadId);
+    }),
+  );
+
+  it.effect("recovers rows beyond the first bounded recovery page", () =>
+    Effect.gen(function* () {
+      resetHarness();
+      const service = yield* AutomationService;
+      const repository = yield* AutomationRepository;
+      const automationId = AutomationId.makeUnsafe("automation-paginated-recovery");
+
+      yield* repository.createDefinition({
+        id: automationId,
+        input: {
+          ...createInput("local"),
+          schedule: { type: "interval", everySeconds: 300 },
+          stopOnError: false,
+        },
+        now,
+      });
+      yield* Effect.forEach(
+        Array.from({ length: 201 }, (_, index) => index),
+        (index) =>
+          repository.createRun({
+            id: AutomationRunId.makeUnsafe(
+              `run-paginated-recovery-${String(index).padStart(3, "0")}`,
+            ),
+            automationId,
+            projectId,
+            threadId: null,
+            messageId: MessageId.makeUnsafe(`message-paginated-recovery-${index}`),
+            threadCreateCommandId: CommandId.makeUnsafe(`command-paginated-recovery-${index}`),
+            turnStartCommandId: CommandId.makeUnsafe(`turn-paginated-recovery-${index}`),
+            trigger: { type: "scheduled" },
+            scheduledFor: now,
+            permissionSnapshot: {
+              provider: "codex",
+              modelSelection: { instanceId: "codex", model: "gpt-5-codex" },
+              runtimeMode: "approval-required",
+              interactionMode: "default",
+              worktreeMode: "local",
+              allowedCapabilities: ["send-turn"],
+              createdAt: now,
+            },
+            now,
+          }),
+        { concurrency: 1, discard: true },
+      );
+
+      yield* service.recoverPendingRuns();
+
+      assert.isEmpty(yield* repository.listRecoverableRuns({ limit: 300 }));
     }),
   );
 

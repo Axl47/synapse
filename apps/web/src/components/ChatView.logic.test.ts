@@ -1,15 +1,15 @@
-import { ThreadId, TurnId, type ModelSlug } from "@synara/contracts";
+import { CheckpointRef, EventId, ThreadId, TurnId, type ModelSlug } from "@synara/contracts";
 import { describe, expect, it } from "vitest";
 
 import {
   appendVoiceTranscriptToPrompt,
-  buildCollapsedCursorModelOptionsReset,
   buildComposerMenuSelectionKey,
   createLocalDispatchSnapshot,
   createWorktreeSetupSnapshot,
   derivePromptHistoryFromMessages,
   failWorktreeSetupSnapshot,
   filterSidechatTranscriptMessages,
+  hasFileUndoSettled,
   isComposerCursorOnFirstLine,
   isComposerCursorOnLastLine,
   type LocalDispatchSnapshot,
@@ -24,9 +24,11 @@ import {
   resolveActiveThreadTitle,
   resolveActiveTurnLiveDiffState,
   resolveCommittedProviderModel,
+  resolveCycledModelSlug,
   resolveDefaultEnvironmentPanelOpen,
-  resolveDraftProviderInstanceId,
   resolveEnvironmentPanelOpen,
+  resolveEnvironmentPanelPreferenceAfterFirstSend,
+  resolveEnvironmentPanelPreferenceUpdate,
   resolveEnvironmentPanelVisible,
   resolveProjectScriptTerminalTarget,
   resolveQueuedSteerGateTransition,
@@ -40,103 +42,90 @@ import {
   shouldHandlePromptHistoryNavigationKey,
   shouldRenderProviderHealthBanner,
   shouldShowComposerModelBootstrapSkeleton,
-  shouldShowComposerProviderInstancePicker,
   shouldStartActiveTurnLayoutGrace,
   shouldRenderTerminalWorkspace,
   worktreeSetupHasError,
 } from "./ChatView.logic";
 
-describe("draft provider instance selection", () => {
-  const resolveProvider = (selection: { instanceId: string }) =>
-    selection.instanceId.startsWith("claude_") || selection.instanceId === "claudeAgent"
-      ? ("claudeAgent" as const)
-      : ("codex" as const);
+describe("file undo completion", () => {
+  const pending = {
+    threadId: ThreadId.makeUnsafe("thread-file-undo"),
+    turnCount: 2,
+    existingFailureActivityIds: [],
+  };
+  const summary = {
+    turnId: TurnId.makeUnsafe("turn-2"),
+    checkpointTurnCount: 2,
+    checkpointTurnCounts: [2],
+    checkpointRef: CheckpointRef.makeUnsafe("refs/synara/checkpoints/thread-file-undo/turn/2"),
+    status: "ready" as const,
+    completedAt: "2026-07-12T17:59:00.000Z",
+    files: [{ path: "src/file.ts", additions: 1, deletions: 0 }],
+  };
 
-  it("prefers the exact active instance over an older same-provider draft selection", () => {
-    expect(
-      resolveDraftProviderInstanceId({
-        selectedProvider: "claudeAgent",
-        activeProviderInstanceId: "claude_work",
-        activeProvider: "claudeAgent",
-        modelSelections: [
-          { instanceId: "claude_personal", model: "claude-sonnet-4-6" },
-          { instanceId: "claude_work", model: "claude-opus-4-6" },
-        ],
-        resolveProviderForModelSelection: resolveProvider,
-      }),
-    ).toBe("claude_work");
-  });
+  it("stays pending after command acceptance until the projected file diff settles", () => {
+    const baseThread = {
+      id: pending.threadId,
+      turnDiffSummaries: [summary],
+      activities: [],
+    };
 
-  it("recovers a matching instance from legacy drafts missing the active pointer", () => {
+    expect(hasFileUndoSettled({ pending, thread: baseThread })).toBe(false);
     expect(
-      resolveDraftProviderInstanceId({
-        selectedProvider: "claudeAgent",
-        activeProviderInstanceId: null,
-        activeProvider: null,
-        modelSelections: [
-          { instanceId: "codex", model: "gpt-5.4" },
-          { instanceId: "claude_work", model: "claude-sonnet-4-6" },
-        ],
-        resolveProviderForModelSelection: resolveProvider,
-      }),
-    ).toBe("claude_work");
-  });
-
-  it("keeps the account picker visible for a missing profile on every provider", () => {
-    expect(
-      shouldShowComposerProviderInstancePicker({
-        provider: "cursor",
-        selectedProviderInstanceId: "cursor_removed",
-        providerInstances: [{ instanceId: "cursor" }],
-      }),
-    ).toBe(true);
-    expect(
-      shouldShowComposerProviderInstancePicker({
-        provider: "opencode",
-        selectedProviderInstanceId: "opencode_removed",
-        providerInstances: [{ instanceId: "opencode" }],
+      hasFileUndoSettled({
+        pending,
+        thread: {
+          ...baseThread,
+          turnDiffSummaries: [{ ...summary, files: [] }],
+        },
       }),
     ).toBe(true);
   });
 
-  it("still hides a redundant single-profile picker when the selection exists", () => {
+  it("settles when the matching revert failure is projected", () => {
     expect(
-      shouldShowComposerProviderInstancePicker({
-        provider: "cursor",
-        selectedProviderInstanceId: "cursor",
-        providerInstances: [{ instanceId: "cursor" }],
+      hasFileUndoSettled({
+        pending,
+        thread: {
+          id: pending.threadId,
+          turnDiffSummaries: [summary],
+          activities: [
+            {
+              id: EventId.makeUnsafe("activity-file-undo-failed"),
+              tone: "error",
+              kind: "checkpoint.revert.failed",
+              summary: "Checkpoint revert failed",
+              payload: { turnCount: 2, detail: "reset failed" },
+              turnId: null,
+              createdAt: "2026-07-12T18:00:01.000Z",
+            },
+          ],
+        },
+      }),
+    ).toBe(true);
+  });
+
+  it("ignores a matching failure activity that predates this undo request", () => {
+    expect(
+      hasFileUndoSettled({
+        pending: { ...pending, existingFailureActivityIds: ["activity-file-undo-failed"] },
+        thread: {
+          id: pending.threadId,
+          turnDiffSummaries: [summary],
+          activities: [
+            {
+              id: EventId.makeUnsafe("activity-file-undo-failed"),
+              tone: "error",
+              kind: "checkpoint.revert.failed",
+              summary: "Checkpoint revert failed",
+              payload: { turnCount: 2, detail: "old failure" },
+              turnId: null,
+              createdAt: "2026-07-12T17:00:00.000Z",
+            },
+          ],
+        },
       }),
     ).toBe(false);
-    expect(
-      shouldShowComposerProviderInstancePicker({
-        provider: "codex",
-        selectedProviderInstanceId: "codex",
-        providerInstances: [{ instanceId: "codex" }],
-      }),
-    ).toBe(true);
-  });
-
-  it("targets collapsed Cursor option resets at the selected non-default instance", () => {
-    expect(
-      buildCollapsedCursorModelOptionsReset({
-        provider: "cursor",
-        instanceId: "cursor_work",
-        model: "cursor/auto" as ModelSlug,
-        showExpandedCursorModelVariants: false,
-      }),
-    ).toEqual({
-      persistSticky: true,
-      instanceId: "cursor_work",
-      model: "cursor/auto",
-    });
-    expect(
-      buildCollapsedCursorModelOptionsReset({
-        provider: "cursor",
-        instanceId: "cursor_work",
-        model: "cursor/auto" as ModelSlug,
-        showExpandedCursorModelVariants: true,
-      }),
-    ).toBeUndefined();
   });
 });
 
@@ -672,8 +661,6 @@ describe("voice helpers", () => {
   it("derives voice-note availability from provider auth and runtime state", () => {
     expect(
       deriveComposerVoiceState({
-        enabled: true,
-        available: true,
         authStatus: "authenticated",
         voiceTranscriptionAvailable: true,
         isRecording: false,
@@ -687,8 +674,6 @@ describe("voice helpers", () => {
 
     expect(
       deriveComposerVoiceState({
-        enabled: true,
-        available: true,
         authStatus: "unauthenticated",
         voiceTranscriptionAvailable: true,
         isRecording: true,
@@ -699,56 +684,11 @@ describe("voice helpers", () => {
       canStartVoiceNotes: false,
       showVoiceNotesControl: true,
     });
-
-    expect(
-      deriveComposerVoiceState({
-        enabled: false,
-        available: true,
-        authStatus: "authenticated",
-        voiceTranscriptionAvailable: true,
-        isRecording: false,
-        isTranscribing: false,
-      }),
-    ).toEqual({
-      canRenderVoiceNotes: false,
-      canStartVoiceNotes: false,
-      showVoiceNotesControl: false,
-    });
-
-    expect(
-      deriveComposerVoiceState({
-        enabled: true,
-        available: false,
-        authStatus: "authenticated",
-        voiceTranscriptionAvailable: true,
-        isRecording: false,
-        isTranscribing: false,
-      }),
-    ).toEqual({
-      canRenderVoiceNotes: false,
-      canStartVoiceNotes: false,
-      showVoiceNotesControl: false,
-    });
-
-    expect(
-      deriveComposerVoiceState({
-        enabled: true,
-        available: true,
-        authStatus: "authenticated",
-        voiceTranscriptionAvailable: false,
-        isRecording: false,
-        isTranscribing: false,
-      }),
-    ).toEqual({
-      canRenderVoiceNotes: true,
-      canStartVoiceNotes: false,
-      showVoiceNotesControl: true,
-    });
   });
 });
 
 describe("environment panel visibility", () => {
-  it("opens normal chat threads by default", () => {
+  it("keeps normal chat threads closed by default unless the setting opts in", () => {
     expect(
       resolveDefaultEnvironmentPanelOpen({
         environmentEnabled: true,
@@ -756,16 +696,35 @@ describe("environment panel visibility", () => {
         isTerminalPrimarySurface: false,
         isConstrainedChatLayout: false,
       }),
+    ).toBe(false);
+    expect(
+      resolveDefaultEnvironmentPanelOpen({
+        environmentEnabled: true,
+        isCenteredEmptyLanding: false,
+        isTerminalPrimarySurface: false,
+        isConstrainedChatLayout: false,
+        settingsDefaultOpen: false,
+      }),
+    ).toBe(false);
+    expect(
+      resolveDefaultEnvironmentPanelOpen({
+        environmentEnabled: true,
+        isCenteredEmptyLanding: false,
+        isTerminalPrimarySurface: false,
+        isConstrainedChatLayout: false,
+        settingsDefaultOpen: true,
+      }),
     ).toBe(true);
   });
 
-  it("keeps empty landing, terminal-primary, and constrained layouts closed by default", () => {
+  it("keeps empty landing, terminal-primary, and constrained layouts closed even when setting is open", () => {
     expect(
       resolveDefaultEnvironmentPanelOpen({
         environmentEnabled: true,
         isCenteredEmptyLanding: true,
         isTerminalPrimarySurface: false,
         isConstrainedChatLayout: false,
+        settingsDefaultOpen: true,
       }),
     ).toBe(false);
     expect(
@@ -774,6 +733,7 @@ describe("environment panel visibility", () => {
         isCenteredEmptyLanding: false,
         isTerminalPrimarySurface: true,
         isConstrainedChatLayout: false,
+        settingsDefaultOpen: true,
       }),
     ).toBe(false);
     expect(
@@ -782,6 +742,7 @@ describe("environment panel visibility", () => {
         isCenteredEmptyLanding: false,
         isTerminalPrimarySurface: false,
         isConstrainedChatLayout: true,
+        settingsDefaultOpen: true,
       }),
     ).toBe(false);
   });
@@ -803,6 +764,63 @@ describe("environment panel visibility", () => {
       resolveEnvironmentPanelOpen({
         defaultOpen: false,
         userPreferenceOpen: true,
+      }),
+    ).toBe(true);
+  });
+
+  it("persists explicit toggles but keeps action-driven closes session-only", () => {
+    expect(resolveEnvironmentPanelPreferenceUpdate({ open: true, persist: true })).toEqual({
+      userPreferenceOpen: true,
+      settingsDefaultOpen: true,
+    });
+    expect(resolveEnvironmentPanelPreferenceUpdate({ open: false, persist: true })).toEqual({
+      userPreferenceOpen: false,
+      settingsDefaultOpen: false,
+    });
+    expect(resolveEnvironmentPanelPreferenceUpdate({ open: false, persist: false })).toEqual({
+      userPreferenceOpen: false,
+      settingsDefaultOpen: null,
+    });
+  });
+
+  it("resolves landing preferences on first send without changing non-landing state", () => {
+    expect(
+      resolveEnvironmentPanelPreferenceAfterFirstSend({
+        isCenteredEmptyLanding: true,
+        settingsDefaultOpen: false,
+        currentPreferenceOpen: true,
+      }),
+    ).toBe(false);
+    expect(
+      resolveEnvironmentPanelPreferenceAfterFirstSend({
+        isCenteredEmptyLanding: true,
+        settingsDefaultOpen: true,
+        currentPreferenceOpen: false,
+      }),
+    ).toBeNull();
+    expect(
+      resolveEnvironmentPanelPreferenceAfterFirstSend({
+        isCenteredEmptyLanding: false,
+        settingsDefaultOpen: false,
+        currentPreferenceOpen: true,
+      }),
+    ).toBe(true);
+  });
+
+  it("clears an action-close override so default-open applies after first send", () => {
+    const actionClose = resolveEnvironmentPanelPreferenceUpdate({ open: false, persist: false });
+    const afterFirstSend = resolveEnvironmentPanelPreferenceAfterFirstSend({
+      isCenteredEmptyLanding: true,
+      settingsDefaultOpen: true,
+      currentPreferenceOpen: actionClose.userPreferenceOpen,
+    });
+
+    expect(actionClose.settingsDefaultOpen).toBeNull();
+    expect(afterFirstSend).toBeNull();
+    expect(
+      resolveEnvironmentPanelOpen({
+        defaultOpen: true,
+        userPreferenceOpen: afterFirstSend,
       }),
     ).toBe(true);
   });
@@ -829,6 +847,87 @@ describe("environment panel visibility", () => {
         environmentPanelOpen: false,
       }),
     ).toBe(false);
+  });
+});
+
+describe("resolveCycledModelSlug", () => {
+  const options = [{ slug: "a" }, { slug: "b" }, { slug: "c" }, { slug: "d" }];
+
+  it("returns null when fewer than two models are available", () => {
+    expect(
+      resolveCycledModelSlug({
+        currentModel: "a",
+        options: [{ slug: "a" }],
+        direction: "next",
+      }),
+    ).toBeNull();
+  });
+
+  it("cycles next/previous through the full list", () => {
+    expect(
+      resolveCycledModelSlug({
+        currentModel: "a",
+        options,
+        direction: "next",
+      }),
+    ).toBe("b");
+    expect(
+      resolveCycledModelSlug({
+        currentModel: "a",
+        options,
+        direction: "previous",
+      }),
+    ).toBe("d");
+  });
+
+  it("puts favorites first and cycles within that ordered list", () => {
+    // Ordered: d, b, a, c — from c next wraps to d; from d next is b
+    expect(
+      resolveCycledModelSlug({
+        currentModel: "c",
+        options,
+        favoriteSlugs: ["d", "b"],
+        direction: "next",
+      }),
+    ).toBe("d");
+    expect(
+      resolveCycledModelSlug({
+        currentModel: "d",
+        options,
+        favoriteSlugs: ["d", "b"],
+        direction: "next",
+      }),
+    ).toBe("b");
+  });
+
+  it("starts at the ordered boundary when the current model is unavailable", () => {
+    expect(
+      resolveCycledModelSlug({
+        currentModel: "removed-model",
+        options,
+        favoriteSlugs: ["d", "b"],
+        direction: "next",
+      }),
+    ).toBe("d");
+    expect(
+      resolveCycledModelSlug({
+        currentModel: "removed-model",
+        options,
+        favoriteSlugs: ["d", "b"],
+        direction: "previous",
+      }),
+    ).toBe("c");
+  });
+
+  it("normalizes whitespace and ignores duplicate or unavailable favorites", () => {
+    expect(
+      resolveCycledModelSlug({
+        currentModel: " d ",
+        options: [{ slug: " a " }, { slug: "b" }, { slug: "b" }, { slug: "d" }],
+        favoriteSlugs: [" missing ", " d ", "d"],
+        direction: "next",
+      }),
+    ).toBe("a");
   });
 });
 
@@ -995,7 +1094,7 @@ describe("shouldShowComposerModelBootstrapSkeleton", () => {
         selectedProvider: "opencode",
         selectedModel: "openai/gpt-5-codex",
         persistedModelSelection: {
-          instanceId: "opencode",
+          provider: "opencode",
           model: "openai/gpt-5.4",
         },
         draftModelSelection: null,
@@ -1010,11 +1109,28 @@ describe("shouldShowComposerModelBootstrapSkeleton", () => {
         selectedProvider: "opencode",
         selectedModel: "openai/gpt-5.4",
         persistedModelSelection: {
-          instanceId: "opencode",
+          provider: "opencode",
           model: "openai/gpt-5.4",
         },
         draftModelSelection: null,
         providerModelsLoading: true,
+      }),
+    ).toBe(false);
+  });
+
+  // #103: Cursor CLI missing must not leave the whole model control in a permanent loading state.
+  it("does not keep the Cursor bootstrap skeleton after discovery is no longer loading", () => {
+    expect(
+      shouldShowComposerModelBootstrapSkeleton({
+        selectedProvider: "cursor",
+        selectedModel: "auto",
+        persistedModelSelection: {
+          provider: "cursor",
+          model: "auto",
+        },
+        draftModelSelection: null,
+        providerModelsLoading: false,
+        requiresDiscoveredModels: true,
       }),
     ).toBe(false);
   });
@@ -1025,11 +1141,11 @@ describe("shouldShowComposerModelBootstrapSkeleton", () => {
         selectedProvider: "opencode",
         selectedModel: "opencode/minimax-m2.5-free",
         persistedModelSelection: {
-          instanceId: "opencode",
+          provider: "opencode",
           model: "openai/gpt-5.4",
         },
         draftModelSelection: {
-          instanceId: "opencode",
+          provider: "opencode",
           model: "opencode/minimax-m2.5-free",
         },
         providerModelsLoading: true,
@@ -1043,7 +1159,7 @@ describe("shouldShowComposerModelBootstrapSkeleton", () => {
         selectedProvider: "codex",
         selectedModel: "gpt-5.4",
         persistedModelSelection: {
-          instanceId: "opencode",
+          provider: "opencode",
           model: "openai/gpt-5.4",
         },
         draftModelSelection: null,
@@ -1184,20 +1300,6 @@ describe("deriveComposerSendState", () => {
     expect(state.hasSendableContent).toBe(true);
   });
 
-  it("treats omitted pasted-text drafts as empty for older persisted drafts", () => {
-    const state = deriveComposerSendState({
-      prompt: "",
-      imageCount: 0,
-      fileCount: 0,
-      assistantSelectionCount: 0,
-      fileCommentCount: 0,
-      terminalContexts: [],
-    });
-
-    expect(state.sendablePastedTexts).toEqual([]);
-    expect(state.hasSendableContent).toBe(false);
-  });
-
   it("treats file attachments as sendable content", () => {
     const state = deriveComposerSendState({
       prompt: "",
@@ -1260,9 +1362,8 @@ describe("resolveProjectScriptTerminalTarget", () => {
     const target = resolveProjectScriptTerminalTarget({
       baseTerminalId: "default",
       createTerminalId: () => "new-terminal",
-      runningTerminalIds: [],
+      hasRunningTerminal: false,
       terminalOpen: false,
-      terminalIds: ["default"],
     });
 
     expect(target).toEqual({
@@ -1271,44 +1372,13 @@ describe("resolveProjectScriptTerminalTarget", () => {
     });
   });
 
-  it("reuses the open base terminal when it is idle", () => {
-    const target = resolveProjectScriptTerminalTarget({
-      baseTerminalId: "default",
-      createTerminalId: () => "new-terminal",
-      runningTerminalIds: [],
-      terminalOpen: true,
-      terminalIds: ["default"],
-    });
-
-    expect(target).toEqual({
-      shouldCreateNewTerminal: false,
-      terminalId: "default",
-    });
-  });
-
-  it("reuses another open terminal when the active terminal is busy", () => {
-    const target = resolveProjectScriptTerminalTarget({
-      baseTerminalId: "default",
-      createTerminalId: () => "new-terminal",
-      runningTerminalIds: ["default"],
-      terminalOpen: true,
-      terminalIds: ["default", "terminal-2"],
-    });
-
-    expect(target).toEqual({
-      shouldCreateNewTerminal: false,
-      terminalId: "terminal-2",
-    });
-  });
-
-  it("creates a fresh terminal when every open terminal is busy", () => {
+  it("creates a fresh terminal when a live terminal could keep stale cwd or env", () => {
     expect(
       resolveProjectScriptTerminalTarget({
         baseTerminalId: "default",
         createTerminalId: () => "visible-script-terminal",
-        runningTerminalIds: ["default", "terminal-2"],
+        hasRunningTerminal: false,
         terminalOpen: true,
-        terminalIds: ["default", "terminal-2"],
       }),
     ).toEqual({
       shouldCreateNewTerminal: true,
@@ -1319,9 +1389,8 @@ describe("resolveProjectScriptTerminalTarget", () => {
       resolveProjectScriptTerminalTarget({
         baseTerminalId: "default",
         createTerminalId: () => "running-script-terminal",
-        runningTerminalIds: ["default"],
+        hasRunningTerminal: true,
         terminalOpen: false,
-        terminalIds: ["default"],
       }),
     ).toEqual({
       shouldCreateNewTerminal: true,
@@ -1333,10 +1402,9 @@ describe("resolveProjectScriptTerminalTarget", () => {
     const target = resolveProjectScriptTerminalTarget({
       baseTerminalId: "default",
       createTerminalId: () => "forced-script-terminal",
-      runningTerminalIds: [],
+      hasRunningTerminal: false,
       preferNewTerminal: true,
       terminalOpen: false,
-      terminalIds: ["default"],
     });
 
     expect(target).toEqual({

@@ -65,6 +65,8 @@ import { toastManager } from "~/components/ui/toast";
 import { useTheme } from "~/hooks/useTheme";
 import { ChevronRightIcon, PaperclipIcon } from "~/lib/icons";
 import { resolveVoiceTranscriptionTarget } from "~/lib/providerAvailability";
+import { formatComposerMentionToken } from "~/lib/composerMentions";
+import { findProviderStatus } from "~/lib/providerAvailability";
 import { resolveProviderDiscoveryCwd } from "~/lib/providerDiscovery";
 import { serverConfigQueryOptions } from "~/lib/serverReactQuery";
 import { cn } from "~/lib/utils";
@@ -391,6 +393,11 @@ export function KanbanNewTaskDialog({
       },
     },
     appendReferenceText: appendComposerPromptText,
+    appendPathMentions: (paths) => {
+      for (const absolutePath of paths) {
+        appendComposerPromptText(formatComposerMentionToken(absolutePath));
+      }
+    },
     dragDepthRef,
     focusComposer: scheduleComposerFocus,
     setIsDragOverComposer,

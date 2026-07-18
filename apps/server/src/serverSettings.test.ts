@@ -66,15 +66,50 @@ describe("ServerSettingsService", () => {
     expect(result.updated.enableProviderUpdateChecks).toBe(false);
     expect(result.updated.providers.codex.binaryPath).toBe("/usr/local/bin/codex");
     expect(result.parsed).toMatchObject({
-      enableAssistantStreaming: true,
-      enableProviderUpdateChecks: false,
-      providers: {
-        codex: {
-          binaryPath: "/usr/local/bin/codex",
-          customModels: ["gpt-custom"],
+      revision: 1,
+      migrationVersion: 1,
+      settings: {
+        enableAssistantStreaming: true,
+        enableProviderUpdateChecks: false,
+        providers: {
+          codex: {
+            binaryPath: "/usr/local/bin/codex",
+            customModels: ["gpt-custom"],
+          },
         },
       },
     });
+  });
+
+  it("keeps provider passwords server-only and returns configured flags to clients", async () => {
+    const result = await runWithSettings(
+      Effect.gen(function* () {
+        const service = yield* ServerSettingsService;
+        const { settingsPath } = yield* ServerConfig;
+        const fs = yield* FileSystem.FileSystem;
+        yield* service.start;
+        const view = yield* service.updateSettingsView({
+          providers: {
+            kilo: { serverPassword: "kilo-secret" },
+            opencode: { serverPassword: "opencode-secret" },
+          },
+        });
+        const internal = yield* service.getSettings;
+        const persisted = yield* fs.readFileString(settingsPath);
+        return { view, internal, persisted };
+      }),
+    );
+
+    expect(result.internal.providers.kilo.serverPasswordConfigured).toBe(true);
+    expect(result.internal.providers.opencode.serverPasswordConfigured).toBe(true);
+    expect(result.view.providers.kilo).toMatchObject({ serverPasswordConfigured: true });
+    expect(result.view.providers.opencode).toMatchObject({ serverPasswordConfigured: true });
+    expect(result.internal.providers.kilo.serverPassword).toBe("kilo-secret");
+    expect(result.internal.providers.opencode.serverPassword).toBe("opencode-secret");
+    expect(JSON.stringify(result.view)).not.toContain("kilo-secret");
+    expect(JSON.stringify(result.view)).not.toContain("opencode-secret");
+    expect(result.persisted).not.toContain("kilo-secret");
+    expect(result.persisted).not.toContain("opencode-secret");
   });
 
   it("resolves text generation selection away from disabled providers", async () => {
@@ -90,7 +125,7 @@ describe("ServerSettingsService", () => {
               model: DEFAULT_MODEL_BY_PROVIDER.gemini,
             },
             providers: {
-              gemini: { enabled: false },
+              antigravity: { enabled: false },
             },
           }),
         ),
@@ -441,7 +476,7 @@ describe("ServerSettingsService", () => {
     expect(result.updated.providerInstances.grok_work?.environment).toEqual([
       { name: "XAI_API_KEY", value: "secret-token", sensitive: true },
     ]);
-    expect(result.parsed.providerInstances.grok_work.environment).toEqual([
+    expect(result.parsed.settings.providerInstances.grok_work.environment).toEqual([
       {
         name: "XAI_API_KEY",
         value: "",
@@ -481,13 +516,13 @@ describe("ServerSettingsService", () => {
     expect(result.raw).not.toContain("opencode-secret");
     expect(result.updated.providers.kilo.serverPassword).toBe("kilo-secret");
     expect(result.updated.providers.opencode.serverPassword).toBe("opencode-secret");
-    expect(result.parsed.providers.kilo).toMatchObject({
+    expect(result.parsed.settings.providers.kilo).toMatchObject({
       serverUrl: "http://127.0.0.1:4097",
       serverPassword: "",
       serverPasswordRedacted: true,
       serverPasswordSecretRef: expect.stringMatching(/^provider-secret-v2-/),
     });
-    expect(result.parsed.providers.opencode).toMatchObject({
+    expect(result.parsed.settings.providers.opencode).toMatchObject({
       serverUrl: "http://127.0.0.1:4098",
       serverPassword: "",
       serverPasswordRedacted: true,
@@ -571,7 +606,7 @@ describe("ServerSettingsService", () => {
       serverUrl: "http://127.0.0.1:4096",
       serverPassword: "opencode-secret",
     });
-    expect(result.parsed.providerInstances.opencode_work.config).toEqual({
+    expect(result.parsed.settings.providerInstances.opencode_work.config).toEqual({
       serverUrl: "http://127.0.0.1:4096",
       serverPassword: "",
       serverPasswordRedacted: true,
@@ -694,7 +729,7 @@ describe("ServerSettingsService", () => {
     expect(result.settings.providerInstances.opencode_work?.config).toEqual({
       serverPassword: "preserved-secret",
     });
-    expect(result.parsed.providerInstances.opencode_work.config).toMatchObject({
+    expect(result.parsed.settings.providerInstances.opencode_work.config).toMatchObject({
       serverPassword: "",
       serverPasswordRedacted: true,
       serverPasswordSecretRef: expect.stringMatching(/^provider-secret-v2-/),
@@ -753,9 +788,9 @@ describe("ServerSettingsService", () => {
         const rawBefore = yield* fs.readFileString(settingsPath);
         const parsedBefore = JSON.parse(rawBefore) as any;
         const oldRefs = [
-          parsedBefore.providers.opencode.serverPasswordSecretRef,
-          parsedBefore.providerInstances.grok_work.environment[0].valueSecretRef,
-          parsedBefore.providerInstances.opencode_work.config.serverPasswordSecretRef,
+          parsedBefore.settings.providers.opencode.serverPasswordSecretRef,
+          parsedBefore.settings.providerInstances.grok_work.environment[0].valueSecretRef,
+          parsedBefore.settings.providerInstances.opencode_work.config.serverPasswordSecretRef,
         ] as string[];
 
         yield* fs.chmod(stateDir, 0o500);
@@ -805,9 +840,9 @@ describe("ServerSettingsService", () => {
     expect(result.secretsAfterFailedWrite[result.oldRefs[2]!]).toBe("config-old");
 
     const newRefs = [
-      result.parsedAfterRetry.providers.opencode.serverPasswordSecretRef,
-      result.parsedAfterRetry.providerInstances.grok_work.environment[0].valueSecretRef,
-      result.parsedAfterRetry.providerInstances.opencode_work.config.serverPasswordSecretRef,
+      result.parsedAfterRetry.settings.providers.opencode.serverPasswordSecretRef,
+      result.parsedAfterRetry.settings.providerInstances.grok_work.environment[0].valueSecretRef,
+      result.parsedAfterRetry.settings.providerInstances.opencode_work.config.serverPasswordSecretRef,
     ] as string[];
     expect(newRefs[0]).not.toBe(result.oldRefs[0]);
     expect(newRefs[1]).not.toBe(result.oldRefs[1]);
@@ -832,7 +867,7 @@ describe("ServerSettingsService", () => {
           providers: { opencode: { serverPassword: "old-secret" } },
         });
         const parsed = JSON.parse(yield* fs.readFileString(settingsPath)) as any;
-        const oldReference = parsed.providers.opencode.serverPasswordSecretRef as string;
+        const oldReference = parsed.settings.providers.opencode.serverPasswordSecretRef as string;
         const oldPath = `${secretsDir}/${oldReference}.bin`;
         const blockerPath = `${oldPath}/blocker`;
 
@@ -920,7 +955,7 @@ describe("ServerSettingsService", () => {
     expect(result.raw).not.toContain("secret-token");
     expect(result.raw).not.toContain("opencode-secret");
     expect(result.raw).not.toContain("kilo-secret");
-    expect(result.parsed.providerInstances.grok_work.environment).toEqual([
+    expect(result.parsed.settings.providerInstances.grok_work.environment).toEqual([
       {
         name: "XAI_API_KEY",
         value: "",
@@ -929,13 +964,13 @@ describe("ServerSettingsService", () => {
         valueSecretRef: expect.stringMatching(/^provider-secret-v2-/),
       },
     ]);
-    expect(result.parsed.providerInstances.opencode_work.config).toEqual({
+    expect(result.parsed.settings.providerInstances.opencode_work.config).toEqual({
       serverUrl: "http://127.0.0.1:4096",
       serverPassword: "",
       serverPasswordRedacted: true,
       serverPasswordSecretRef: expect.stringMatching(/^provider-secret-v2-/),
     });
-    expect(result.parsed.providers.kilo).toMatchObject({
+    expect(result.parsed.settings.providers.kilo).toMatchObject({
       serverUrl: "http://127.0.0.1:4097",
       serverPassword: "",
       serverPasswordRedacted: true,

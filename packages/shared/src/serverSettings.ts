@@ -2,6 +2,7 @@ import {
   DEFAULT_MODEL_BY_PROVIDER,
   type ModelSelection,
   type ProviderKind,
+  type ProviderStartOptions,
   type ServerSettings,
   type ServerSettingsPatch,
 } from "@synara/contracts";
@@ -68,5 +69,39 @@ export function applyServerSettingsPatch(
       model,
       ...(options !== undefined ? { options: options as ModelSelection["options"] } : {}),
     } as ModelSelection,
+  };
+}
+
+/** Server-owned launch options derived from the persisted non-secret settings snapshot. */
+export function providerStartOptionsFromServerSettings(
+  settings: ServerSettings,
+): ProviderStartOptions {
+  const { providers } = settings;
+  return {
+    codex: {
+      binaryPath: providers.codex.binaryPath,
+      ...(providers.codex.homePath ? { homePath: providers.codex.homePath } : {}),
+    },
+    claudeAgent: { binaryPath: providers.claudeAgent.binaryPath },
+    cursor: {
+      binaryPath: providers.cursor.binaryPath,
+      ...(providers.cursor.apiEndpoint ? { apiEndpoint: providers.cursor.apiEndpoint } : {}),
+    },
+    antigravity: { binaryPath: providers.antigravity.binaryPath },
+    grok: { binaryPath: providers.grok.binaryPath },
+    droid: { binaryPath: providers.droid.binaryPath },
+    kilo: {
+      binaryPath: providers.kilo.binaryPath,
+      ...(providers.kilo.serverUrl ? { serverUrl: providers.kilo.serverUrl } : {}),
+    },
+    opencode: {
+      binaryPath: providers.opencode.binaryPath,
+      ...(providers.opencode.serverUrl ? { serverUrl: providers.opencode.serverUrl } : {}),
+      experimentalWebSockets: providers.opencode.experimentalWebSockets,
+    },
+    pi: {
+      binaryPath: providers.pi.binaryPath,
+      ...(providers.pi.agentDir ? { agentDir: providers.pi.agentDir } : {}),
+    },
   };
 }

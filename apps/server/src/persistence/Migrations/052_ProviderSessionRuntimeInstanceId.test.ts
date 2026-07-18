@@ -20,7 +20,7 @@ layer("052_ProviderSessionRuntimeInstanceId", (it) => {
       const sql = yield* SqlClient.SqlClient;
       const now = "2026-07-02T20:00:00.000Z";
 
-      yield* runMigrations({ toMigrationInclusive: 53 });
+      yield* runMigrations({ toMigrationInclusive: 70 });
 
       yield* sql`
         INSERT INTO provider_session_runtime (

@@ -1,18 +1,19 @@
 import {
   formatModelDisplayName,
-  geminiModelOptionsFromEffortValue,
   humanizeModelSlug,
   normalizeModelSlug,
 } from "@synara/shared/model";
 import type {
+  AntigravityModelOptions,
+  AntigravityModelSelection,
   ClaudeModelOptions,
   ClaudeModelSelection,
   CodexModelOptions,
   CodexModelSelection,
   CursorModelOptions,
   CursorModelSelection,
-  GeminiModelOptions,
-  GeminiModelSelection,
+  DroidModelOptions,
+  DroidModelSelection,
   GrokModelOptions,
   GrokModelSelection,
   KiloModelSelection,
@@ -26,6 +27,7 @@ import type {
   ProviderModelOptions,
   ProviderOptionSelections,
 } from "@synara/contracts";
+import { normalizeCursorModelVariantBaseId } from "./cursorModelVariants";
 
 export type ProviderOptions = ProviderModelOptions[ProviderKind];
 
@@ -36,6 +38,7 @@ export interface ModelSelectionBuildMetadata {
 export interface ProviderModelOption {
   slug: string;
   name: string;
+  description?: string;
   upstreamProviderId?: string;
   upstreamProviderName?: string;
 }
@@ -97,6 +100,9 @@ function normalizeDynamicModelSlug(provider: ProviderKind, slug: string): string
   if (provider === "grok") {
     return slug.trim();
   }
+  if (provider === "cursor") {
+    return normalizeCursorModelVariantBaseId(slug) ?? slug.trim();
+  }
   return normalizeModelSlug(slug, provider) ?? slug;
 }
 
@@ -104,7 +110,7 @@ function normalizeDynamicModelSlug(provider: ProviderKind, slug: string): string
  * Folds runtime-discovered models into the static option list for a provider:
  * discovered models lead (with display names recovered from the static list when
  * possible), static built-ins fill gaps unless discovery fully owns the catalog
- * (kilo/opencode/cursor), and user-defined custom models always survive.
+ * (antigravity/kilo/opencode/cursor), and user-defined custom models always survive.
  */
 export function mergeDynamicModelOptions(input: {
   provider: ProviderKind;
@@ -112,6 +118,7 @@ export function mergeDynamicModelOptions(input: {
   dynamicModels: ReadonlyArray<{
     slug: string;
     name?: string | null | undefined;
+    description?: string | null | undefined;
     upstreamProviderId?: string | null | undefined;
     upstreamProviderName?: string | null | undefined;
   }>;
@@ -150,6 +157,7 @@ export function mergeDynamicModelOptions(input: {
         rawName.toLowerCase() !== normalizedSlug.toLowerCase()
           ? rawName
           : displayNameFallback),
+      ...(dynamicModel.description?.trim() ? { description: dynamicModel.description.trim() } : {}),
       ...(dynamicModel.upstreamProviderId?.trim()
         ? { upstreamProviderId: dynamicModel.upstreamProviderId.trim() }
         : {}),
@@ -159,14 +167,26 @@ export function mergeDynamicModelOptions(input: {
     });
   }
 
-  const customOnlyModels = input.staticOptions.filter(
-    (model) => "isCustom" in model && model.isCustom && !dynamicNormalizedSlugs.has(model.slug),
-  );
+  // Droid validates model values against its live ACP select options, so an
+  // arbitrary custom slug is guaranteed to fail at session configuration.
+  const customOnlyModels =
+    input.provider === "droid"
+      ? []
+      : input.staticOptions.filter(
+          (model) =>
+            "isCustom" in model &&
+            model.isCustom &&
+            !dynamicNormalizedSlugs.has(normalizeDynamicModelSlug(input.provider, model.slug)),
+        );
   const staticBuiltInModels = input.staticOptions.filter(
     (model) => !("isCustom" in model) || model.isCustom !== true,
   );
   const missingStaticBuiltIns =
-    (input.provider === "kilo" || input.provider === "opencode" || input.provider === "cursor") &&
+    (input.provider === "antigravity" ||
+      input.provider === "kilo" ||
+      input.provider === "opencode" ||
+      input.provider === "cursor" ||
+      input.provider === "droid") &&
     normalizedDynamicOptions.length > 0
       ? []
       : staticBuiltInModels.filter((model) => !dynamicNormalizedSlugs.has(model.slug));
@@ -177,6 +197,12 @@ export function mergeDynamicModelOptions(input: {
       : normalizedDynamicOptions;
 
   return [...orderedDynamicOptions, ...missingStaticBuiltIns, ...customOnlyModels];
+}
+
+/** Returns a compact label for provider descriptions that begin with an `Nx` cost multiplier. */
+export function providerModelCostMultiplierLabel(description?: string): string | null {
+  const multiplier = description?.trim().match(/^(\d+(?:\.\d+)?)x(?:\s|$)/i)?.[1];
+  return multiplier ? `${multiplier}×` : null;
 }
 
 export function groupProviderModelOptions(
@@ -278,19 +304,23 @@ export function buildNextProviderOptions(
   if (provider === "cursor") {
     return { ...(modelOptions as CursorModelOptions | undefined), ...patch } as CursorModelOptions;
   }
-  if (provider === "gemini") {
+  if (provider === "antigravity") {
     return {
-      ...(modelOptions as GeminiModelOptions | undefined),
-      thinkingLevel: undefined,
-      thinkingBudget: undefined,
+      ...(modelOptions as AntigravityModelOptions | undefined),
       ...patch,
-    } as GeminiModelOptions;
+    } as AntigravityModelOptions;
   }
   if (provider === "grok") {
     return {
       ...(modelOptions as GrokModelOptions | undefined),
       ...patch,
     } as GrokModelOptions;
+  }
+  if (provider === "droid") {
+    return {
+      ...(modelOptions as DroidModelOptions | undefined),
+      ...patch,
+    } as DroidModelOptions;
   }
   if (provider === "opencode") {
     return {
@@ -309,13 +339,6 @@ export function buildProviderOptionPatch(
   optionId: string,
   value: string | boolean,
 ): Record<string, unknown> {
-  if (
-    provider === "gemini" &&
-    typeof value === "string" &&
-    (optionId === "thinkingLevel" || optionId === "thinkingBudget")
-  ) {
-    return geminiModelOptionsFromEffortValue(value) ?? {};
-  }
   return { [optionId]: value };
 }
 
@@ -357,17 +380,23 @@ export function buildModelSelection(
   metadata?: ModelSelectionBuildMetadata,
 ): CursorModelSelection;
 export function buildModelSelection(
-  provider: "gemini",
+  provider: "antigravity",
   model: string,
-  options?: GeminiModelOptions | null | undefined,
+  options?: AntigravityModelOptions | null | undefined,
   metadata?: ModelSelectionBuildMetadata,
-): GeminiModelSelection;
+): AntigravityModelSelection;
 export function buildModelSelection(
   provider: "grok",
   model: string,
   options?: GrokModelOptions | null | undefined,
   metadata?: ModelSelectionBuildMetadata,
 ): GrokModelSelection;
+export function buildModelSelection(
+  provider: "droid",
+  model: string,
+  options?: DroidModelOptions | null | undefined,
+  metadata?: ModelSelectionBuildMetadata,
+): DroidModelSelection;
 export function buildModelSelection(
   provider: "opencode",
   model: string,

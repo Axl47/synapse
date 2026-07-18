@@ -68,6 +68,15 @@ function expandProviderNativeSlashCommandNames(
   return [...expandedNames];
 }
 
+/**
+ * Providers where app-owned /review (target picker + structured prompt) must
+ * win over listing a native "review" command. OpenCode exposes /review in its
+ * command list but does not honor bare `/review` text turns (#218).
+ */
+export function providerUsesAppOwnedReviewSlashCommand(provider: ProviderKind): boolean {
+  return provider === "codex" || provider === "opencode";
+}
+
 function shouldKeepBuiltInSlashCommandDespiteNativeCollision(
   provider: ProviderKind,
   command: ComposerSlashCommand,
@@ -75,7 +84,8 @@ function shouldKeepBuiltInSlashCommandDespiteNativeCollision(
   return (
     command === "automation" ||
     command === "export" ||
-    (provider === "codex" && command === "review")
+    command === "feedback" ||
+    (providerUsesAppOwnedReviewSlashCommand(provider) && command === "review")
   );
 }
 
@@ -89,8 +99,26 @@ export function shouldHideProviderNativeCommandFromComposerMenu(
   return (
     normalizedCommand === "automation" ||
     (normalizedCommand === "export" && appCommandIsAvailable) ||
-    (provider === "codex" && normalizedCommand === "review")
+    (normalizedCommand === "feedback" && appCommandIsAvailable) ||
+    (providerUsesAppOwnedReviewSlashCommand(provider) && normalizedCommand === "review")
   );
+}
+
+/**
+ * True when a discovered native "review" command should be sent as plain
+ * `/review` text. Codex/OpenCode use the app review UX instead (#218).
+ */
+export function providerSupportsTextNativeReviewCommand(
+  provider: ProviderKind,
+  nativeCommandNames: ReadonlyArray<{ readonly name: string } | string>,
+): boolean {
+  if (providerUsesAppOwnedReviewSlashCommand(provider)) {
+    return false;
+  }
+  return nativeCommandNames.some((command) => {
+    const name = typeof command === "string" ? command : command.name;
+    return name.trim().toLowerCase() === "review";
+  });
 }
 
 export function getProviderNativeSlashCommandSearchTerms(
@@ -175,6 +203,12 @@ const COMPOSER_SLASH_COMMAND_DEFINITIONS: Record<
     command: "export",
     label: "/export",
     description: "Download this thread as a ZIP archive (thread.json + transcript.md)",
+    source: "app",
+  },
+  feedback: {
+    command: "feedback",
+    label: "/feedback",
+    description: "Send feedback to the Synara team",
     source: "app",
   },
   automation: {
@@ -383,6 +417,7 @@ export function getAvailableComposerSlashCommands(input: {
           "status",
           "subagents",
           ...(input.canOfferExportCommand ? (["export"] as const) : []),
+          "feedback",
           "automation",
         ]
       : [
@@ -392,6 +427,7 @@ export function getAvailableComposerSlashCommands(input: {
           // happens in the app rather than being forwarded to Claude's native /export.
           ...(input.canOfferSideCommand ? (["side"] as const) : []),
           ...(input.canOfferExportCommand ? (["export"] as const) : []),
+          "feedback",
           "automation",
         ];
   return availableCommands.filter((command) => !collidingNativeCommandNames.has(command));

@@ -85,8 +85,10 @@ export function buildGrokAcpSpawnInput(
     cwd,
     providerEnvironment: {
       driver: "grok",
+      ...(grokSettings?.environment !== undefined
+        ? { environment: grokSettings.environment }
+        : {}),
       ...(grokSettings?.instanceId !== undefined ? { instanceId: grokSettings.instanceId } : {}),
-      ...(grokSettings?.environment !== undefined ? { environment: grokSettings.environment } : {}),
       ...(grokSettings?.homeDir !== undefined ? { homeDir: grokSettings.homeDir } : {}),
       ...(grokSettings?.isolationRootDir !== undefined
         ? { isolationRootDir: grokSettings.isolationRootDir }

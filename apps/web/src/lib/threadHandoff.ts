@@ -17,19 +17,10 @@ import { getDefaultModel } from "@synara/shared/model";
 import { inferLegacyProviderKindFromModelSelection } from "@synara/shared/providerInstances";
 import type { ProviderInstanceOption } from "../appSettings";
 import { type Thread } from "../types";
+import { DEFAULT_PROVIDER_ORDER } from "../providerOrdering";
 import { stripEmbeddedAssistantSelections } from "./assistantSelections";
 import { randomUUID } from "./utils";
 
-const HANDOFF_PROVIDER_ORDER: ReadonlyArray<ProviderKind> = [
-  "codex",
-  "claudeAgent",
-  "cursor",
-  "gemini",
-  "grok",
-  "kilo",
-  "opencode",
-  "pi",
-];
 const IMPORTABLE_THREAD_ACTIVITY_KINDS = new Set([
   "account.rate-limits.updated",
   "account.rate-limited",
@@ -60,7 +51,7 @@ function isImportableThreadActivity(
 export function resolveAvailableHandoffTargetProviders(
   sourceProvider: ProviderKind,
 ): ReadonlyArray<ProviderKind> {
-  return HANDOFF_PROVIDER_ORDER.filter((provider) => provider !== sourceProvider);
+  return DEFAULT_PROVIDER_ORDER.filter((provider) => provider !== sourceProvider);
 }
 
 export function resolveAvailableHandoffTargets(input: {

@@ -36,6 +36,11 @@ import { PtyAdapter, PtyAdapterShape, type PtyExitEvent, type PtyProcess } from 
 import { runProcess } from "../../processRunner";
 import { ServerConfig } from "../../config";
 import {
+  ensurePrivateDirectorySync,
+  PRIVATE_FILE_MODE,
+  repairPrivateFile,
+} from "../../privatePathPermissions";
+import {
   applyManagedTerminalAgentWrapperEnv,
   prepareManagedTerminalAgentWrappers,
 } from "../managedTerminalWrappers";
@@ -1020,7 +1025,7 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
     this.processKillGraceMs = options.processKillGraceMs ?? DEFAULT_PROCESS_KILL_GRACE_MS;
     this.maxRetainedInactiveSessions =
       options.maxRetainedInactiveSessions ?? DEFAULT_MAX_RETAINED_INACTIVE_SESSIONS;
-    fs.mkdirSync(this.logsDir, { recursive: true });
+    ensurePrivateDirectorySync(this.logsDir);
     if (this.managedWrapperBinDir) {
       try {
         const preparedWrappers = prepareManagedTerminalAgentWrappers({
@@ -2035,8 +2040,12 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
       const finalPath = this.historyPath(threadId, terminalId);
       const tempPath = `${finalPath}.tmp-${process.pid}-${(this.persistTempCounter += 1)}`;
       try {
-        await fs.promises.writeFile(tempPath, history, "utf8");
+        await fs.promises.writeFile(tempPath, history, {
+          encoding: "utf8",
+          mode: PRIVATE_FILE_MODE,
+        });
         await fs.promises.rename(tempPath, finalPath);
+        await repairPrivateFile(finalPath);
         this.persistedHistoryByKey.set(persistenceKey, history);
       } catch (error) {
         await fs.promises.rm(tempPath, { force: true }).catch(() => undefined);
@@ -2097,12 +2106,16 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
     const persistenceKey = toSessionKey(threadId, terminalId);
     try {
       const raw = await fs.promises.readFile(nextPath, "utf8");
+      await repairPrivateFile(nextPath);
       const capped = capHistoryByLimits(sanitizePersistedTerminalHistory(raw), {
         maxLines: this.historyLineLimit,
         maxBytes: this.historyByteLimit,
       });
       if (capped !== raw) {
-        await fs.promises.writeFile(nextPath, capped, "utf8");
+        await fs.promises.writeFile(nextPath, capped, {
+          encoding: "utf8",
+          mode: PRIVATE_FILE_MODE,
+        });
       }
       this.persistedHistoryByKey.set(persistenceKey, capped);
       return capped;
@@ -2125,7 +2138,11 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
       });
 
       // Migrate legacy transcript filename to the terminal-scoped path.
-      await fs.promises.writeFile(nextPath, capped, "utf8");
+      await fs.promises.writeFile(nextPath, capped, {
+        encoding: "utf8",
+        mode: PRIVATE_FILE_MODE,
+      });
+      await repairPrivateFile(nextPath);
       this.persistedHistoryByKey.set(persistenceKey, capped);
       try {
         await fs.promises.rm(legacyPath, { force: true });

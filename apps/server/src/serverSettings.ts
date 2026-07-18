@@ -18,6 +18,7 @@ import {
   ServerSettings,
   ServerSettingsError,
   type ServerSettingsPatch,
+  type ServerSettingsView,
 } from "@synara/contracts";
 import { deepMerge, type DeepPartial } from "@synara/shared/Struct";
 import {
@@ -49,10 +50,57 @@ export interface ServerSettingsShape {
   readonly start: Effect.Effect<void, ServerSettingsError>;
   readonly ready: Effect.Effect<void, ServerSettingsError>;
   readonly getSettings: Effect.Effect<ServerSettings, ServerSettingsError>;
+  readonly getSettingsView: Effect.Effect<ServerSettingsView, ServerSettingsError>;
+  readonly getSnapshot: Effect.Effect<ServerSettingsSnapshot, ServerSettingsError>;
   readonly updateSettings: (
     patch: ServerSettingsPatch,
   ) => Effect.Effect<ServerSettings, ServerSettingsError>;
+  readonly updateSettingsView: (
+    patch: ServerSettingsPatch,
+  ) => Effect.Effect<ServerSettingsView, ServerSettingsError>;
   readonly streamChanges: Stream.Stream<ServerSettings>;
+  readonly streamViews: Stream.Stream<ServerSettingsView>;
+}
+
+export interface ServerSettingsSnapshot {
+  readonly revision: number;
+  readonly migrationVersion: number;
+  readonly settings: ServerSettings;
+}
+
+const SERVER_SETTINGS_MIGRATION_VERSION = 1;
+
+export function toServerSettingsView(settings: ServerSettings): ServerSettingsView {
+  return redactServerSettingsForClient(settings);
+}
+
+function applyLegacyPasswordPatch(
+  settings: ServerSettings,
+  patch: ServerSettingsPatch,
+  current?: ServerSettings,
+): ServerSettings {
+  let providers = settings.providers;
+  for (const provider of LEGACY_SERVER_PASSWORD_PROVIDERS) {
+    const providerPatch = patch.providers?.[provider];
+    const password =
+      providerPatch?.serverPasswordRedacted === true
+        ? ((current?.providers[provider] as { readonly serverPassword?: string } | undefined)
+            ?.serverPassword ?? "")
+        : providerPatch?.serverPassword;
+    if (password === undefined) continue;
+    providers = {
+      ...providers,
+      [provider]: {
+        ...providers[provider],
+        // Passwords are deliberately server-only and therefore outside the
+        // public Settings schema. Keep them only in the live internal value;
+        // persistProviderSecrets replaces them with a redacted reference.
+        serverPassword: password,
+        serverPasswordConfigured: password.length > 0,
+      },
+    };
+  }
+  return providers === settings.providers ? settings : { ...settings, providers };
 }
 
 export class ServerSettingsService extends ServiceMap.Service<
@@ -63,31 +111,55 @@ export class ServerSettingsService extends ServiceMap.Service<
     Layer.effect(
       ServerSettingsService,
       Effect.gen(function* () {
-        const initialSettings = yield* normalizeSettings(
+        const initialSettings = applyLegacyPasswordPatch(yield* normalizeSettings(
           "<memory>",
           DEFAULT_SERVER_SETTINGS,
           overrides as ServerSettingsPatch,
-        );
+        ), overrides as ServerSettingsPatch);
         const currentSettingsRef = yield* Ref.make<ServerSettings>(initialSettings);
         const changesPubSub = yield* PubSub.unbounded<ServerSettings>();
+        const revisionRef = yield* Ref.make(0);
         const emitChange = (settings: ServerSettings) =>
           PubSub.publish(changesPubSub, settings).pipe(Effect.asVoid);
+
+        const getSettings = Ref.get(currentSettingsRef).pipe(Effect.map(resolveTextGenerationProvider));
+        const updateSettings = (patch: ServerSettingsPatch) =>
+          Ref.get(currentSettingsRef).pipe(
+            Effect.flatMap((currentSettings) =>
+              normalizeSettings("<memory>", currentSettings, patch).pipe(
+                Effect.map((nextSettings) =>
+                  applyLegacyPasswordPatch(nextSettings, patch, currentSettings),
+                ),
+              ),
+            ),
+            Effect.tap((nextSettings) => Ref.set(currentSettingsRef, nextSettings)),
+            Effect.tap(() => Ref.update(revisionRef, (revision) => revision + 1)),
+            Effect.tap(emitChange),
+            Effect.map(resolveTextGenerationProvider),
+          );
 
         return {
           start: Effect.void,
           ready: Effect.void,
-          getSettings: Ref.get(currentSettingsRef).pipe(Effect.map(resolveTextGenerationProvider)),
-          updateSettings: (patch) =>
-            Ref.get(currentSettingsRef).pipe(
-              Effect.flatMap((currentSettings) =>
-                normalizeSettings("<memory>", currentSettings, patch),
-              ),
-              Effect.tap((nextSettings) => Ref.set(currentSettingsRef, nextSettings)),
-              Effect.tap(emitChange),
-              Effect.map(resolveTextGenerationProvider),
-            ),
+          getSettings,
+          getSettingsView: getSettings.pipe(Effect.map(toServerSettingsView)),
+          getSnapshot: Effect.all({ revision: Ref.get(revisionRef), settings: getSettings }).pipe(
+            Effect.map(({ revision, settings }) => ({
+              revision,
+              migrationVersion: SERVER_SETTINGS_MIGRATION_VERSION,
+              settings,
+            })),
+          ),
+          updateSettings,
+          updateSettingsView: (patch) => updateSettings(patch).pipe(Effect.map(toServerSettingsView)),
           get streamChanges() {
             return Stream.fromPubSub(changesPubSub).pipe(Stream.map(resolveTextGenerationProvider));
+          },
+          get streamViews() {
+            return Stream.fromPubSub(changesPubSub).pipe(
+              Stream.map(resolveTextGenerationProvider),
+              Stream.map(toServerSettingsView),
+            );
           },
         } satisfies ServerSettingsShape;
       }),
@@ -495,11 +567,54 @@ function normalizeSettings(
 
 function decodeSettingsFromJson(settingsPath: string, raw: string) {
   try {
-    const decoded = Schema.decodeUnknownExit(ServerSettings)(JSON.parse(raw) as unknown);
+    const parsed = JSON.parse(raw) as unknown;
+    const envelope =
+      parsed !== null && typeof parsed === "object" && "settings" in parsed
+        ? (parsed as { readonly revision?: unknown; readonly migrationVersion?: unknown; readonly settings: unknown })
+        : undefined;
+    const decoded = Schema.decodeUnknownExit(ServerSettings)(envelope?.settings ?? parsed);
     if (decoded._tag === "Failure") {
       return { _tag: "Failure" as const, error: Cause.pretty(decoded.cause) };
     }
-    return { _tag: "Success" as const, value: decoded.value };
+    const rawSettings = (envelope?.settings ?? parsed) as Record<string, unknown>;
+    const rawProviders = rawSettings.providers as Record<string, Record<string, unknown>> | undefined;
+    let providers = decoded.value.providers;
+    for (const provider of LEGACY_SERVER_PASSWORD_PROVIDERS) {
+      const rawProvider = rawProviders?.[provider];
+      if (!rawProvider) continue;
+      const rawPassword =
+        typeof rawProvider.serverPassword === "string" ? rawProvider.serverPassword : undefined;
+      if (rawProvider.serverPasswordRedacted !== true && rawPassword === undefined) continue;
+      providers = {
+        ...providers,
+        [provider]: {
+          ...providers[provider],
+          ...(rawPassword !== undefined ? { serverPassword: rawPassword } : {}),
+          ...(rawProvider.serverPasswordRedacted === true ? { serverPasswordRedacted: true } : {}),
+          ...(rawProvider.serverPasswordRedacted === true &&
+          typeof rawProvider.serverPasswordSecretRef === "string"
+            ? { serverPasswordSecretRef: rawProvider.serverPasswordSecretRef }
+            : {}),
+          serverPasswordConfigured:
+            rawPassword !== undefined && rawPassword.length > 0
+              ? true
+              : providers[provider].serverPasswordConfigured,
+        },
+      };
+    }
+    return {
+      _tag: "Success" as const,
+      value: providers === decoded.value.providers ? decoded.value : { ...decoded.value, providers },
+      revision:
+        envelope && Number.isSafeInteger(envelope.revision) && Number(envelope.revision) >= 0
+          ? Number(envelope.revision)
+          : 0,
+      migrationVersion:
+        envelope && Number.isSafeInteger(envelope.migrationVersion)
+          ? Number(envelope.migrationVersion)
+          : 0,
+      legacyFormat: envelope === undefined,
+    };
   } catch (cause) {
     const error = new ServerSettingsError({
       settingsPath,
@@ -518,6 +633,7 @@ const makeServerSettings = Effect.gen(function* () {
   const writeSemaphore = yield* Semaphore.make(1);
   const changesPubSub = yield* PubSub.unbounded<ServerSettings>();
   const settingsRef = yield* Ref.make<ServerSettings>(DEFAULT_SERVER_SETTINGS);
+  const revisionRef = yield* Ref.make(0);
   const persistedSecretReferencesRef = yield* Ref.make<PersistedSecretReferences>(new Map());
   const startedRef = yield* Ref.make(false);
   const startedDeferred = yield* Deferred.make<void, ServerSettingsError>();
@@ -721,7 +837,7 @@ const makeServerSettings = Effect.gen(function* () {
           key: "serverPassword",
         });
         obsoleteSecretNames.add(logicalName);
-        const value = next.providers[provider].serverPassword;
+        const value = next.providers[provider].serverPassword ?? "";
         if (value.length === 0) {
           const {
             serverPasswordRedacted: _serverPasswordRedacted,
@@ -947,7 +1063,7 @@ const makeServerSettings = Effect.gen(function* () {
     for (const provider of LEGACY_SERVER_PASSWORD_PROVIDERS) {
       const providerSettings = settings.providers[provider];
       if (
-        providerSettings.serverPassword.length > 0 &&
+        (providerSettings.serverPassword ?? "").length > 0 &&
         providerSettings.serverPasswordRedacted !== true
       ) {
         return true;
@@ -994,6 +1110,8 @@ const makeServerSettings = Effect.gen(function* () {
     if (!exists) {
       return {
         settings: DEFAULT_SERVER_SETTINGS,
+        revision: 0,
+        migrated: false,
         secretReferences: new Map<string, string>() as PersistedSecretReferences,
       };
     }
@@ -1016,6 +1134,8 @@ const makeServerSettings = Effect.gen(function* () {
       });
       return {
         settings: DEFAULT_SERVER_SETTINGS,
+        revision: 0,
+        migrated: false,
         secretReferences: new Map<string, string>() as PersistedSecretReferences,
       };
     }
@@ -1035,26 +1155,34 @@ const makeServerSettings = Effect.gen(function* () {
         stagedSecretNames,
         obsoleteSecretNames,
       } = yield* persistProviderSecrets(materialized, materialized, decodedSecretReferences);
-      yield* writeSettingsAtomically(persisted).pipe(
+      const revision = decoded.revision + 1;
+      yield* writeSettingsAtomically({
+        revision,
+        migrationVersion: SERVER_SETTINGS_MIGRATION_VERSION,
+        settings: persisted,
+      }).pipe(
         Effect.tapError(() => runObsoleteSecretCleanup(stagedSecretNames)),
       );
       for (const name of liveSecretNames) {
         pendingObsoleteSecretNames.delete(name);
       }
       yield* runObsoleteSecretCleanup(obsoleteSecretNames);
-      return { settings: materialized, secretReferences };
+      return { settings: materialized, revision, migrated: false, secretReferences };
     }
     return {
       settings: yield* materializeProviderSecrets(decoded.value),
+      revision: decoded.revision,
+      migrated:
+        decoded.legacyFormat || decoded.migrationVersion !== SERVER_SETTINGS_MIGRATION_VERSION,
       secretReferences: decodedSecretReferences,
     };
   });
 
-  const writeSettingsAtomically = (settings: ServerSettings) => {
+  const writeSettingsAtomically = (snapshot: ServerSettingsSnapshot) => {
     const tempPath = `${settingsPath}.${process.pid}.${Date.now()}.tmp`;
     return Effect.gen(function* () {
       yield* fs.makeDirectory(path.dirname(settingsPath), { recursive: true });
-      yield* fs.writeFileString(tempPath, `${JSON.stringify(settings, null, 2)}\n`);
+      yield* fs.writeFileString(tempPath, `${JSON.stringify(snapshot, null, 2)}\n`);
       yield* fs.rename(tempPath, settingsPath);
     }).pipe(
       Effect.mapError(
@@ -1085,9 +1213,18 @@ const makeServerSettings = Effect.gen(function* () {
             }),
         ),
       );
-      const { settings, secretReferences } = yield* loadSettingsFromDisk;
-      yield* Ref.set(settingsRef, settings);
-      yield* Ref.set(persistedSecretReferencesRef, secretReferences);
+      const loaded = yield* loadSettingsFromDisk;
+      if (loaded.migrated) {
+        loaded.revision += 1;
+        yield* writeSettingsAtomically({
+          revision: loaded.revision,
+          migrationVersion: SERVER_SETTINGS_MIGRATION_VERSION,
+          settings: redactServerSettingsForClient(loaded.settings),
+        });
+      }
+      yield* Ref.set(settingsRef, loaded.settings);
+      yield* Ref.set(revisionRef, loaded.revision);
+      yield* Ref.set(persistedSecretReferencesRef, loaded.secretReferences);
     });
 
     const startupExit = yield* Effect.exit(startup);
@@ -1099,38 +1236,61 @@ const makeServerSettings = Effect.gen(function* () {
     yield* Deferred.succeed(startedDeferred, undefined).pipe(Effect.orDie);
   });
 
+  const getSettings = Ref.get(settingsRef).pipe(Effect.map(resolveTextGenerationProvider));
+  const updateSettings = (patch: ServerSettingsPatch) =>
+    writeSemaphore.withPermits(1)(
+      Effect.gen(function* () {
+        const current = yield* Ref.get(settingsRef);
+        const currentSecretReferences = yield* Ref.get(persistedSecretReferencesRef);
+        const normalized = yield* normalizeSettings(settingsPath, current, patch);
+        const next = applyLegacyPasswordPatch(normalized, patch, current);
+        const {
+          settings: persisted,
+          secretReferences,
+          liveSecretNames,
+          stagedSecretNames,
+          obsoleteSecretNames,
+        } = yield* persistProviderSecrets(current, next, currentSecretReferences);
+        const nextRevision = (yield* Ref.get(revisionRef)) + 1;
+        yield* writeSettingsAtomically({
+          revision: nextRevision,
+          migrationVersion: SERVER_SETTINGS_MIGRATION_VERSION,
+          settings: persisted,
+        }).pipe(
+          Effect.tapError(() => runObsoleteSecretCleanup(stagedSecretNames)),
+        );
+        yield* Ref.set(settingsRef, next);
+        yield* Ref.set(persistedSecretReferencesRef, secretReferences);
+        yield* Ref.set(revisionRef, nextRevision);
+        yield* emitChange(next);
+        for (const name of liveSecretNames) pendingObsoleteSecretNames.delete(name);
+        yield* runObsoleteSecretCleanup(obsoleteSecretNames);
+        return resolveTextGenerationProvider(next);
+      }),
+    );
+
   return {
     start,
     ready: Deferred.await(startedDeferred),
-    getSettings: Ref.get(settingsRef).pipe(Effect.map(resolveTextGenerationProvider)),
-    updateSettings: (patch) =>
-      writeSemaphore.withPermits(1)(
-        Effect.gen(function* () {
-          const current = yield* Ref.get(settingsRef);
-          const currentSecretReferences = yield* Ref.get(persistedSecretReferencesRef);
-          const next = yield* normalizeSettings(settingsPath, current, patch);
-          const {
-            settings: persisted,
-            secretReferences,
-            liveSecretNames,
-            stagedSecretNames,
-            obsoleteSecretNames,
-          } = yield* persistProviderSecrets(current, next, currentSecretReferences);
-          yield* writeSettingsAtomically(persisted).pipe(
-            Effect.tapError(() => runObsoleteSecretCleanup(stagedSecretNames)),
-          );
-          yield* Ref.set(settingsRef, next);
-          yield* Ref.set(persistedSecretReferencesRef, secretReferences);
-          yield* emitChange(next);
-          for (const name of liveSecretNames) {
-            pendingObsoleteSecretNames.delete(name);
-          }
-          yield* runObsoleteSecretCleanup(obsoleteSecretNames);
-          return resolveTextGenerationProvider(next);
-        }),
-      ),
+    getSettings,
+    getSettingsView: getSettings.pipe(Effect.map(toServerSettingsView)),
+    getSnapshot: Effect.all({ revision: Ref.get(revisionRef), settings: getSettings }).pipe(
+      Effect.map(({ revision, settings }) => ({
+        revision,
+        migrationVersion: SERVER_SETTINGS_MIGRATION_VERSION,
+        settings,
+      })),
+    ),
+    updateSettings,
+    updateSettingsView: (patch) => updateSettings(patch).pipe(Effect.map(toServerSettingsView)),
     get streamChanges() {
       return Stream.fromPubSub(changesPubSub).pipe(Stream.map(resolveTextGenerationProvider));
+    },
+    get streamViews() {
+      return Stream.fromPubSub(changesPubSub).pipe(
+        Stream.map(resolveTextGenerationProvider),
+        Stream.map(toServerSettingsView),
+      );
     },
   } satisfies ServerSettingsShape;
 });

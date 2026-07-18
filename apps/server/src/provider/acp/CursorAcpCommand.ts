@@ -9,6 +9,8 @@
 import { existsSync, realpathSync } from "node:fs";
 import * as path from "node:path";
 
+import { buildProviderChildEnvironment } from "../../providerChildEnvironment.ts";
+
 export const DEFAULT_CURSOR_AGENT_BINARY = "cursor-agent";
 export const LEGACY_CURSOR_AGENT_BINARY = "agent";
 export const CURSOR_EDITOR_BINARY = "cursor";
@@ -258,9 +260,12 @@ export function buildCursorAgentCommand(
 // Cursor auth/status probes must stay headless so provider refreshes never open login browsers.
 export function buildCursorAgentHeadlessEnv(
   env: NodeJS.ProcessEnv = process.env,
+  inheritedSynaraKeys?: ReadonlyArray<string>,
 ): NodeJS.ProcessEnv {
-  return {
-    ...env,
-    ...CURSOR_AGENT_HEADLESS_PROBE_ENV,
-  };
+  return buildProviderChildEnvironment({
+    provider: "cursor",
+    baseEnv: env,
+    ...(inheritedSynaraKeys ? { inheritedSynaraKeys } : {}),
+    overrides: CURSOR_AGENT_HEADLESS_PROBE_ENV,
+  });
 }

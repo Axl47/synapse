@@ -24,6 +24,7 @@ export const ProviderSessionRuntime = Schema.Struct({
   adapterKey: Schema.String,
   runtimeMode: RuntimeMode,
   status: ProviderSessionRuntimeStatus,
+  lifecycleGeneration: Schema.String,
   lastSeenAt: IsoDateTime,
   resumeCursor: Schema.NullOr(Schema.Unknown),
   runtimePayload: Schema.NullOr(Schema.Unknown),

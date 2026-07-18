@@ -1,218 +1,82 @@
 // FILE: PiAdapter.test.ts
-// Purpose: Verifies Pi adapter model discovery exposes only SDK-supported thinking levels.
+// Purpose: Verifies Pi adapter model discovery respects auth and SDK-supported thinking levels.
 // Layer: Provider adapter tests
 // Depends on: PiAdapter discovery helpers and Pi model metadata shapes.
 
-import type { AuthStorage, ModelRegistry } from "@earendil-works/pi-coding-agent";
+import { EventEmitter } from "node:events";
+import { PassThrough } from "node:stream";
+import type { ChildProcess } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+
+import { AuthStorage, ModelRegistry } from "@earendil-works/pi-coding-agent";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import { describe, expect, it, vi } from "vitest";
 import {
   applyPiRuntimeApiKeysFromEnvironment,
   createPiModelRegistry,
+  getPiDiscoverableModels,
   getPiSupportedThinkingOptions,
-  makePiStoragePaths,
-  makePiExtensionModeCoordinator,
-  resolvePiExtensionMode,
-  resolvePiStartInstanceId,
+  makePiBashProcessSupervisor,
+  makePiRuntimeEventBase,
   makePiUserInputOptions,
   PLAIN_PI_EXTENSION_THEME,
 } from "./PiAdapter";
 
-describe("makePiStoragePaths", () => {
-  it("resolves modelSelection-only account identity before Pi storage setup", () => {
-    expect(
-      resolvePiStartInstanceId({
-        modelSelection: { instanceId: "pi_work", model: "pi/model" },
-      } as never),
-    ).toBe("pi_work");
-  });
-  it("keeps legacy defaults byte-for-byte without an account boundary", () => {
-    expect(
-      makePiStoragePaths({
-        stateDir: "/state",
-        homeDir: "/home/user",
-        sdkAgentDir: "/sdk/default-agent",
-      }),
-    ).toEqual({ agentDir: "/sdk/default-agent" });
-  });
-
-  it("uses selected Pi roots and never falls back to the global session directory", () => {
-    expect(
-      makePiStoragePaths({
-        agentDir: "~/configured-agent",
-        environment: {
-          HOME: "/accounts/b",
-          PI_CODING_AGENT_DIR: "/ignored/env-agent",
-          PI_CODING_AGENT_SESSION_DIR: "/accounts/b/selected-sessions",
-        },
-        instanceId: "pi_work",
-        stateDir: "/state",
-        homeDir: "/home/user",
-        sdkAgentDir: "/sdk/default-agent",
-      }),
-    ).toEqual({
-      agentDir: "/accounts/b/configured-agent",
-      sessionDir: "/accounts/b/selected-sessions",
+describe("Pi Bash process supervision", () => {
+  it("keeps an aborted command pending until process-tree exit is proven", async () => {
+    const child = Object.assign(new EventEmitter(), {
+      pid: 64_201,
+      exitCode: null as number | null,
+      signalCode: null as NodeJS.Signals | null,
+      stdin: new PassThrough(),
+      stdout: new PassThrough(),
+      stderr: new PassThrough(),
+    }) as unknown as ChildProcess;
+    let proveExit!: () => void;
+    const exitProof = new Promise<void>((resolve) => {
+      proveExit = resolve;
     });
-  });
-
-  it("derives persistent synthetic agent and session roots for nondefault instances", () => {
-    const paths = makePiStoragePaths({
-      instanceId: "pi_work",
-      stateDir: "/state",
-      homeDir: "/home/user",
-      sdkAgentDir: "/sdk/default-agent",
+    let observeTeardown!: () => void;
+    const teardownStarted = new Promise<void>((resolve) => {
+      observeTeardown = resolve;
     });
-    expect(paths.agentDir).toContain("/state/provider-homes/pi/");
-    expect(paths.agentDir.endsWith("/.pi/agent")).toBe(true);
-    expect(paths.sessionDir).toBe(`${paths.agentDir}/sessions`);
-  });
-
-  it("expands configured tilde paths against the synthetic account home", () => {
-    const paths = makePiStoragePaths({
-      agentDir: "~/.custom-pi",
-      instanceId: "pi_work",
-      stateDir: "/state",
-      homeDir: "/real/server-home",
-      sdkAgentDir: "/sdk/default-agent",
+    const supervisor = makePiBashProcessSupervisor({
+      getShellConfig: () => ({ shell: "/bin/sh", args: ["-c"] }),
+      spawnProcess: () => child,
+      teardownProcessTree: async (input) => {
+        observeTeardown();
+        await exitProof;
+        (child as ChildProcess & { exitCode: number | null }).exitCode = 0;
+        child.emit("exit", 0, null);
+        await input.rootExited;
+        return { escalated: false, signalErrors: [] };
+      },
     });
-    expect(paths.agentDir).toContain("/state/provider-homes/pi/");
-    expect(paths.agentDir).toContain("/.custom-pi");
-    expect(paths.agentDir).not.toContain("/real/server-home");
-  });
-
-  it("falls back to synthetic storage for relative configured agent dirs", () => {
-    const paths = makePiStoragePaths({
-      agentDir: "relative-agent",
-      instanceId: "pi_work",
-      stateDir: "/state",
-      homeDir: "/real/server-home",
-      sdkAgentDir: "/sdk/default-agent",
+    const abortController = new AbortController();
+    const command = supervisor.operations.exec("sleep 10", "/tmp", {
+      signal: abortController.signal,
+      onData: () => undefined,
     });
-    expect(paths.agentDir).toContain("/state/provider-homes/pi/");
-    expect(paths.agentDir).toContain("/.pi/agent");
-  });
-});
+    let settled = false;
+    void command.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
 
-describe("resolvePiExtensionMode", () => {
-  it("preserves default-only extension behavior", () => {
-    expect(
-      resolvePiExtensionMode({
-        isolatedAccount: false,
-        hasExtensionEnabledDefault: false,
-        hasIsolatedMode: false,
-      }),
-    ).toEqual({ noExtensions: false });
-  });
-
-  it("forces noExtensions for isolated accounts and coexisting default discovery", () => {
-    expect(
-      resolvePiExtensionMode({
-        isolatedAccount: true,
-        hasExtensionEnabledDefault: false,
-        hasIsolatedMode: false,
-      }),
-    ).toEqual({ noExtensions: true });
-    expect(
-      resolvePiExtensionMode({
-        isolatedAccount: false,
-        hasExtensionEnabledDefault: false,
-        hasIsolatedMode: true,
-      }),
-    ).toEqual({ noExtensions: true });
-  });
-
-  it("rejects isolated startup while an extension-enabled default is active", () => {
-    expect(() =>
-      resolvePiExtensionMode({
-        isolatedAccount: true,
-        hasExtensionEnabledDefault: true,
-        hasIsolatedMode: false,
-      }),
-    ).toThrow(/Stop extension-enabled default Pi sessions/);
-  });
-});
-
-describe("Pi extension mode in-flight reservations", () => {
-  const coordinator = () =>
-    makePiExtensionModeCoordinator(() => ({
-      hasExtensionEnabledDefault: false,
-      hasIsolatedMode: false,
-    }));
-
-  it("rejects concurrent isolated work after extension-enabled discovery reserves first", async () => {
-    const modes = coordinator();
-    let releaseDiscovery!: () => void;
-    const discoveryGate = new Promise<void>((resolve) => {
-      releaseDiscovery = resolve;
-    });
-    const defaultDiscovery = (async () => {
-      const reservation = modes.reserve(false);
-      try {
-        await discoveryGate;
-      } finally {
-        reservation.release();
-      }
-    })();
+    abortController.abort();
+    await teardownStarted;
     await Promise.resolve();
-    const [isolatedStart] = await Promise.allSettled([
-      Promise.resolve().then(() => modes.reserve(true)),
-    ]);
-    expect(isolatedStart.status).toBe("rejected");
-    releaseDiscovery();
-    await defaultDiscovery;
-    expect(modes.reserve(true).noExtensions).toBe(true);
-  });
+    expect(settled).toBe(false);
 
-  it("forces concurrent default work into noExtensions after isolated start reserves first", async () => {
-    const modes = coordinator();
-    let releaseStart!: () => void;
-    const startGate = new Promise<void>((resolve) => {
-      releaseStart = resolve;
-    });
-    const isolatedStart = (async () => {
-      const reservation = modes.reserve(true);
-      try {
-        await startGate;
-      } finally {
-        reservation.release();
-      }
-    })();
-    await Promise.resolve();
-    const defaultDiscovery = await Promise.resolve().then(() => modes.reserve(false));
-    expect(defaultDiscovery.noExtensions).toBe(true);
-    defaultDiscovery.release();
-    releaseStart();
-    await Promise.all([isolatedStart]);
-    expect(modes.reserve(false).noExtensions).toBe(false);
-  });
-
-  it("allows same-thread default to isolated replacement without exposing the transition", () => {
-    const modes = makePiExtensionModeCoordinator(() => ({
-      hasExtensionEnabledDefault: true,
-      hasIsolatedMode: false,
-    }));
-    expect(() => modes.reserve(true)).toThrow(/Stop extension-enabled default Pi sessions/);
-    const replacement = modes.reserve(true, {
-      hasExtensionEnabledDefault: false,
-      hasIsolatedMode: false,
-    });
-    expect(replacement.noExtensions).toBe(true);
-    expect(() => modes.reserve(false)).toThrow(/account-mode transition/);
-    replacement.release();
-  });
-
-  it("allows same-thread isolated to default replacement in noExtensions mode", () => {
-    const modes = makePiExtensionModeCoordinator(() => ({
-      hasExtensionEnabledDefault: false,
-      hasIsolatedMode: true,
-    }));
-    const replacement = modes.reserve(false, {
-      hasExtensionEnabledDefault: false,
-      hasIsolatedMode: false,
-    });
-    expect(replacement.noExtensions).toBe(false);
-    replacement.release();
+    proveExit();
+    await expect(command).rejects.toThrow("aborted");
+    expect(settled).toBe(true);
   });
 });
 
@@ -225,6 +89,41 @@ function makePiModel(input: {
     ...(input.thinkingLevelMap !== undefined ? { thinkingLevelMap: input.thinkingLevelMap } : {}),
   };
 }
+
+describe("getPiDiscoverableModels", () => {
+  it("includes custom-provider models authenticated through auth.json semantics", () => {
+    const agentDir = mkdtempSync(path.join(tmpdir(), "synara-pi-models-"));
+    const modelsPath = path.join(agentDir, "models.json");
+
+    try {
+      writeFileSync(
+        modelsPath,
+        JSON.stringify({
+          providers: {
+            local: {
+              api: "openai-completions",
+              baseUrl: "http://127.0.0.1:11434/v1",
+              models: [{ id: "glm-5.2" }],
+            },
+          },
+        }),
+      );
+      const authStorage = AuthStorage.inMemory({
+        local: { type: "api_key", key: "test-key" },
+      });
+      const registry = ModelRegistry.create(authStorage, modelsPath);
+
+      const models = getPiDiscoverableModels(registry);
+
+      expect(models.some((model) => model.provider === "local" && model.id === "glm-5.2")).toBe(
+        true,
+      );
+      expect(models.some((model) => model.provider === "anthropic")).toBe(false);
+    } finally {
+      rmSync(agentDir, { recursive: true, force: true });
+    }
+  });
+});
 
 describe("getPiSupportedThinkingOptions", () => {
   it("hides thinking controls for non-reasoning models", () => {
@@ -917,6 +816,21 @@ describe("isolated Pi provider routing", () => {
 });
 
 describe("Pi extension UI helpers", () => {
+  it("stamps events from the lifecycle generation captured by the session context", () => {
+    const eventBase = makePiRuntimeEventBase({
+      lifecycleGeneration: "generation-pi-7",
+      session: { threadId: "thread-pi" as never },
+      activeTurnId: "turn-pi" as never,
+    });
+
+    expect(eventBase).toMatchObject({
+      provider: "pi",
+      threadId: "thread-pi",
+      turnId: "turn-pi",
+      lifecycleGeneration: "generation-pi-7",
+    });
+  });
+
   it("keeps original select values while showing normalized unique labels", () => {
     const mappings = makePiUserInputOptions(["  OpenRouter  ", "", "OpenRouter"]);
 

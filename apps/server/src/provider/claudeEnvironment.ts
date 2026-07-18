@@ -8,6 +8,7 @@ import * as NodePath from "node:path";
 import { homedir } from "node:os";
 
 import { defaultInstanceIdForDriver } from "@synara/contracts";
+import { buildProviderChildEnvironment } from "../providerChildEnvironment.ts";
 
 import {
   CLAUDE_DIRECT_CREDENTIAL_ENV_KEYS,
@@ -202,18 +203,23 @@ export function buildClaudeProcessEnv(input?: {
       credentialsHomeDir ? { env, homeDir: credentialsHomeDir } : { env },
     );
 
-  if (!hasLocalClaudeAuth || hasClaudeExternalAuthEnv(env)) {
-    return env;
-  }
-
-  // Claude gives direct request credentials precedence over local OAuth. Drop stale
-  // inherited keys when a real Claude CLI login can satisfy the subprocess, but keep
-  // credentials the provider instance sets explicitly.
-  for (const key of CLAUDE_DIRECT_CREDENTIAL_ENV_KEYS) {
-    if (selectedEnvironment && key in selectedEnvironment) {
-      continue;
+  if (hasLocalClaudeAuth && !hasClaudeExternalAuthEnv(env)) {
+    // Claude gives direct request credentials precedence over local OAuth. Drop stale
+    // inherited keys when a real Claude CLI login can satisfy the subprocess, but keep
+    // credentials the provider instance sets explicitly.
+    for (const key of CLAUDE_DIRECT_CREDENTIAL_ENV_KEYS) {
+      if (selectedEnvironment && key in selectedEnvironment) {
+        continue;
+      }
+      delete env[key];
     }
-    delete env[key];
   }
-  return env;
+  const inheritedSynaraKeys = Object.keys(selectedEnvironment ?? {}).filter((key) =>
+    key.startsWith("SYNARA_"),
+  );
+  return buildProviderChildEnvironment({
+    provider: "claude",
+    baseEnv: env,
+    ...(inheritedSynaraKeys.length > 0 ? { inheritedSynaraKeys } : {}),
+  });
 }

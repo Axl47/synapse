@@ -24,9 +24,7 @@ const RuntimeEventRawSource = Schema.Literals([
   "claude.sdk.message",
   "claude.sdk.permission",
   "codex.sdk.thread-event",
-  "gemini.acp.message",
-  "gemini.acp.stdout",
-  "gemini.acp.stderr",
+  "antigravity.cli.event",
   "acp.jsonrpc",
   "acp.cursor.extension",
   "kilo.sdk.event",
@@ -262,6 +260,7 @@ const ProviderRuntimeEventBase = Schema.Struct({
   parentTurnId: Schema.optional(TurnId),
   itemId: Schema.optional(RuntimeItemId),
   requestId: Schema.optional(RuntimeRequestId),
+  lifecycleGeneration: Schema.optional(TrimmedNonEmptyStringSchema),
   providerRefs: Schema.optional(ProviderRefs),
   raw: Schema.optional(RuntimeEventRaw),
 });

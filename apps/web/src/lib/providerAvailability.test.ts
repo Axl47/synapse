@@ -12,14 +12,14 @@ import {
 } from "./providerAvailability";
 
 const BASE_STATUS: ServerProviderStatus = {
-  provider: "gemini",
-  instanceId: "gemini",
-  driver: "gemini",
+  provider: "antigravity",
+  instanceId: "antigravity",
+  driver: "antigravity",
   status: "error",
   available: false,
   authStatus: "unknown",
   checkedAt: "2026-04-17T10:00:00.000Z",
-  message: "Gemini CLI (`gemini`) is not installed or not on PATH.",
+  message: "Antigravity CLI (`agy`) is not installed or not on PATH.",
 };
 
 const READY_STATUS: ServerProviderStatus = {
@@ -30,19 +30,19 @@ const READY_STATUS: ServerProviderStatus = {
 };
 
 describe("normalizeProviderStatusForLocalConfig", () => {
-  it("keeps Gemini interactive when a custom binary path is configured locally", () => {
+  it("keeps Antigravity interactive when a custom binary path is configured locally", () => {
     expect(
       normalizeProviderStatusForLocalConfig({
-        provider: "gemini",
+        provider: "antigravity",
         status: BASE_STATUS,
-        customBinaryPath: "/opt/homebrew/bin/gemini",
+        customBinaryPath: "/opt/homebrew/bin/agy",
       }),
     ).toEqual({
       ...BASE_STATUS,
       available: true,
       status: "warning",
       message:
-        "Gemini uses a custom local binary path in this app. Availability will be confirmed when you start a session.",
+        "Antigravity uses a custom local binary path in this app. Availability will be confirmed when you start a session.",
     });
   });
 
@@ -152,17 +152,17 @@ describe("normalizeProviderStatusForLocalConfig", () => {
   it("does not use custom binary fallback for disabled provider instances", () => {
     const disabledStatus: ServerProviderStatus = {
       ...BASE_STATUS,
-      instanceId: "gemini_work",
-      displayName: "Gemini Work",
+      instanceId: "antigravity_work",
+      displayName: "Antigravity Work",
       enabled: false,
       message: "Provider is disabled in Synara settings.",
     };
 
     expect(
       normalizeProviderStatusForLocalConfig({
-        provider: "gemini",
+        provider: "antigravity",
         status: disabledStatus,
-        customBinaryPath: "/opt/homebrew/bin/gemini",
+        customBinaryPath: "/opt/homebrew/bin/agy",
       }),
     ).toEqual(disabledStatus);
   });
@@ -170,17 +170,17 @@ describe("normalizeProviderStatusForLocalConfig", () => {
   it("preserves authenticated and unauthenticated statuses", () => {
     expect(
       normalizeProviderStatusForLocalConfig({
-        provider: "gemini",
+        provider: "antigravity",
         status: { ...BASE_STATUS, available: true, status: "ready", authStatus: "authenticated" },
-        customBinaryPath: "/opt/homebrew/bin/gemini",
+        customBinaryPath: "/opt/homebrew/bin/agy",
       }),
     ).toEqual({ ...BASE_STATUS, available: true, status: "ready", authStatus: "authenticated" });
 
     expect(
       normalizeProviderStatusForLocalConfig({
-        provider: "gemini",
+        provider: "antigravity",
         status: { ...BASE_STATUS, authStatus: "unauthenticated" },
-        customBinaryPath: "/opt/homebrew/bin/gemini",
+        customBinaryPath: "/opt/homebrew/bin/agy",
       }),
     ).toEqual({ ...BASE_STATUS, authStatus: "unauthenticated" });
   });
@@ -353,15 +353,15 @@ describe("isProviderUsable", () => {
 
   it("allows the local custom-binary confirmation fallback to start a session", () => {
     const normalized = normalizeProviderStatusForLocalConfig({
-      provider: "gemini",
+      provider: "antigravity",
       status: BASE_STATUS,
-      customBinaryPath: "/opt/homebrew/bin/gemini",
+      customBinaryPath: "/opt/homebrew/bin/antigravity",
     });
 
     expect(normalized?.status).toBe("warning");
     expect(isProviderUsable(normalized)).toBe(true);
     expect(
-      resolveProviderSendAvailability({ provider: "gemini", statuses: [normalized!] }),
+      resolveProviderSendAvailability({ provider: "antigravity", statuses: [normalized!] }),
     ).toMatchObject({
       usable: true,
     });
@@ -374,7 +374,7 @@ describe("resolveProviderSendAvailabilityWithRefresh", () => {
 
     await expect(
       resolveProviderSendAvailabilityWithRefresh({
-        provider: "gemini",
+        provider: "antigravity",
         statuses: [READY_STATUS],
         refreshStatuses,
       }),
@@ -387,7 +387,7 @@ describe("resolveProviderSendAvailabilityWithRefresh", () => {
 
     await expect(
       resolveProviderSendAvailabilityWithRefresh({
-        provider: "gemini",
+        provider: "antigravity",
         statuses: [],
         refreshStatuses,
       }),
@@ -400,7 +400,7 @@ describe("resolveProviderSendAvailabilityWithRefresh", () => {
 
     await expect(
       resolveProviderSendAvailabilityWithRefresh({
-        provider: "gemini",
+        provider: "antigravity",
         statuses: [
           { ...BASE_STATUS, available: true, status: "error", authStatus: "unauthenticated" },
         ],
@@ -413,7 +413,7 @@ describe("resolveProviderSendAvailabilityWithRefresh", () => {
   it("keeps the original blocked reason when refresh fails", async () => {
     await expect(
       resolveProviderSendAvailabilityWithRefresh({
-        provider: "gemini",
+        provider: "antigravity",
         statuses: [{ ...BASE_STATUS, authStatus: "unauthenticated" }],
         refreshStatuses: vi.fn(async () => {
           throw new Error("refresh failed");
@@ -421,14 +421,14 @@ describe("resolveProviderSendAvailabilityWithRefresh", () => {
       }),
     ).resolves.toMatchObject({
       usable: false,
-      unavailableReason: "Gemini is not authenticated yet.",
+      unavailableReason: "Antigravity is not authenticated yet.",
     });
   });
 
   it("keeps resolving the selected instance after a refresh", async () => {
     const readyWorkInstance: ServerProviderStatus = {
       ...READY_STATUS,
-      instanceId: "gemini_work",
+      instanceId: "antigravity_work",
     };
     const blockedDefaultInstance: ServerProviderStatus = {
       ...BASE_STATUS,
@@ -439,14 +439,14 @@ describe("resolveProviderSendAvailabilityWithRefresh", () => {
 
     await expect(
       resolveProviderSendAvailabilityWithRefresh({
-        provider: "gemini",
-        instanceId: "gemini_work",
+        provider: "antigravity",
+        instanceId: "antigravity_work",
         statuses: [blockedDefaultInstance],
         refreshStatuses,
       }),
     ).resolves.toMatchObject({
       usable: true,
-      status: { instanceId: "gemini_work" },
+      status: { instanceId: "antigravity_work" },
     });
     expect(refreshStatuses).toHaveBeenCalledTimes(1);
   });
@@ -455,7 +455,7 @@ describe("resolveProviderSendAvailabilityWithRefresh", () => {
 describe("providerUnavailableReason", () => {
   it("returns provider-specific guidance", () => {
     expect(providerUnavailableReason({ ...BASE_STATUS, authStatus: "unauthenticated" })).toBe(
-      "Gemini is not authenticated yet.",
+      "Antigravity is not authenticated yet.",
     );
     expect(providerUnavailableReason(BASE_STATUS)).toBe(BASE_STATUS.message);
   });

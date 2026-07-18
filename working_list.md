@@ -2,18 +2,23 @@
 
 ## Pending
 
-- [ ] Run one final workspace verification pass (`bun fmt`, `bun lint`, `bun typecheck`) and focused package tests
+- [ ] Run the heavyweight workspace checks (`bun fmt`, `bun lint`, `bun typecheck`) if explicitly authorized
 - [ ] Advance local `main` to the integrated result and push `origin/main`
 - [ ] Confirm the pushed branch is clean and contains `upstream/main`
 - [ ] Manual acceptance against the user's real Codex App/CLI accounts after rollout
 
 ## In Progress
 
-- [~] Integrate `upstream/main` into `multiple-accounts-selection` while preserving fork behavior (rollback branch: `backup/pre-upstream-sync-20260718`)
-- [~] Resolve and review merge conflicts by subsystem: desktop/web, provider runtime, orchestration/contracts
+- [~] Commit the verified merge, advance `main`, and push `origin/main`
 
 ## Done
 
+- [x] Verify the integrated workspace test suites: contracts 134, shared 367 (1 skipped), desktop 266, scripts 65, web 2,794, and server 2,607 (8 skipped)
+- [x] Verify the frozen Bun 1.3.12 lockfile, whitespace, merge index, and absence of conflict markers
+- [x] Regenerate `bun.lock` with the repository-pinned Bun 1.3.12 after merging package manifests
+- [x] Resolve and review merge conflicts by subsystem: desktop/web, provider runtime, orchestration/contracts (`git diff --check` clean; no conflict markers remain)
+- [x] Integrate `upstream/main` into `multiple-accounts-selection` while preserving fork behavior (rollback branch: `backup/pre-upstream-sync-20260718`)
+- [x] Fetch all remotes and preflight the exact upstream conflict set
 - [x] Audit every automated ExecPlan outcome and close implementation; real-client behavior remains an explicit manual acceptance step
 - [x] Phase 6: add operational logging and provider docs; pass formatting, lint (0 errors), full typecheck, production builds, and the complete 5,415-test suite (7 skipped)
 - [x] Phase 5: implement stable Codex history IDs and adoption-only reconciliation before open/reconnect (17 focused import, adoption, and reconciliation tests passed)

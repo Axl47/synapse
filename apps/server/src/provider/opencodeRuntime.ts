@@ -41,6 +41,11 @@ import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 import { NetService } from "@synara/shared/Net";
 import { prepareWindowsSafeProcess } from "@synara/shared/windowsProcess";
+import { buildProviderChildEnvironment } from "../providerChildEnvironment.ts";
+import {
+  teardownEffectProcessTree,
+  teardownProviderProcessTree,
+} from "./supervisedProcessTeardown.ts";
 import { isWindowsShellCommandMissingResult } from "../shell-command-detection.ts";
 import { buildProviderProcessEnv } from "./providerProcessEnv.ts";
 
@@ -813,8 +818,7 @@ export function buildOpenCodeServerProcessEnv(input: {
   readonly homeDir?: string;
 }): NodeJS.ProcessEnv {
   const cliSpec = input.cliSpec ?? OPENCODE_CLI_SPEC;
-  return {
-    ...buildProviderProcessEnv({
+  const isolatedEnvironment = buildProviderProcessEnv({
       driver:
         cliSpec.configContentEnvVar === KILO_CLI_SPEC.configContentEnvVar ? "kilo" : "opencode",
       ...(input.baseEnv !== undefined ? { env: input.baseEnv } : {}),
@@ -822,11 +826,15 @@ export function buildOpenCodeServerProcessEnv(input: {
       ...(input.instanceId !== undefined ? { instanceId: input.instanceId } : {}),
       ...(input.homeDir !== undefined ? { homeDir: input.homeDir } : {}),
       ...(input.isolationRootDir !== undefined ? { isolationRootDir: input.isolationRootDir } : {}),
-      ...(input.isolationRootDir !== undefined ? { isolationRootDir: input.isolationRootDir } : {}),
-      ...(input.homeDir !== undefined ? { homeDir: input.homeDir } : {}),
-    }),
-    ...(input.experimentalWebSockets ? { OPENCODE_EXPERIMENTAL_WEBSOCKETS: "true" } : {}),
-  };
+    });
+  return buildProviderChildEnvironment({
+    provider:
+      cliSpec.dataDirectoryName === KILO_CLI_SPEC.dataDirectoryName ? "kilo" : "opencode",
+    baseEnv: isolatedEnvironment,
+    overrides: input.experimentalWebSockets
+      ? { OPENCODE_EXPERIMENTAL_WEBSOCKETS: "true" }
+      : {},
+  });
 }
 
 export function toOpenCodePermissionReply(
@@ -880,14 +888,19 @@ const collectStreamAsString = <E>(stream: Stream.Stream<Uint8Array, E>): Effect.
     (acc, chunk) => acc + new TextDecoder().decode(chunk),
   );
 
-const makeOpenCodeRuntime = Effect.gen(function* () {
-  const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-  const netService = yield* NetService;
-  const pooledServerScope = yield* Effect.acquireRelease(Scope.make(), (scope) =>
-    Scope.close(scope, Exit.void),
-  );
-  const pooledServerMutex = yield* Semaphore.make(1);
-  const pooledServers = new Map<string, PooledOpenCodeServer>();
+export interface OpenCodeRuntimeLiveOptions {
+  readonly teardownProcessTree?: typeof teardownProviderProcessTree;
+}
+
+const makeOpenCodeRuntime = (options?: OpenCodeRuntimeLiveOptions) =>
+  Effect.gen(function* () {
+    const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+    const netService = yield* NetService;
+    const pooledServerScope = yield* Effect.acquireRelease(Scope.make(), (scope) =>
+      Scope.close(scope, Exit.void),
+    );
+    const pooledServerMutex = yield* Semaphore.make(1);
+    const pooledServers = new Map<string, PooledOpenCodeServer>();
 
   const runOpenCodeCommand: OpenCodeRuntimeShape["runOpenCodeCommand"] = (input) =>
     Effect.gen(function* () {
@@ -920,6 +933,7 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
       const child = yield* spawner.spawn(
         ChildProcess.make(prepared.command, prepared.args, {
           shell: prepared.shell,
+          ...(prepared.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}),
           ...(input.cwd ? { cwd: input.cwd } : {}),
           env: childEnv,
         }),
@@ -1016,7 +1030,19 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
         );
       yield* Scope.addFinalizer(
         runtimeScope,
-        child.kill({ killSignal: "SIGKILL", forceKillAfter: "1500 millis" }).pipe(Effect.ignore),
+        Effect.tryPromise({
+          try: () =>
+            teardownEffectProcessTree(
+              child,
+              options?.teardownProcessTree ?? teardownProviderProcessTree,
+            ),
+          catch: (cause) =>
+            new OpenCodeRuntimeError({
+              operation: "stopOpenCodeServerProcess",
+              detail: `Failed to prove ${cliSpec.displayName} server process-tree exit: ${openCodeRuntimeErrorDetail(cause)}`,
+              cause,
+            }),
+        }).pipe(Effect.asVoid, Effect.orDie),
       );
 
       const stdoutRef = yield* Ref.make("");
@@ -1162,7 +1188,8 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
   const closePooledServer = Effect.fn("closePooledServer")(function* (
     pooledServer: PooledOpenCodeServer,
   ) {
-    yield* detachPooledServer(pooledServer);
+    // Keep the pool entry authoritative until process-tree teardown is proven.
+    yield* cancelPooledServerIdleClose(pooledServer);
 
     const exitWatchFiber = pooledServer.exitWatchFiber;
     pooledServer.exitWatchFiber = null;
@@ -1170,7 +1197,8 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
       yield* Fiber.interrupt(exitWatchFiber).pipe(Effect.ignore);
     }
 
-    yield* Scope.close(pooledServer.scope, Exit.void).pipe(Effect.ignore);
+    yield* Scope.close(pooledServer.scope, Exit.void);
+    yield* detachPooledServer(pooledServer);
   });
 
   const schedulePooledServerIdleClose = Effect.fn("schedulePooledServerIdleClose")(function* (
@@ -1205,8 +1233,8 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
               return;
             }
             pooledServer.exitWatchFiber = null;
+            yield* Scope.close(pooledServer.scope, Exit.void);
             yield* detachPooledServer(pooledServer);
-            yield* Scope.close(pooledServer.scope, Exit.void).pipe(Effect.ignore);
           }),
         ),
       ),
@@ -1492,51 +1520,53 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
       }),
     );
 
+
   const loadOpenCodeCredentialProviderIDs: OpenCodeRuntimeShape["loadOpenCodeCredentialProviderIDs"] =
     (client, cliSpec = OPENCODE_CLI_SPEC) =>
-      loadOpenCodePaths(client).pipe(
-        Effect.flatMap((pathInfo) =>
-          Effect.tryPromise({
-            try: () => readFile(resolveOpenCodeAuthFilePath(pathInfo, cliSpec), "utf8"),
-            catch: (cause) =>
-              new OpenCodeRuntimeError({
-                operation: "readOpenCodeCredentialProviderIDs",
-                detail: openCodeRuntimeErrorDetail(cause),
-                cause,
-              }),
-          }),
-        ),
-        Effect.flatMap((content) =>
-          Effect.try({
-            try: () => parseOpenCodeCredentialProviderIDs(content),
-            catch: (cause) =>
-              new OpenCodeRuntimeError({
-                operation: "parseOpenCodeCredentialProviderIDs",
-                detail: openCodeRuntimeErrorDetail(cause),
-                cause,
-              }),
-          }),
-        ),
-        // Explicit credential metadata is optional. Discovery should still work when
-        // the auth file does not exist, is unreadable, or belongs to another machine.
-        Effect.catch(() => Effect.succeed([])),
-      );
+        loadOpenCodePaths(client).pipe(
+          Effect.flatMap((pathInfo) =>
+            Effect.tryPromise({
+              try: () => readFile(resolveOpenCodeAuthFilePath(pathInfo, cliSpec), "utf8"),
+              catch: (cause) =>
+                new OpenCodeRuntimeError({
+                  operation: "readOpenCodeCredentialProviderIDs",
+                  detail: openCodeRuntimeErrorDetail(cause),
+                  cause,
+                }),
+            }),
+          ),
+          Effect.flatMap((content) =>
+            Effect.try({
+              try: () => parseOpenCodeCredentialProviderIDs(content),
+              catch: (cause) =>
+                new OpenCodeRuntimeError({
+                  operation: "parseOpenCodeCredentialProviderIDs",
+                  detail: openCodeRuntimeErrorDetail(cause),
+                  cause,
+                }),
+            }),
+          ),
+          // Explicit credential metadata is optional. Discovery should still work when
+          // the auth file does not exist, is unreadable, or belongs to another machine.
+          Effect.catch(() => Effect.succeed([])),
+        );
 
-  return {
-    startOpenCodeServerProcess,
-    connectToOpenCodeServer,
-    runOpenCodeCommand,
-    createOpenCodeSdkClient,
-    loadOpenCodeInventory,
-    listOpenCodeCliModels,
-    loadOpenCodeCredentialProviderIDs,
-  } satisfies OpenCodeRuntimeShape;
-});
+    return {
+      startOpenCodeServerProcess,
+      connectToOpenCodeServer,
+      runOpenCodeCommand,
+      createOpenCodeSdkClient,
+      loadOpenCodeInventory,
+      listOpenCodeCliModels,
+      loadOpenCodeCredentialProviderIDs,
+    } satisfies OpenCodeRuntimeShape;
+  });
 
 export class OpenCodeRuntime extends ServiceMap.Service<OpenCodeRuntime, OpenCodeRuntimeShape>()(
   "synara/provider/opencodeRuntime",
 ) {}
 
-export const OpenCodeRuntimeLive = Layer.effect(OpenCodeRuntime, makeOpenCodeRuntime).pipe(
-  Layer.provide(NetService.layer),
-);
+export const makeOpenCodeRuntimeLive = (options?: OpenCodeRuntimeLiveOptions) =>
+  Layer.effect(OpenCodeRuntime, makeOpenCodeRuntime(options)).pipe(Layer.provide(NetService.layer));
+
+export const OpenCodeRuntimeLive = makeOpenCodeRuntimeLive();

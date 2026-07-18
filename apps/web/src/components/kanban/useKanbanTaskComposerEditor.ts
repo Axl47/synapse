@@ -34,7 +34,11 @@ import {
   ensureLeadingSpaceForReplacement,
   extendReplacementRangeForTrailingSpace,
 } from "~/composerTriggerInsertion";
-import { formatComposerMentionToken, skillMentionPrefix } from "~/lib/composerMentions";
+import {
+  composerMentionPathNeedsQuoting,
+  formatComposerMentionToken,
+  skillMentionPrefix,
+} from "~/lib/composerMentions";
 import type { TerminalContextDraft } from "~/lib/terminalContext";
 import { useComposerDraftStore } from "../../composerDraftStore";
 import {
@@ -222,7 +226,7 @@ export function useKanbanTaskComposerEditor(input: UseKanbanTaskComposerEditorIn
       const withTrailingSeparator = absolutePath.endsWith(separator)
         ? absolutePath
         : `${absolutePath}${separator}`;
-      const base = /\s/.test(withTrailingSeparator)
+      const base = composerMentionPathNeedsQuoting(withTrailingSeparator)
         ? `@"${withTrailingSeparator}`
         : `@${withTrailingSeparator}`;
       applyComposerTriggerReplacement({ snapshot, trigger, base });

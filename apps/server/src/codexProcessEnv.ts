@@ -43,6 +43,7 @@ import {
   resolveSynaraCodexHomeOverlayPath,
 } from "./codexHomePaths.ts";
 import { codexPathsReferenceSameLocation, resolveCodexPathIdentity } from "./codexPathIdentity.ts";
+import { buildProviderChildEnvironment } from "./providerChildEnvironment.ts";
 
 const CODEX_PROCESS_SHELL_ENV_NAMES = ["PATH", "SSH_AUTH_SOCK"] as const;
 const CODEX_SQLITE_HOME_ENV_NAME = "CODEX_SQLITE_HOME";
@@ -2259,7 +2260,7 @@ export function buildCodexProcessLaunchContext(
     input.expectedSharedContinuationGeneration || input.allowLegacySharedContinuationMigration
       ? prepareCodexHomeOverlayFromPreparedContinuationSource(overlayPreparationInput)
       : prepareCodexHomeOverlay(overlayPreparationInput);
-  const effectiveEnv: NodeJS.ProcessEnv = {
+  const configuredEnv: NodeJS.ProcessEnv = {
     ...baseEnv,
     ...(overlayHomePath || input.homePath ? { CODEX_HOME: overlayHomePath ?? sourceHomePath } : {}),
     // Keep the environment override as a compatibility backstop for ancillary
@@ -2268,6 +2269,14 @@ export function buildCodexProcessLaunchContext(
     [CODEX_SQLITE_HOME_ENV_NAME]: path.resolve(sourceHomePath),
   };
   const platform = input.platform ?? process.platform;
+  const browserUsePipePath =
+    platform === "win32"
+      ? undefined
+      : resolveCodexBrowserUsePipePath({ env: configuredEnv, platform });
+  const effectiveEnv = buildProviderChildEnvironment({
+    provider: "codex",
+    baseEnv: configuredEnv,
+  });
 
   if (platform === "darwin" || platform === "linux") {
     try {
@@ -2294,19 +2303,8 @@ export function buildCodexProcessLaunchContext(
     }
   }
 
-  if (platform !== "win32") {
-    const browserUsePipePath = resolveCodexBrowserUsePipePath({ env: effectiveEnv, platform });
-    const allowedSockets =
-      effectiveEnv[NODE_REPL_SANDBOX_ALLOWED_UNIX_SOCKETS]
-        ?.split(",")
-        .map((entry) => entry.trim())
-        .filter((entry) => entry.length > 0) ?? [];
-    if (!allowedSockets.includes(browserUsePipePath)) {
-      effectiveEnv[NODE_REPL_SANDBOX_ALLOWED_UNIX_SOCKETS] = [
-        ...allowedSockets,
-        browserUsePipePath,
-      ].join(",");
-    }
+  if (browserUsePipePath) {
+    effectiveEnv[NODE_REPL_SANDBOX_ALLOWED_UNIX_SOCKETS] = browserUsePipePath;
   }
 
   if (input.expectedSharedContinuationGeneration) {

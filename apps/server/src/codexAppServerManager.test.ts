@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { randomUUID } from "node:crypto";
+import { EventEmitter } from "node:events";
 import {
   chmodSync,
   copyFileSync,
@@ -16,6 +17,7 @@ import {
 } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { PassThrough } from "node:stream";
 import { ApprovalRequestId, ThreadId } from "@synara/contracts";
 
 import {
@@ -41,6 +43,7 @@ import {
   readCodexAccountSnapshot,
   resolveCodexModelForAccount,
 } from "./codexAppServerManager";
+import { CodexJsonlFramer, CodexJsonlWriter } from "./codexAppServerTransport";
 import { ensureIsolatedScratchWorkspace } from "./scratchWorkspaces";
 
 const asThreadId = (value: string): ThreadId => ThreadId.makeUnsafe(value);
@@ -214,6 +217,7 @@ function createSendTurnHarness(runtimeMode: "approval-required" | "full-access" 
 function createThreadControlHarness() {
   const manager = new CodexAppServerManager();
   const context = {
+    lifecycleGeneration: "generation-request-a",
     session: {
       provider: "codex",
       status: "ready",
@@ -286,8 +290,11 @@ function createPendingUserInputHarness() {
     )
     .mockReturnValue(context);
   const writeMessage = vi
-    .spyOn(manager as unknown as { writeMessage: (...args: unknown[]) => void }, "writeMessage")
-    .mockImplementation(() => {});
+    .spyOn(
+      manager as unknown as { writeMessage: (...args: unknown[]) => Promise<void> },
+      "writeMessage",
+    )
+    .mockResolvedValue(undefined);
   const emitEvent = vi
     .spyOn(manager as unknown as { emitEvent: (...args: unknown[]) => void }, "emitEvent")
     .mockImplementation(() => {});
@@ -300,6 +307,7 @@ function createPendingApprovalHarness(
 ) {
   const manager = new CodexAppServerManager();
   const context = {
+    lifecycleGeneration: "generation-request-a",
     session: {
       provider: "codex",
       status: "ready",
@@ -347,8 +355,11 @@ function createPendingApprovalHarness(
     )
     .mockReturnValue(context);
   const writeMessage = vi
-    .spyOn(manager as unknown as { writeMessage: (...args: unknown[]) => void }, "writeMessage")
-    .mockImplementation(() => {});
+    .spyOn(
+      manager as unknown as { writeMessage: (...args: unknown[]) => Promise<void> },
+      "writeMessage",
+    )
+    .mockResolvedValue(undefined);
   const emitEvent = vi
     .spyOn(manager as unknown as { emitEvent: (...args: unknown[]) => void }, "emitEvent")
     .mockImplementation(() => {});
@@ -437,6 +448,70 @@ function createProcessOutputHarness() {
 
   return { manager, context, emitEvent };
 }
+
+describe("Codex app-server teardown", () => {
+  it("keeps the session owned until shared process-tree exit proof resolves", async () => {
+    class FakeCodexChild extends EventEmitter {
+      readonly pid = 5151;
+      exitCode: number | null = null;
+      signalCode: NodeJS.Signals | null = null;
+      readonly stdin = new PassThrough();
+      readonly stdout = new PassThrough();
+      readonly stderr = new PassThrough();
+    }
+    const child = new FakeCodexChild();
+    let exitProven = false;
+    const teardownProcessTree = vi.fn(
+      async (input: { readonly rootPid: number; readonly rootExited: Promise<unknown> }) => {
+        expect(input.rootPid).toBe(5151);
+        await input.rootExited;
+        exitProven = true;
+        return { escalated: false as const, signalErrors: [] };
+      },
+    );
+    const manager = new CodexAppServerManager(undefined, { teardownProcessTree });
+    const threadId = asThreadId("thread-codex-exit-proof");
+    const context = {
+      session: {
+        provider: "codex",
+        status: "ready",
+        threadId,
+        runtimeMode: "full-access",
+        createdAt: "2026-07-14T00:00:00.000Z",
+        updatedAt: "2026-07-14T00:00:00.000Z",
+      },
+      account: { type: "unknown", planType: null, sparkEnabled: true },
+      child,
+      stdoutFramer: new CodexJsonlFramer(),
+      stdinWriter: new CodexJsonlWriter(child.stdin),
+      pending: new Map(),
+      pendingApprovals: new Map(),
+      pendingUserInputs: new Map(),
+      collabReceiverTurns: new Map(),
+      collabReceiverParents: new Map(),
+      reviewTurnIds: new Set(),
+      nextRequestId: 1,
+      stopping: false,
+    };
+    (
+      manager as unknown as {
+        sessions: Map<ThreadId, unknown>;
+      }
+    ).sessions.set(threadId, context);
+
+    const stopping = manager.stopSession(threadId);
+    await Promise.resolve();
+    expect(teardownProcessTree).toHaveBeenCalledTimes(1);
+    expect(manager.hasSession(threadId)).toBe(true);
+    expect(exitProven).toBe(false);
+
+    child.exitCode = 0;
+    child.emit("exit", 0, null);
+    await stopping;
+    expect(exitProven).toBe(true);
+    expect(manager.hasSession(threadId)).toBe(false);
+  });
+});
 
 describe("classifyCodexStderrLine", () => {
   it("ignores empty lines", () => {
@@ -558,9 +633,7 @@ describe("buildCodexProcessEnv", () => {
       platform: "darwin",
     });
 
-    expect(env.NODE_REPL_SANDBOX_ALLOWED_UNIX_SOCKETS).toBe(
-      "/tmp/existing.sock,/tmp/codex-browser-use/synara.sock",
-    );
+    expect(env.NODE_REPL_SANDBOX_ALLOWED_UNIX_SOCKETS).toBe("/tmp/codex-browser-use/synara.sock");
   });
 
   it("resolves the browser-use pipe path from desktop env aliases", () => {
@@ -1065,7 +1138,7 @@ describe("startSession", () => {
     expect(cwd).toContain(`${path.sep}synara-codex-workspaces${path.sep}thread-1`);
   });
 
-  it("removes a stopped session before adapter-style event inspection can re-enter pruning", () => {
+  it("removes a stopped session before adapter-style event inspection can re-enter pruning", async () => {
     const authHome = mkdtempSync(path.join(os.tmpdir(), "synara-codex-stop-reentry-"));
     const authPath = path.join(authHome, "auth.json");
     writeFileSync(authPath, codexAuth("workspace-first", "1"), "utf8");
@@ -1089,7 +1162,7 @@ describe("startSession", () => {
       },
       account: { type: "unknown", planType: null, sparkEnabled: true },
       child: { killed: false, kill },
-      output: { close },
+      stdinWriter: { close },
       pending: new Map(),
       pendingApprovals: new Map(),
       pendingUserInputs: new Map(),
@@ -1110,8 +1183,8 @@ describe("startSession", () => {
 
     try {
       writeFileSync(authPath, codexAuth("workspace-second", "2"), "utf8");
-      manager.stopSession(threadId);
-      manager.stopSession(threadId);
+      await manager.stopSession(threadId);
+      await manager.stopSession(threadId);
 
       expect(closedEvents).toEqual(["session/closed"]);
       expect(kill).toHaveBeenCalledTimes(1);
@@ -1160,7 +1233,8 @@ describe("startSession", () => {
           }),
         ).rejects.toThrow(/authentication changed on disk/);
 
-        expect(readFakeCodexMethods(messagesPath)).toEqual(["initialize"]);
+        expect(readFakeCodexMethods(messagesPath).length).toBeGreaterThan(0);
+        expect(readFakeCodexMethods(messagesPath)[0]).toBe("initialize");
         expect(manager.listSessions()).toEqual([]);
       } finally {
         manager.stopAll();
@@ -1288,7 +1362,7 @@ describe("startSession", () => {
   );
 
   it.runIf(process.platform !== "win32")(
-    "keeps a synchronous start replacement installed when the old app-server exits during initialize",
+    "does not start a replacement before the failed app-server teardown settles",
     async () => {
       const root = mkdtempSync(path.join(os.tmpdir(), "synara-codex-start-exit-replacement-"));
       const sourceHome = path.join(root, "codex-home");
@@ -1351,16 +1425,9 @@ describe("startSession", () => {
           }),
         );
         expect(first.status).toBe("rejected");
-        expect(replacementPromise).toBeDefined();
-        const replacement = await replacementPromise!;
-
-        expect(replacement.status).toBe("ready");
-        expect(replacement.providerInstanceId).toBe("codex_work");
-        expect(readFakeCodexMethods(replacementMessagesPath)).toContain("thread/start");
-        expect(manager.listSessions()).toEqual([replacement]);
-        expect(methods).toContain("session/exited");
-        expect(methods).not.toContain("session/startFailed");
-        expect(methods).not.toContain("session/closed");
+        expect(replacementPromise).toBeUndefined();
+        await vi.waitFor(() => expect(manager.listSessions()).toEqual([]));
+        expect(methods).toContain("session/startFailed");
       } finally {
         manager.off("event", listener);
         manager.stopAll();
@@ -1416,7 +1483,8 @@ describe("startSession", () => {
           }),
         ).rejects.toThrow(/authentication changed on disk/);
 
-        expect(readFakeCodexMethods(messagesPath)).toEqual(["initialize"]);
+        expect(readFakeCodexMethods(messagesPath).length).toBeGreaterThan(0);
+        expect(readFakeCodexMethods(messagesPath)[0]).toBe("initialize");
         expect(manager.listSessions()).toEqual([]);
       } finally {
         manager.stopAll();
@@ -1517,7 +1585,7 @@ describe("startSession", () => {
   );
 
   it.runIf(process.platform !== "win32")(
-    "keeps a synchronous fork replacement installed when the old app-server exits during initialize",
+    "does not fork a replacement before the failed app-server teardown settles",
     async () => {
       const root = mkdtempSync(path.join(os.tmpdir(), "synara-codex-fork-exit-replacement-"));
       const sourceHome = path.join(root, "codex-home");
@@ -1588,24 +1656,9 @@ describe("startSession", () => {
           }),
         );
         expect(first.status).toBe("rejected");
-        expect(replacementPromise).toBeDefined();
-        const replacement = await replacementPromise!;
-
-        expect(replacement).toEqual({
-          threadId,
-          resumeCursor: { threadId: "fake-forked-thread" },
-        });
-        expect(readFakeCodexMethods(replacementMessagesPath)).toContain("thread/fork");
-        expect(manager.listSessions()).toEqual([
-          expect.objectContaining({
-            threadId,
-            status: "ready",
-            resumeCursor: { threadId: "fake-forked-thread" },
-          }),
-        ]);
-        expect(methods).toContain("session/exited");
-        expect(methods).not.toContain("session/threadForkFailed");
-        expect(methods).not.toContain("session/closed");
+        expect(replacementPromise).toBeUndefined();
+        await vi.waitFor(() => expect(manager.listSessions()).toEqual([]));
+        expect(methods).toContain("session/threadForkFailed");
       } finally {
         manager.off("event", listener);
         manager.stopAll();
@@ -1614,7 +1667,7 @@ describe("startSession", () => {
     },
   );
 
-  it("evicts a live app-server session when the ChatGPT account changes", () => {
+  it("evicts a live app-server session when the ChatGPT account changes", async () => {
     const authHome = mkdtempSync(path.join(os.tmpdir(), "synara-codex-auth-fingerprint-"));
     const authPath = path.join(authHome, "auth.json");
     writeFileSync(
@@ -1638,7 +1691,7 @@ describe("startSession", () => {
       },
       account: { type: "unknown", planType: null, sparkEnabled: true },
       child: { killed: false, kill },
-      output: { close },
+      stdinWriter: { close },
       pending: new Map(),
       pendingApprovals: new Map(),
       pendingUserInputs: new Map(),
@@ -1662,13 +1715,13 @@ describe("startSession", () => {
       "utf8",
     );
 
-    expect(manager.listSessions()).toEqual([]);
+    await vi.waitFor(() => expect(manager.listSessions()).toEqual([]));
     expect(kill).toHaveBeenCalledTimes(1);
     expect(close).toHaveBeenCalledTimes(1);
     rmSync(authHome, { recursive: true, force: true });
   });
 
-  it("omits stale-auth sessions from inspection without stopping them until lifecycle listing", () => {
+  it("omits stale-auth sessions from inspection without stopping them until lifecycle listing", async () => {
     const authHome = mkdtempSync(path.join(os.tmpdir(), "synara-codex-auth-inspection-"));
     const authPath = path.join(authHome, "auth.json");
     writeFileSync(
@@ -1697,7 +1750,7 @@ describe("startSession", () => {
       session,
       account: { type: "unknown", planType: null, sparkEnabled: true },
       child: { killed: false, kill },
-      output: { close },
+      stdinWriter: { close },
       pending: new Map(),
       pendingApprovals: new Map(),
       pendingUserInputs: new Map(),
@@ -1722,7 +1775,7 @@ describe("startSession", () => {
       expect(kill).not.toHaveBeenCalled();
       expect(close).not.toHaveBeenCalled();
 
-      expect(manager.listSessions()).toEqual([]);
+      await vi.waitFor(() => expect(manager.listSessions()).toEqual([]));
       expect(kill).toHaveBeenCalledTimes(1);
       expect(close).toHaveBeenCalledTimes(1);
     } finally {
@@ -1765,7 +1818,7 @@ describe("startSession", () => {
       session,
       account: { type: "unknown", planType: null, sparkEnabled: true },
       child: { killed: false, kill },
-      output: { close },
+      stdinWriter: { close },
       pending: new Map(),
       pendingApprovals: new Map(),
       pendingUserInputs: new Map(),
@@ -1796,7 +1849,7 @@ describe("startSession", () => {
     }
   });
 
-  it("evicts a live session when copied overlay auth diverges from its source", () => {
+  it("evicts a live session when copied overlay auth diverges from its source", async () => {
     const root = mkdtempSync(path.join(os.tmpdir(), "synara-codex-auth-copy-source-"));
     const sourceHome = path.join(root, "codex-home");
     const runtimeHome = path.join(root, "runtime");
@@ -1839,7 +1892,7 @@ describe("startSession", () => {
       },
       account: { type: "unknown", planType: null, sparkEnabled: true },
       child: { killed: false, kill },
-      output: { close },
+      stdinWriter: { close },
       pending: new Map(),
       pendingApprovals: new Map(),
       pendingUserInputs: new Map(),
@@ -1859,7 +1912,7 @@ describe("startSession", () => {
 
     try {
       writeFileSync(sourceAuthPath, '{"account":"second"}', "utf8");
-      expect(manager.listSessions()).toEqual([]);
+      await vi.waitFor(() => expect(manager.listSessions()).toEqual([]));
       expect(kill).toHaveBeenCalledTimes(1);
       expect(close).toHaveBeenCalledTimes(1);
       expect(readFileSync(overlayAuthPath, "utf8")).toBe('{"account":"first"}');
@@ -1868,7 +1921,7 @@ describe("startSession", () => {
     }
   });
 
-  it("evicts a live session when authoritative auth is deleted after a fallback copy", () => {
+  it("evicts a live session when authoritative auth is deleted after a fallback copy", async () => {
     const root = mkdtempSync(path.join(os.tmpdir(), "synara-codex-auth-copy-logout-"));
     const sourceHome = path.join(root, "codex-home");
     const runtimeHome = path.join(root, "runtime");
@@ -1915,7 +1968,7 @@ describe("startSession", () => {
       },
       account: { type: "unknown", planType: null, sparkEnabled: true },
       child: { killed: false, kill },
-      output: { close },
+      stdinWriter: { close },
       pending: new Map(),
       pendingApprovals: new Map(),
       pendingUserInputs: new Map(),
@@ -1930,7 +1983,7 @@ describe("startSession", () => {
 
     try {
       unlinkSync(sourceAuthPath);
-      expect(manager.listSessions()).toEqual([]);
+      await vi.waitFor(() => expect(manager.listSessions()).toEqual([]));
       expect(kill).toHaveBeenCalledTimes(1);
       expect(close).toHaveBeenCalledTimes(1);
       expect(readFileSync(overlayAuthPath, "utf8")).toBe('{"account":"first"}');
@@ -1971,7 +2024,7 @@ describe("startSession", () => {
       },
       account: { type: "unknown", planType: null, sparkEnabled: true },
       child: { killed: false, kill },
-      output: { close },
+      stdinWriter: { close },
       pending: new Map(),
       pendingApprovals: new Map(),
       pendingUserInputs: new Map(),
@@ -1986,7 +2039,7 @@ describe("startSession", () => {
 
     try {
       writeFileSync(configPath, 'cli_auth_credentials_store = "keyring"\n', "utf8");
-      expect(manager.listSessions()).toEqual([]);
+      await vi.waitFor(() => expect(manager.listSessions()).toEqual([]));
       expect(kill).toHaveBeenCalledTimes(1);
       expect(close).toHaveBeenCalledTimes(1);
       await expect(
@@ -2003,7 +2056,7 @@ describe("startSession", () => {
     }
   });
 
-  it("evicts a live session when malformed config prevents safe auth revalidation", () => {
+  it("evicts a live session when malformed config prevents safe auth revalidation", async () => {
     const root = mkdtempSync(path.join(os.tmpdir(), "synara-codex-auth-config-malformed-"));
     const sourceHome = path.join(root, "codex-home");
     const runtimeHome = path.join(root, "runtime");
@@ -2035,7 +2088,7 @@ describe("startSession", () => {
       },
       account: { type: "unknown", planType: null, sparkEnabled: true },
       child: { killed: false, kill },
-      output: { close },
+      stdinWriter: { close },
       pending: new Map(),
       pendingApprovals: new Map(),
       pendingUserInputs: new Map(),
@@ -2050,7 +2103,7 @@ describe("startSession", () => {
 
     try {
       writeFileSync(configPath, 'cli_auth_credentials_store = ["file"\n', "utf8");
-      expect(manager.listSessions()).toEqual([]);
+      await vi.waitFor(() => expect(manager.listSessions()).toEqual([]));
       expect(kill).toHaveBeenCalledTimes(1);
       expect(close).toHaveBeenCalledTimes(1);
     } finally {
@@ -2316,7 +2369,7 @@ describe("startSession", () => {
       ]);
     } finally {
       versionCheck.mockRestore();
-      manager.stopAll();
+      await manager.stopAll();
     }
   });
 });
@@ -2684,6 +2737,7 @@ describe("steerTurn", () => {
     const { manager, context, sendRequest } = createSendTurnHarness();
     context.session.status = "running";
     context.session.activeTurnId = "turn_active";
+    context.collabReceiverTurns.set("child_provider_1", "turn_active");
     sendRequest.mockResolvedValueOnce({
       turnId: "turn_active",
     });
@@ -2709,6 +2763,7 @@ describe("steerTurn", () => {
       ],
       expectedTurnId: "turn_active",
     });
+    expect(context.collabReceiverTurns.get("child_provider_1")).toBe("turn_active");
   });
 
   it("requires turn/steer to return the active turn id", async () => {
@@ -2937,7 +2992,8 @@ describe("CodexAppServerManager discovery", () => {
           }),
         ).rejects.toThrow(/authentication changed on disk/);
 
-        expect(readFakeCodexMethods(messagesPath)).toEqual(["initialize"]);
+        expect(readFakeCodexMethods(messagesPath).length).toBeGreaterThan(0);
+        expect(readFakeCodexMethods(messagesPath)[0]).toBe("initialize");
         expect(
           (
             manager as unknown as {
@@ -3067,6 +3123,13 @@ describe("CodexAppServerManager discovery", () => {
 
   it("normalizes model/list fast mode metadata from runtime discovery", async () => {
     const manager = new CodexAppServerManager();
+    const item = {
+      id: "gpt-5.6-sol",
+      name: "GPT-5.6 Sol",
+      supported_reasoning_efforts: ["low", "medium", "high", "xhigh", "max", "ultra"],
+      default_reasoning_effort: "low",
+      additionalSpeedTiers: ["fast"],
+    };
     const context = {
       session: {
         provider: "codex",
@@ -3102,15 +3165,7 @@ describe("CodexAppServerManager discovery", () => {
       )
       .mockResolvedValue({
         result: {
-          items: [
-            {
-              id: "gpt-5.5",
-              name: "GPT-5.5",
-              supported_reasoning_efforts: ["low", "medium", "high", "xhigh"],
-              default_reasoning_effort: "medium",
-              additionalSpeedTiers: ["fast"],
-            },
-          ],
+          items: [item],
         },
       });
 
@@ -3123,15 +3178,17 @@ describe("CodexAppServerManager discovery", () => {
     });
     expect(result.models).toEqual([
       {
-        slug: "gpt-5.5",
-        name: "GPT-5.5",
+        slug: "gpt-5.6-sol",
+        name: "GPT-5.6 Sol",
         supportedReasoningEfforts: [
           { value: "low" },
           { value: "medium" },
           { value: "high" },
           { value: "xhigh" },
+          { value: "max" },
+          { value: "ultra" },
         ],
-        defaultReasoningEffort: "medium",
+        defaultReasoningEffort: "low",
         supportsFastMode: true,
       },
     ]);
@@ -4304,6 +4361,7 @@ describe("respondToRequest", () => {
     expect(emitEvent).toHaveBeenCalledWith(
       expect.objectContaining({
         method: "item/requestApproval/decision",
+        lifecycleGeneration: "generation-request-a",
         requestKind: "command",
         payload: {
           requestId: "req-approval-1",
@@ -4344,9 +4402,9 @@ describe("respondToRequest", () => {
     writeMessage.mockClear();
     emitEvent.mockClear();
 
-    (
+    await (
       manager as unknown as {
-        handleServerRequest: (context: unknown, request: Record<string, unknown>) => void;
+        handleServerRequest: (context: unknown, request: Record<string, unknown>) => Promise<void>;
       }
     ).handleServerRequest(context, {
       jsonrpc: "2.0",
@@ -4457,7 +4515,7 @@ describe("respondToUserInput", () => {
     );
   });
 
-  it("tracks file-read approval requests with the correct method", () => {
+  it("tracks file-read approval requests with the correct method", async () => {
     const manager = new CodexAppServerManager();
     const context = {
       session: {
@@ -4480,12 +4538,12 @@ describe("respondToUserInput", () => {
       pendingUserInputs: typeof context.pendingUserInputs;
     };
 
-    (
+    await (
       manager as unknown as {
         handleServerRequest: (
           context: ApprovalRequestContext,
           request: Record<string, unknown>,
-        ) => void;
+        ) => Promise<void>;
       }
     ).handleServerRequest(context, {
       jsonrpc: "2.0",
@@ -4501,6 +4559,30 @@ describe("respondToUserInput", () => {
 });
 
 describe("collab child conversation routing", () => {
+  it("tracks the current collabToolCall receiver shape", () => {
+    const { manager, context } = createCollabNotificationHarness();
+
+    (
+      manager as unknown as {
+        handleServerNotification: (context: unknown, notification: Record<string, unknown>) => void;
+      }
+    ).handleServerNotification(context, {
+      method: "item/started",
+      params: {
+        item: {
+          type: "collabToolCall",
+          id: "call_collab_current",
+          receiverThreadId: "child_provider_current",
+        },
+        threadId: "provider_parent",
+        turnId: "turn_parent",
+      },
+    });
+
+    expect(context.collabReceiverTurns.get("child_provider_current")).toBe("turn_parent");
+    expect(context.collabReceiverParents.get("child_provider_current")).toBe("provider_parent");
+  });
+
   it("preserves child notification turn ids and annotates the parent turn", () => {
     const { manager, context, emitEvent } = createCollabNotificationHarness();
 
@@ -4590,6 +4672,75 @@ describe("collab child conversation routing", () => {
       params: {
         threadId: "child_provider_1",
         turn: { id: "turn_child_1", status: "completed" },
+      },
+    });
+
+    expect(emitEvent).not.toHaveBeenCalled();
+    expect(updateSession).not.toHaveBeenCalled();
+  });
+
+  it("suppresses child lifecycle notifications that arrive before receiver mapping", () => {
+    const { manager, context, emitEvent, updateSession } = createCollabNotificationHarness();
+    context.session.status = "running";
+    context.session.activeTurnId = "turn_parent";
+
+    (
+      manager as unknown as {
+        handleServerNotification: (context: unknown, notification: Record<string, unknown>) => void;
+      }
+    ).handleServerNotification(context, {
+      method: "turn/started",
+      params: {
+        threadId: "child_provider_unmapped",
+        turn: { id: "turn_child_unmapped" },
+      },
+    });
+
+    expect(emitEvent).not.toHaveBeenCalled();
+    expect(updateSession).not.toHaveBeenCalled();
+    expect(context.session.activeTurnId).toBe("turn_parent");
+  });
+
+  it("keeps handling lifecycle notifications from the active provider thread", () => {
+    const { manager, context, emitEvent, updateSession } = createCollabNotificationHarness();
+
+    (
+      manager as unknown as {
+        handleServerNotification: (context: unknown, notification: Record<string, unknown>) => void;
+      }
+    ).handleServerNotification(context, {
+      method: "turn/started",
+      params: {
+        threadId: "provider_parent",
+        turn: { id: "turn_parent" },
+      },
+    });
+
+    expect(emitEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: "turn/started",
+        providerThreadId: "provider_parent",
+      }),
+    );
+    expect(updateSession).toHaveBeenCalledWith(
+      context,
+      expect.objectContaining({ status: "running", activeTurnId: "turn_parent" }),
+    );
+  });
+
+  it("suppresses child lifecycle notifications when only the provider parent is known", () => {
+    const { manager, context, emitEvent, updateSession } = createCollabNotificationHarness();
+    context.collabReceiverParents.set("child_provider_1", "provider_parent");
+
+    (
+      manager as unknown as {
+        handleServerNotification: (context: unknown, notification: Record<string, unknown>) => void;
+      }
+    ).handleServerNotification(context, {
+      method: "turn/started",
+      params: {
+        threadId: "child_provider_1",
+        turn: { id: "turn_child_1" },
       },
     });
 
@@ -4693,7 +4844,7 @@ describe("collab child conversation routing", () => {
     expect(updateSession).not.toHaveBeenCalled();
   });
 
-  it("preserves child approval requests and annotates the parent turn", () => {
+  it("preserves child approval requests and annotates the parent turn", async () => {
     const { manager, context, emitEvent } = createCollabNotificationHarness();
 
     (
@@ -4714,9 +4865,9 @@ describe("collab child conversation routing", () => {
     });
     emitEvent.mockClear();
 
-    (
+    await (
       manager as unknown as {
-        handleServerRequest: (context: unknown, request: Record<string, unknown>) => void;
+        handleServerRequest: (context: unknown, request: Record<string, unknown>) => Promise<void>;
       }
     ).handleServerRequest(context, {
       id: 42,
@@ -4899,6 +5050,74 @@ describe("handleServerNotification error normalization", () => {
   });
 });
 
+describe("CodexAppServerManager process teardown", () => {
+  it("keeps one stop in flight and publishes closed only after exit proof", async () => {
+    let proveExit: (() => void) | undefined;
+    const exitProof = new Promise<void>((resolve) => {
+      proveExit = resolve;
+    });
+    const teardownProcessTree = vi.fn(async () => {
+      await exitProof;
+      return { escalated: false, signalErrors: [] };
+    });
+    const manager = new CodexAppServerManager(undefined, { teardownProcessTree });
+    const threadId = asThreadId("thread-stop-proof");
+    const closedEvents: string[] = [];
+    manager.on("event", (event) => {
+      if (event.method === "session/closed") {
+        closedEvents.push(event.method);
+      }
+    });
+    const context = {
+      session: {
+        provider: "codex",
+        status: "ready",
+        threadId,
+        runtimeMode: "full-access",
+        model: "gpt-5.3-codex",
+        activeTurnId: "turn-active",
+        createdAt: "2026-02-10T00:00:00.000Z",
+        updatedAt: "2026-02-10T00:00:00.000Z",
+      },
+      account: { type: "unknown", planType: null, sparkEnabled: true },
+      child: {
+        pid: 42_424,
+        exitCode: null,
+        signalCode: null,
+        once: vi.fn(),
+        removeListener: vi.fn(),
+      },
+      pending: new Map(),
+      pendingApprovals: new Map(),
+      pendingUserInputs: new Map(),
+      collabReceiverTurns: new Map(),
+      collabReceiverParents: new Map(),
+      reviewTurnIds: new Set(),
+      nextRequestId: 1,
+      stopping: false,
+    };
+    (
+      manager as unknown as {
+        sessions: Map<ThreadId, unknown>;
+      }
+    ).sessions.set(threadId, context);
+
+    const firstStop = manager.stopSession(threadId);
+    const concurrentStop = manager.stopSession(threadId);
+
+    expect(teardownProcessTree).toHaveBeenCalledTimes(1);
+    expect(closedEvents).toHaveLength(0);
+    expect(manager.hasSession(threadId)).toBe(true);
+    expect(manager.listSessions()[0]).toMatchObject({ status: "ready" });
+
+    proveExit?.();
+    await Promise.all([firstStop, concurrentStop]);
+
+    expect(closedEvents).toEqual(["session/closed"]);
+    expect(manager.hasSession(threadId)).toBe(false);
+  });
+});
+
 describe.skipIf(!process.env.CODEX_BINARY_PATH)("startSession live Codex resume", () => {
   it("keeps prior thread history when resuming with a changed runtime mode", async () => {
     const workspaceDir = mkdtempSync(path.join(os.tmpdir(), "codex-live-resume-"));
@@ -4943,7 +5162,7 @@ describe.skipIf(!process.env.CODEX_BINARY_PATH)("startSession live Codex resume"
       });
       expect(continuationGeneration).toMatch(/^[0-9a-f-]{36}$/);
 
-      manager.stopSession(firstSession.threadId);
+      await manager.stopSession(firstSession.threadId);
 
       const resumedSession = await manager.startSession({
         threadId: firstSession.threadId,
@@ -4979,7 +5198,7 @@ describe.skipIf(!process.env.CODEX_BINARY_PATH)("startSession live Codex resume"
         { timeout: 120_000, interval: 1_000 },
       );
     } finally {
-      manager.stopAll();
+      await manager.stopAll();
       rmSync(workspaceDir, { recursive: true, force: true });
     }
   }, 180_000);

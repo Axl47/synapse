@@ -22,7 +22,7 @@ layer("057_ClearAutomationRunProviderOptions", (it) => {
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
 
-      yield* runMigrations({ toMigrationInclusive: 57 });
+      yield* runMigrations({ toMigrationInclusive: 74 });
       yield* sql`
         INSERT INTO automation_definitions (
           automation_id,
@@ -114,7 +114,7 @@ layer("057_ClearAutomationRunProviderOptions", (it) => {
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
 
-      yield* runMigrations({ toMigrationInclusive: 57 });
+      yield* runMigrations({ toMigrationInclusive: 74 });
       yield* sql`
         INSERT INTO automation_definitions (
           automation_id, project_id, name, prompt, schedule_json, enabled,
@@ -213,7 +213,7 @@ layer("057_ClearAutomationRunProviderOptions", (it) => {
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
 
-      yield* runMigrations({ toMigrationInclusive: 57 });
+      yield* runMigrations({ toMigrationInclusive: 74 });
       yield* sql`
         INSERT INTO automation_definitions (
           automation_id, project_id, name, prompt, schedule_json, enabled,

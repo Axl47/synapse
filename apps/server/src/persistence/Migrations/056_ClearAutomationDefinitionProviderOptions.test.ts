@@ -17,7 +17,7 @@ layer("056_ClearAutomationDefinitionProviderOptions", (it) => {
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
 
-      yield* runMigrations({ toMigrationInclusive: 56 });
+      yield* runMigrations({ toMigrationInclusive: 73 });
       yield* sql`
         INSERT INTO automation_definitions (
           automation_id,
@@ -99,7 +99,7 @@ layer("056_ClearAutomationDefinitionProviderOptions", (it) => {
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
 
-      yield* runMigrations({ toMigrationInclusive: 56 });
+      yield* runMigrations({ toMigrationInclusive: 73 });
       yield* sql`
         INSERT INTO automation_definitions (
           automation_id, project_id, name, prompt, schedule_json, enabled, next_run_at,
@@ -174,7 +174,7 @@ layer("056_ClearAutomationDefinitionProviderOptions", (it) => {
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
 
-      yield* runMigrations({ toMigrationInclusive: 56 });
+      yield* runMigrations({ toMigrationInclusive: 73 });
       yield* sql`
         INSERT INTO automation_definitions (
           automation_id, project_id, name, prompt, schedule_json, enabled,
@@ -212,7 +212,7 @@ layer("056_ClearAutomationDefinitionProviderOptions", (it) => {
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
 
-      yield* runMigrations({ toMigrationInclusive: 56 });
+      yield* runMigrations({ toMigrationInclusive: 73 });
       yield* sql`
         INSERT INTO automation_definitions (
           automation_id, project_id, name, prompt, schedule_json, enabled, next_run_at,
@@ -259,7 +259,7 @@ layer("056_ClearAutomationDefinitionProviderOptions", (it) => {
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
 
-        yield* runMigrations({ toMigrationInclusive: 56 });
+        yield* runMigrations({ toMigrationInclusive: 73 });
         yield* sql`
         INSERT INTO automation_definitions (
           automation_id, project_id, name, prompt, schedule_json, enabled,

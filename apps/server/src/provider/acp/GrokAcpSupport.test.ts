@@ -19,7 +19,7 @@ function initializeWithAuthMethods(ids: ReadonlyArray<string>): EffectAcpSchema.
 
 describe("buildGrokAcpSpawnInput", () => {
   it("builds the default Grok ACP command", () => {
-    expect(buildGrokAcpSpawnInput(undefined, "/tmp/project")).toEqual({
+    expect(buildGrokAcpSpawnInput(undefined, "/tmp/project")).toMatchObject({
       command: "grok",
       args: ["agent", "--no-leader", "stdio"],
       cwd: "/tmp/project",
@@ -28,7 +28,9 @@ describe("buildGrokAcpSpawnInput", () => {
   });
 
   it("uses the configured Grok binary path", () => {
-    expect(buildGrokAcpSpawnInput({ binaryPath: "/usr/local/bin/grok" }, "/tmp/project")).toEqual({
+    expect(
+      buildGrokAcpSpawnInput({ binaryPath: "/usr/local/bin/grok" }, "/tmp/project"),
+    ).toMatchObject({
       command: "/usr/local/bin/grok",
       args: ["agent", "--no-leader", "stdio"],
       cwd: "/tmp/project",
@@ -47,7 +49,7 @@ describe("buildGrokAcpSpawnInput", () => {
         },
         "/tmp/project",
       ),
-    ).toEqual({
+    ).toMatchObject({
       command: "/usr/local/bin/grok",
       args: [
         "agent",

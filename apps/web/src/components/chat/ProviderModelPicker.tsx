@@ -47,6 +47,11 @@ import {
   type ProviderModelOption,
 } from "../../providerModelOptions";
 import { useLocalStorage } from "../../hooks/useLocalStorage";
+import {
+  FAVORITE_MODEL_STORAGE_KEYS,
+  supportsModelFavorites,
+  type FavoriteModelProvider,
+} from "../../lib/modelFavorites";
 import { Skeleton } from "../ui/skeleton";
 import { isProviderUsable } from "../../lib/providerAvailability";
 import { MISSING_PROVIDER_INSTANCE_LABEL } from "../../lib/providerInstancePresentation";
@@ -130,7 +135,7 @@ function providerIconClassName(
   provider: ProviderKind | ProviderPickerKind,
   fallbackClassName: string,
 ): string {
-  return provider === "claudeAgent" || provider === "gemini" || provider === "pi"
+  return provider === "claudeAgent" || provider === "antigravity" || provider === "pi"
     ? "text-foreground"
     : fallbackClassName;
 }
@@ -153,6 +158,7 @@ function supportsLegacyModelFavorites(
     provider === "cursor" || provider === "kilo" || provider === "opencode" || provider === "pi"
   );
 }
+const FavoriteModelSlugs = Schema.Array(Schema.String);
 
 export interface ProviderModelFavorite {
   readonly provider: ProviderInstanceId;
@@ -327,7 +333,13 @@ function resolveSelectedModelLabel(input: {
 }
 
 function buildModelSearchText(option: ProviderModelOption): string {
-  return [option.name, option.slug, option.upstreamProviderName, option.upstreamProviderId]
+  return [
+    option.name,
+    option.slug,
+    option.description,
+    option.upstreamProviderName,
+    option.upstreamProviderId,
+  ]
     .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
     .join(" ")
     .toLowerCase();
@@ -360,7 +372,7 @@ type ProviderModelMenuItemsProps = {
 };
 
 // Renders only the popup body of the provider/model picker. Designed to be
-// dropped into any MenuPopup or MenuSubPopup so the same selection logic can
+// dropped into any shared picker popup or submenu so the same selection logic can
 // be reused by the standalone picker and the combined composer trait picker.
 export const ProviderModelMenuItems = memo(function ProviderModelMenuItems(
   props: ProviderModelMenuItemsProps,

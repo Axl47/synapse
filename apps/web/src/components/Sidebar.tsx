@@ -10,10 +10,7 @@ import {
   ClockIcon,
   CopyIcon,
   ExternalLinkIcon,
-  FolderIcon,
   FolderOpenIcon,
-  GitMergedSimpleIcon,
-  GitPullRequestIcon,
   KanbanIcon,
   type LucideIcon,
   NewThreadIcon,
@@ -31,10 +28,16 @@ import {
   WorktreeIcon,
   XIcon,
 } from "~/lib/icons";
+import {
+  PR_STATE_PRESENTATION_ICONS,
+  resolvePrStatePresentation,
+  type PrStatePresentation,
+} from "~/components/pullRequest/pullRequestStatePresentation";
 import { PinStatusIcon, pinActionLabel } from "~/lib/pin";
 import { ensureNativeApi } from "~/nativeApi";
 import { autoAnimate } from "@formkit/auto-animate";
 import { FiGitBranch, FiPlus } from "react-icons/fi";
+import { IoIosGitCompare } from "react-icons/io";
 import { GoRepoForked } from "react-icons/go";
 import { HiOutlineArchiveBox } from "react-icons/hi2";
 import { TbArrowsDiagonal, TbArrowsDiagonalMinimize2, TbCursorText } from "react-icons/tb";
@@ -48,6 +51,7 @@ import {
   useRef,
   Suspense,
   useState,
+  type ComponentType,
   type MouseEvent,
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
@@ -145,6 +149,15 @@ import {
 import { resolveCurrentProjectTargetId } from "../lib/projectShortcutTargets";
 import { projectDiscoverScriptsQueryOptions } from "../lib/projectReactQuery";
 import {
+  pullRequestQueryKeys,
+  pullRequestReviewRequestCountQueryOptions,
+} from "../lib/pullRequestReactQuery";
+import {
+  prefetchProviderModelsForNewThread,
+  resolveNewThreadModelPrefetchCwd,
+  resolveNewThreadModelPrefetchProvider,
+} from "../lib/providerModelPrefetch";
+import {
   serverConfigQueryOptions,
   serverQueryKeys,
   sidebarLocalServersQueryOptions,
@@ -177,6 +190,8 @@ import { shouldRenderTerminalWorkspace } from "./ChatView.logic";
 import { CHAT_SURFACE_HEADER_HEIGHT_CLASS } from "./chat/chatHeaderControls";
 import { ProviderIcon } from "./ProviderIcon";
 import { SidebarLeadingControls } from "./SidebarHeaderNavigationControls";
+import { SynaraLogo } from "./SynaraLogo";
+import { FolderClosed } from "./FolderClosed";
 import { ProjectSidebarIcon } from "./ProjectSidebarIcon";
 import { ThreadHoverCardContent } from "./ThreadHoverCardContent";
 import { ProjectHoverCardContent } from "./ProjectHoverCardContent";
@@ -207,6 +222,7 @@ import { useHandleNewChat } from "../hooks/useHandleNewChat";
 import { useHandleNewStudioChat } from "../hooks/useHandleNewStudioChat";
 import { useHandleNewThread } from "../hooks/useHandleNewThread";
 import { useThreadHandoff } from "../hooks/useThreadHandoff";
+import { useFeedbackDialogStore } from "../feedbackDialogStore";
 import { selectThreadTerminalState, useTerminalStateStore } from "../terminalStateStore";
 import { useProjectRunStore, type ProjectRunState } from "../projectRunStore";
 import {
@@ -253,7 +269,6 @@ import {
   Menu,
   MenuGroup,
   MenuItem,
-  MenuPopup,
   MenuRadioGroup,
   MenuRadioItem,
   MenuSeparator,
@@ -288,6 +303,7 @@ import {
   getPinnedThreadsForSidebar,
   getUnpinnedThreadsForSidebar,
   orderPinnedProjectsForSidebar,
+  pullRequestRepositoryConfigFingerprint,
   getNextVisibleSidebarThreadId,
   getSidebarThreadIdsToPrewarm,
   getVisibleSidebarEntriesForPreview,
@@ -298,6 +314,7 @@ import {
   isLatestPinnedThreadMutation,
   pruneProjectThreadListPagingForCollapsedProjects,
   recoverExistingAddProjectTarget,
+  resolvePullRequestReviewBadge,
   resolveSidebarThreadListPaging,
   DEBUG_FEATURE_FLAGS_MENU_STORAGE_KEY,
   resolveProjectEmptyState,
@@ -311,10 +328,9 @@ import {
   resolveThreadStatusPill,
   type ThreadStatusPill,
   type SidebarDerivedProjectData,
+  type SidebarActionBadge,
   type SidebarView,
   shouldShowDebugFeatureFlagsMenu,
-  resolvePrStatePresentation,
-  type PrStatePresentation,
   shouldPrunePinnedThreads,
   shouldClearThreadSelectionOnMouseDown,
   sortProjectsForSidebar,
@@ -959,7 +975,7 @@ function prStatusIndicator(pr: ThreadPr): PrStatusIndicator | null {
   return {
     label: presentation.label,
     colorClass: presentation.colorClass,
-    icon: presentation.iconKind === "merged-simple" ? GitMergedSimpleIcon : GitPullRequestIcon,
+    icon: PR_STATE_PRESENTATION_ICONS[presentation.iconKind],
     tooltip: `#${pr.number} ${presentation.label}: ${pr.title}`,
     url: pr.url,
   };
@@ -1022,11 +1038,7 @@ function ProjectSortMenu({
         tooltip="Sort projects"
         tooltipSide="right"
       />
-      <MenuPopup
-        align="end"
-        side="bottom"
-        className="min-w-44 rounded-lg border-[color:var(--color-border)] bg-[var(--color-background-elevated-primary-opaque)] shadow-lg"
-      >
+      <ComposerPickerMenuPopup align="end" side="bottom" className="min-w-44">
         <MenuGroup>
           <div className="px-2 py-1 sm:text-xs font-medium text-muted-foreground">
             Sort projects
@@ -1055,7 +1067,7 @@ function ProjectSortMenu({
             onThreadSortOrderChange={onThreadSortOrderChange}
           />
         </MenuGroup>
-      </MenuPopup>
+      </ComposerPickerMenuPopup>
     </Menu>
   );
 }
@@ -1101,11 +1113,7 @@ function ChatSortMenu({
         tooltip="Sort chats"
         tooltipSide="top"
       />
-      <MenuPopup
-        align="end"
-        side="bottom"
-        className="min-w-44 rounded-lg border-[color:var(--color-border)] bg-[var(--color-background-elevated-primary-opaque)] shadow-lg"
-      >
+      <ComposerPickerMenuPopup align="end" side="bottom" className="min-w-44">
         <MenuGroup>
           <div className="px-2 py-1 sm:text-xs font-medium text-muted-foreground">Sort chats</div>
           <ThreadSortMenuItems
@@ -1113,7 +1121,7 @@ function ChatSortMenu({
             onThreadSortOrderChange={onThreadSortOrderChange}
           />
         </MenuGroup>
-      </MenuPopup>
+      </ComposerPickerMenuPopup>
     </Menu>
   );
 }
@@ -1122,21 +1130,25 @@ function SidebarPrimaryAction({
   icon: Icon,
   label,
   onClick,
+  onMouseEnter,
+  onFocus,
   active = false,
   disabled = false,
   shortcutLabel,
-  badgeCount,
+  badge,
 }: {
-  icon: LucideIcon;
+  // Accepts both Lucide adapters and raw react-icons glyphs (rendered via SidebarGlyph).
+  icon: ComponentType<{ className?: string }>;
   label: string;
   onClick?: () => void;
+  onMouseEnter?: () => void;
+  onFocus?: () => void;
   active?: boolean;
   disabled?: boolean;
   shortcutLabel?: string | null;
-  badgeCount?: number | null;
+  badge?: SidebarActionBadge | null;
 }) {
   const shortcutParts = shortcutLabel ? splitShortcutLabel(shortcutLabel) : [];
-  const showBadge = typeof badgeCount === "number" && badgeCount > 0;
 
   return (
     <SidebarMenuItem>
@@ -1154,14 +1166,20 @@ function SidebarPrimaryAction({
         aria-disabled={disabled || undefined}
         disabled={disabled}
         onClick={onClick}
+        onMouseEnter={onMouseEnter}
+        onFocus={onFocus}
       >
         <SidebarLeadingIcon size="sm" tone="text-inherit">
           <SidebarGlyph icon={Icon} variant="leading" />
         </SidebarLeadingIcon>
         <span className="truncate">{label}</span>
-        {showBadge ? (
-          <span className="ml-auto inline-flex h-4 min-w-4 items-center justify-center rounded-md bg-muted px-1 text-[10px] font-medium text-muted-foreground">
-            {badgeCount}
+        {badge ? (
+          <span
+            className="ml-auto inline-flex h-4 min-w-4 items-center justify-center rounded-md bg-muted px-1 text-[10px] font-medium text-muted-foreground"
+            aria-label={badge.accessibleLabel}
+            title={badge.accessibleLabel}
+          >
+            {badge.text}
           </span>
         ) : shortcutParts.length > 0 ? (
           <span className="ml-auto opacity-0 transition-opacity group-hover/sidebar-primary-action:opacity-100 group-focus-visible/sidebar-primary-action:opacity-100">
@@ -1439,6 +1457,7 @@ export default function Sidebar() {
   const [unmatchedExternalExpanded, setUnmatchedExternalExpanded] = useState(true);
   const [adoptingExternalThreadKey, setAdoptingExternalThreadKey] = useState<string | null>(null);
   const [refreshingExternalThreads, setRefreshingExternalThreads] = useState(false);
+  const isOnPullRequests = pathname.startsWith("/pull-requests");
   // Lightweight read of automations to drive the sidebar attention badge. Shares the
   // ["automations"] query cache with the Automations route (and its live stream updates).
   const automationListQuery = useQuery({
@@ -1453,11 +1472,33 @@ export default function Sidebar() {
       );
     });
   }, [queryClient]);
-  const automationAttentionBadgeCount = useMemo(() => {
+  const automationAttentionBadge = useMemo(() => {
     const data = automationListQuery.data;
-    if (!data) return 0;
-    return automationAttentionCount(data.runs);
+    if (!data) return null;
+    const count = automationAttentionCount(data.runs);
+    return count > 0
+      ? {
+          text: String(count),
+          accessibleLabel: `${count} ${pluralize(count, "automation needs", "automations need")} attention`,
+        }
+      : null;
   }, [automationListQuery.data]);
+  const pullRequestRepositoryConfig = useMemo(
+    () => pullRequestRepositoryConfigFingerprint(projects),
+    [projects],
+  );
+  const previousPullRequestRepositoryConfigRef = useRef(pullRequestRepositoryConfig);
+  useEffect(() => {
+    if (previousPullRequestRepositoryConfigRef.current === pullRequestRepositoryConfig) return;
+    previousPullRequestRepositoryConfigRef.current = pullRequestRepositoryConfig;
+    void queryClient.invalidateQueries({ queryKey: pullRequestQueryKeys.all });
+  }, [pullRequestRepositoryConfig, queryClient]);
+  // Count-only server query keeps rich pull-request rows off the wire and out of this cache.
+  const pullRequestsReviewingQuery = useQuery({
+    ...pullRequestReviewRequestCountQueryOptions({ projectId: null }),
+    enabled: projects.some((project) => project.kind === "project"),
+  });
+  const pullRequestsReviewBadge = resolvePullRequestReviewBadge(pullRequestsReviewingQuery.data);
   // Heartbeat automations grouped by their target thread, so each thread row can show a
   // clock chip indicating an automation is attached (mirrors the Environment panel section).
   const automationsByThreadId = useMemo(
@@ -1565,11 +1606,16 @@ export default function Sidebar() {
     ...serverConfigQueryOptions(),
     select: (config) => config.keybindings,
   });
+  const { data: serverCwd = null } = useQuery({
+    ...serverConfigQueryOptions(),
+    select: (config) => config.cwd ?? null,
+  });
   const removeWorktreeMutation = useMutation(gitRemoveWorktreeMutationOptions({ queryClient }));
   const { activeProjectId: focusedProjectId } = useFocusedChatContext();
   const [addingProject, setAddingProject] = useState(false);
   const [newCwd, setNewCwd] = useState("");
   const [searchPaletteOpen, setSearchPaletteOpen] = useState(false);
+  const openFeedbackDialog = useFeedbackDialogStore((state) => state.openDialog);
   const [searchPaletteMode, setSearchPaletteMode] = useState<SidebarSearchPaletteMode>("search");
   const [searchPaletteInitialQuery, setSearchPaletteInitialQuery] = useState<string | null>(null);
   const [projectRunDialogProjectId, setProjectRunDialogProjectId] = useState<ProjectId | null>(
@@ -2784,8 +2830,63 @@ export default function Sidebar() {
     [focusedProjectId, projects],
   );
 
+  // Warm model discovery before ChatView mounts so new-thread composers skip
+  // the "Loading models" skeleton when React Query already has a fresh cache hit.
+  const prefetchModelsForProjectNewThread = useCallback(
+    (projectId: ProjectId, options?: { includeDroid?: boolean }) => {
+      const project = projects.find((candidate) => candidate.id === projectId);
+      if (!project) {
+        return;
+      }
+
+      const draftStore = useComposerDraftStore.getState();
+      const draftThread = draftStore.getDraftThreadByProjectId(projectId, "chat");
+      const draftComposer = draftThread
+        ? (draftStore.draftsByThreadId[draftThread.threadId] ?? null)
+        : null;
+      const provider = resolveNewThreadModelPrefetchProvider({
+        draftActiveProvider: draftComposer?.activeProvider ?? null,
+        stickyActiveProvider: draftStore.stickyActiveProvider,
+        projectDefaultProvider: project.defaultModelSelection?.provider ?? null,
+        defaultProvider: appSettings.defaultProvider,
+      });
+      // Droid discovery spins a disposable ACP session per model — only warm it
+      // from explicit new-thread intent (hover/click), not idle project focus.
+      if (provider === "droid" && options?.includeDroid !== true) {
+        return;
+      }
+      const cwd = resolveNewThreadModelPrefetchCwd({
+        draftWorktreePath: draftThread?.worktreePath ?? null,
+        projectCwd: project.cwd,
+        serverCwd,
+      });
+
+      prefetchProviderModelsForNewThread(queryClient, {
+        provider,
+        settings: appSettings,
+        cwd,
+      });
+    },
+    [appSettings, projects, queryClient, serverCwd],
+  );
+
+  const prefetchModelsForPrimaryNewThread = useCallback(() => {
+    if (!currentProjectShortcutTargetId) {
+      return;
+    }
+    prefetchModelsForProjectNewThread(currentProjectShortcutTargetId, { includeDroid: true });
+  }, [currentProjectShortcutTargetId, prefetchModelsForProjectNewThread]);
+
+  useEffect(() => {
+    if (!currentProjectShortcutTargetId) {
+      return;
+    }
+    prefetchModelsForProjectNewThread(currentProjectShortcutTargetId);
+  }, [currentProjectShortcutTargetId, prefetchModelsForProjectNewThread]);
+
   const handlePrimaryNewThread = useCallback(() => {
     if (currentProjectShortcutTargetId) {
+      prefetchModelsForProjectNewThread(currentProjectShortcutTargetId, { includeDroid: true });
       void handleNewThread(currentProjectShortcutTargetId, {
         envMode: resolveSidebarNewThreadEnvMode({
           defaultEnvMode: appSettings.defaultThreadEnvMode,
@@ -2800,6 +2901,7 @@ export default function Sidebar() {
     currentProjectShortcutTargetId,
     handleNewThread,
     handleStartAddProject,
+    prefetchModelsForProjectNewThread,
   ]);
 
   const handleImportThread = useCallback(
@@ -3705,9 +3807,11 @@ export default function Sidebar() {
       const threadSummary = sidebarThreadSummaryById[threadId];
       const isPinned = pinnedThreadIdSet.has(threadId);
       const hasPendingApprovals =
-        threadSummary?.hasPendingApprovals ?? derivePendingApprovals(thread.activities).length > 0;
+        threadSummary?.hasPendingApprovals ??
+        derivePendingApprovals(thread.activities, thread.pendingInteractions).length > 0;
       const hasPendingUserInput =
-        threadSummary?.hasPendingUserInput ?? derivePendingUserInputs(thread.activities).length > 0;
+        threadSummary?.hasPendingUserInput ??
+        derivePendingUserInputs(thread.activities, thread.pendingInteractions).length > 0;
       const canHandoff = canCreateThreadHandoff({
         thread,
         hasPendingApprovals,
@@ -6201,6 +6305,22 @@ export default function Sidebar() {
             </button>
             <SidebarSectionToolbar placement="overlay" revealOnHover>
               <SidebarIconButton
+                icon={IoIosGitCompare}
+                label={`View pull requests for ${project.name}`}
+                tooltip="Pull requests"
+                tooltipSide="top"
+                onClick={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  // Opens the in-app pull requests view scoped to this project (selecting a
+                  // row there opens the right-dock detail panel) instead of leaving for GitHub.
+                  void navigate({
+                    to: "/pull-requests",
+                    search: { involvement: "all", state: "open", projectId: project.id },
+                  });
+                }}
+              />
+              <SidebarIconButton
                 icon={TerminalIcon}
                 label={`Create new terminal thread in ${project.name}`}
                 tooltip={
@@ -6228,9 +6348,16 @@ export default function Sidebar() {
                 }
                 tooltipSide="top"
                 data-testid="new-thread-button"
+                onMouseEnter={() => {
+                  prefetchModelsForProjectNewThread(project.id, { includeDroid: true });
+                }}
+                onFocus={() => {
+                  prefetchModelsForProjectNewThread(project.id, { includeDroid: true });
+                }}
                 onClick={(event) => {
                   event.preventDefault();
                   event.stopPropagation();
+                  prefetchModelsForProjectNewThread(project.id, { includeDroid: true });
                   void handleNewThread(project.id, {
                     envMode: resolveSidebarNewThreadEnvMode({
                       defaultEnvMode: appSettings.defaultThreadEnvMode,
@@ -6730,6 +6857,12 @@ export default function Sidebar() {
         shortcutLabel: importThreadShortcutLabel,
       },
       {
+        id: "feedback",
+        label: "Feedback Synara",
+        description: "Send feedback or report an issue to the Synara team.",
+        keywords: ["feedback", "bug", "issue", "problem", "report", "support", "synara"],
+      },
+      {
         id: "settings",
         label: "Settings",
         description: "Open app settings.",
@@ -7005,12 +7138,16 @@ export default function Sidebar() {
         <>
           <SidebarHeader
             className={cn(
-              "drag-region flex-row items-center gap-2 px-4 py-0 font-system-ui",
+              "drag-region flex-row items-center gap-2 py-0 ps-4 pe-3 font-system-ui",
               CHAT_SURFACE_HEADER_HEIGHT_CLASS,
               isMacDesktop && DESKTOP_TOP_BAR_TRAFFIC_LIGHT_GUTTER_CLASS,
             )}
           >
             {titlebarControls}
+            <SynaraLogo
+              aria-label="Synara"
+              className="pointer-events-none ml-auto size-3.5 text-[var(--color-text-foreground-secondary)] opacity-80"
+            />
           </SidebarHeader>
         </>
       ) : (
@@ -7114,6 +7251,8 @@ export default function Sidebar() {
                         icon={NewThreadIcon}
                         label="New thread"
                         onClick={handlePrimaryNewThread}
+                        onMouseEnter={prefetchModelsForPrimaryNewThread}
+                        onFocus={prefetchModelsForPrimaryNewThread}
                       />
                       <SidebarPrimaryAction
                         icon={SearchIcon}
@@ -7133,10 +7272,22 @@ export default function Sidebar() {
                         }}
                       />
                       <SidebarPrimaryAction
+                        icon={IoIosGitCompare}
+                        label="Pull requests"
+                        active={isOnPullRequests}
+                        badge={pullRequestsReviewBadge}
+                        onClick={() => {
+                          void navigate({
+                            to: "/pull-requests",
+                            search: { involvement: "all", state: "open" },
+                          });
+                        }}
+                      />
+                      <SidebarPrimaryAction
                         icon={ClockIcon}
                         label="Automations"
                         active={isOnAutomations}
-                        badgeCount={automationAttentionBadgeCount}
+                        badge={automationAttentionBadge}
                         onClick={() => {
                           void navigate({ to: "/automations" });
                         }}
@@ -7362,7 +7513,7 @@ export default function Sidebar() {
                               onClick={() => void handlePickFolder()}
                               disabled={isPickingFolder || isAddingProject}
                             >
-                              <SidebarGlyph icon={FolderIcon} variant="chrome" />
+                              <FolderClosed className={sidebarGlyphClass("chrome")} />
                               {isPickingFolder
                                 ? "Opening..."
                                 : isAddingProject
@@ -7380,16 +7531,19 @@ export default function Sidebar() {
                           </button>
                         </div>
                       ) : (
-                        <div
-                          className={`flex items-center rounded-lg border bg-[var(--color-background-control-opaque)] transition-colors ${
-                            addProjectError
-                              ? "border-red-500/70 focus-within:border-red-500"
-                              : "border-[color:var(--color-border)] focus-within:border-[color:var(--color-border-focus)]"
-                          }`}
-                        >
-                          <input
+                        <div className="relative">
+                          <Input
                             ref={addProjectInputRef}
-                            className="min-w-0 flex-1 bg-transparent pl-2.5 py-1.5 text-sm text-foreground placeholder:text-muted-foreground/40 focus:outline-none"
+                            nativeInput
+                            size="sm"
+                            variant="soft"
+                            autoFocus
+                            spellCheck={false}
+                            autoCorrect="off"
+                            autoCapitalize="off"
+                            aria-invalid={addProjectError ? true : undefined}
+                            aria-label="Project path"
+                            className="[&>[data-slot=input]]:pe-9"
                             placeholder="/path/to/project"
                             value={newCwd}
                             onChange={(event) => {
@@ -7403,11 +7557,10 @@ export default function Sidebar() {
                                 setAddProjectError(null);
                               }
                             }}
-                            autoFocus
                           />
                           <button
                             type="button"
-                            className="shrink-0 px-2.5 py-1.5 text-xs font-medium text-muted-foreground/50 transition-colors hover:text-foreground disabled:opacity-40"
+                            className="-translate-y-1/2 absolute end-1.5 top-1/2 rounded-md px-1.5 py-1 text-[length:var(--app-font-size-ui-sm,11px)] font-medium text-muted-foreground/50 transition-colors hover:text-foreground disabled:opacity-40"
                             onClick={handleAddProject}
                             disabled={!canAddProject}
                             aria-label="Add project"
@@ -7883,7 +8036,6 @@ export default function Sidebar() {
               autoCapitalize="off"
               autoCorrect="off"
               placeholder="e.g. npm run dev"
-              className="font-mono"
               value={projectRunDialogCommandDraft}
               aria-invalid={projectRunDialogCommandIsValid ? undefined : true}
               onChange={(event) => setProjectRunDialogCommandDraft(event.target.value)}
@@ -7980,6 +8132,7 @@ export default function Sidebar() {
           onOpenSettings={() => {
             void navigate({ to: "/settings" });
           }}
+          onOpenFeedback={openFeedbackDialog}
           onOpenUsageSettings={() => {
             void navigate({
               to: "/settings",
@@ -8020,6 +8173,7 @@ function SidebarSearchPaletteController(props: {
   homeDir: string | null;
   initialBrowseQuery: string | null;
   onOpenSettings: () => void;
+  onOpenFeedback: () => void;
   onOpenUsageSettings: () => void;
   onOpenProject: (projectId: string) => void;
   providerInstances: readonly ProviderInstanceOption[];
@@ -8104,6 +8258,7 @@ function SidebarSearchPaletteController(props: {
       homeDir={props.homeDir}
       initialBrowseQuery={props.initialBrowseQuery}
       onOpenSettings={props.onOpenSettings}
+      onOpenFeedback={props.onOpenFeedback}
       onOpenUsageSettings={props.onOpenUsageSettings}
       onOpenProject={props.onOpenProject}
       importTargets={importTargets}

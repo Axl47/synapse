@@ -155,8 +155,7 @@ export function useKanbanTaskScratchDraft(input: {
         instanceId: instanceId ?? provider,
       });
       // Mirrors the composer: update the scratch draft and persist the sticky selection.
-      store.setModelSelection(scratchThreadId, nextSelection);
-      store.setStickyModelSelection(nextSelection);
+      store.setModelSelectionAndSticky(scratchThreadId, nextSelection);
     },
     [scratchThreadId],
   );

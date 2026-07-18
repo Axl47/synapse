@@ -8,78 +8,23 @@ import {
 
 describe("threadHandoff", () => {
   it("lists all supported handoff targets except the active provider", () => {
-    expect(resolveAvailableHandoffTargetProviders("codex")).toEqual([
-      "claudeAgent",
-      "cursor",
-      "gemini",
-      "grok",
-      "kilo",
-      "opencode",
-      "pi",
-    ]);
-    expect(resolveAvailableHandoffTargetProviders("claudeAgent")).toEqual([
-      "codex",
-      "cursor",
-      "gemini",
-      "grok",
-      "kilo",
-      "opencode",
-      "pi",
-    ]);
-    expect(resolveAvailableHandoffTargetProviders("cursor")).toEqual([
-      "codex",
-      "claudeAgent",
-      "gemini",
-      "grok",
-      "kilo",
-      "opencode",
-      "pi",
-    ]);
-    expect(resolveAvailableHandoffTargetProviders("gemini")).toEqual([
+    const providers = [
       "codex",
       "claudeAgent",
       "cursor",
+      "antigravity",
       "grok",
+      "droid",
       "kilo",
       "opencode",
       "pi",
-    ]);
-    expect(resolveAvailableHandoffTargetProviders("grok")).toEqual([
-      "codex",
-      "claudeAgent",
-      "cursor",
-      "gemini",
-      "kilo",
-      "opencode",
-      "pi",
-    ]);
-    expect(resolveAvailableHandoffTargetProviders("kilo")).toEqual([
-      "codex",
-      "claudeAgent",
-      "cursor",
-      "gemini",
-      "grok",
-      "opencode",
-      "pi",
-    ]);
-    expect(resolveAvailableHandoffTargetProviders("opencode")).toEqual([
-      "codex",
-      "claudeAgent",
-      "cursor",
-      "gemini",
-      "grok",
-      "kilo",
-      "pi",
-    ]);
-    expect(resolveAvailableHandoffTargetProviders("pi")).toEqual([
-      "codex",
-      "claudeAgent",
-      "cursor",
-      "gemini",
-      "grok",
-      "kilo",
-      "opencode",
-    ]);
+    ] as const;
+
+    for (const source of providers) {
+      expect(resolveAvailableHandoffTargetProviders(source)).toEqual(
+        providers.filter((provider) => provider !== source),
+      );
+    }
   });
 
   it("preserves the source thread title for the created handoff thread", () => {
@@ -91,8 +36,8 @@ describe("threadHandoff", () => {
 
   it("prefers sticky model selection for the chosen handoff target", () => {
     const stickySelection = {
-      instanceId: "gemini_work",
-      model: "gemini-2.5-pro",
+      instanceId: "antigravity_work",
+      model: "gemini-3.1-pro-preview",
     } satisfies ModelSelection;
 
     expect(
@@ -103,17 +48,17 @@ describe("threadHandoff", () => {
             model: "claude-sonnet-4-6",
           },
         },
-        targetProvider: "gemini",
-        targetProviderInstanceId: "gemini_work",
+        targetProvider: "antigravity",
+        targetProviderInstanceId: "antigravity_work",
         projectDefaultModelSelection: {
-          instanceId: "gemini",
+          instanceId: "antigravity",
           model: "gemini-3.1-pro-preview",
         },
         stickyModelSelectionByProvider: {
-          gemini_work: stickySelection,
+          antigravity_work: stickySelection,
         },
       }),
-    ).toEqual({ ...stickySelection, instanceId: "gemini_work" });
+    ).toEqual({ ...stickySelection, instanceId: "antigravity_work" });
   });
 
   it("does not borrow provider-only sticky selections for a custom target instance", () => {
@@ -125,19 +70,19 @@ describe("threadHandoff", () => {
             model: "claude-sonnet-4-6",
           },
         },
-        targetProvider: "gemini",
-        targetProviderInstanceId: "gemini_work",
+        targetProvider: "antigravity",
+        targetProviderInstanceId: "antigravity_work",
         projectDefaultModelSelection: null,
         stickyModelSelectionByProvider: {
-          gemini: {
-            instanceId: "gemini",
+          antigravity: {
+            instanceId: "antigravity",
             model: "gemini-3.1-pro-preview",
           },
         },
       }),
     ).toEqual({
-      instanceId: "gemini_work",
-      model: "auto-gemini-3",
+      instanceId: "antigravity_work",
+      model: "Gemini 3.5 Flash",
     });
   });
 
@@ -169,8 +114,8 @@ describe("threadHandoff", () => {
       resolveThreadHandoffModelSelection({
         sourceThread: {
           modelSelection: {
-            instanceId: "gemini",
-            model: "gemini-2.5-pro",
+            instanceId: "antigravity",
+            model: "gemini-3.1-pro-preview",
           },
         },
         targetProvider: "codex",
