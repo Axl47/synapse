@@ -4744,7 +4744,7 @@ export default function Sidebar() {
                         tooltip="Choose project"
                         tooltipSide="right"
                       />
-                      <MenuPopup
+                      <ComposerPickerMenuPopup
                         align="end"
                         side="right"
                         className="max-h-72 min-w-48 overflow-y-auto"
@@ -4764,7 +4764,7 @@ export default function Sidebar() {
                             </MenuItem>
                           ))}
                         </MenuGroup>
-                      </MenuPopup>
+                      </ComposerPickerMenuPopup>
                     </Menu>
                   </div>
                 </SidebarMenuItem>

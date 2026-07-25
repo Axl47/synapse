@@ -334,6 +334,7 @@ import {
 } from "../appSettings";
 import { isTerminalFocused } from "../lib/terminalFocus";
 import { isEditableEventTarget } from "../lib/editableEventTarget";
+import { isProviderKind } from "../providerOrdering";
 import {
   type ComposerFileAttachment,
   type ComposerImageAttachment,
