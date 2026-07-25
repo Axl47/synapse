@@ -9,6 +9,7 @@ import {
   ClockIcon,
   CopyIcon,
   ExternalLinkIcon,
+  FolderIcon,
   FolderOpenIcon,
   GiftIcon,
   InfoIcon,
