@@ -324,7 +324,8 @@ import { readNativeApi } from "~/nativeApi";
 import { promoteThreadCreate } from "~/lib/threadCreatePromotion";
 import { readFavoriteModelSlugs } from "~/lib/modelFavorites";
 import {
-  getCustomBinaryPathForProvider,
+  getCustomBinaryPathForProviderInstance,
+  getProviderInstanceOptions,
   getProviderStartOptions,
   resolveSelectableProviderInstanceId,
   resolveAppModelSelection,
@@ -361,6 +362,7 @@ import {
   formatTerminalContextLabel,
   insertInlineTerminalContextPlaceholder,
   removeInlineTerminalContextPlaceholder,
+  stripInlineTerminalContextPlaceholders,
   syncTerminalContextsByIds,
   terminalContextIdListsEqual,
   type TerminalContextDraft,
@@ -452,6 +454,7 @@ import { buildTurnDiffSummaryByAssistantMessageId } from "./chat/MessagesTimelin
 import { deriveAgentActivityTimelineState } from "./chat/agentActivity.logic";
 import { ExpandedImagePreview } from "./chat/ExpandedImagePreview";
 import {
+  AVAILABLE_PROVIDER_OPTIONS,
   ProviderModelPicker,
   type ProviderModelFavorite,
   type ProviderModelOptionsByProviderInstance,
@@ -1245,6 +1248,19 @@ export default function ChatView({
   const composerMentions = composerDraft.mentions;
   const queuedComposerTurns = composerDraft.queuedTurns;
   const restoredSourceProposedPlan = composerDraft.restoredSourceProposedPlan;
+  const [composerPromptHasSendableText, setComposerPromptHasSendableTextState] = useState(
+    () => stripInlineTerminalContextPlaceholders(prompt).trim().length > 0,
+  );
+  const composerPromptHasSendableTextRef = useRef(composerPromptHasSendableText);
+  const syncComposerPromptHasSendableText = useCallback((nextPrompt: string) => {
+    const nextHasSendableText =
+      stripInlineTerminalContextPlaceholders(nextPrompt).trim().length > 0;
+    if (composerPromptHasSendableTextRef.current === nextHasSendableText) {
+      return;
+    }
+    composerPromptHasSendableTextRef.current = nextHasSendableText;
+    setComposerPromptHasSendableTextState(nextHasSendableText);
+  }, []);
   const composerSendState = useMemo(
     () =>
       deriveComposerSendState({
@@ -2296,6 +2312,13 @@ export default function ChatView({
     threadId: ThreadId;
     provider: ProviderKind;
   } | null>(null);
+  const voiceTranscriptionRequestIdRef = useRef(0);
+  const voiceThreadIdRef = useRef(threadId);
+  const voiceProviderRef = useRef<ProviderKind>(selectedProvider);
+  const voiceProviderInstanceRef = useRef<ProviderInstanceId>("codex" as ProviderInstanceId);
+  const voiceRecordingStartedAtRef = useRef<number | null>(null);
+  voiceThreadIdRef.current = threadId;
+  voiceProviderRef.current = selectedProvider;
   const featureFlags = useFeatureFlags();
   const showDebugTaskBanner = import.meta.env.DEV && featureFlags["show-debug-task-banner"];
   const serverConfigQuery = useQuery(serverConfigQueryOptions());
@@ -2337,6 +2360,72 @@ export default function ChatView({
     activeThreadWorktreePath: resolvedThreadWorktreePath,
     activeProjectCwd: activeProject?.cwd ?? null,
     serverCwd: serverConfigQuery.data?.cwd ?? null,
+  });
+  const selectedProviderInstanceId = useMemo<ProviderInstanceId>(() => {
+    let candidateInstanceId: ProviderInstanceId | undefined;
+    const sessionInstanceId =
+      activeThreadSession?.provider === selectedProvider
+        ? activeThreadSession.providerInstanceId
+        : undefined;
+    if (sessionInstanceId) {
+      candidateInstanceId = sessionInstanceId;
+    }
+    if (candidateInstanceId === undefined) {
+      candidateInstanceId = resolveDraftProviderInstanceId({
+        selectedProvider,
+        activeProviderInstanceId: selectedProviderInstanceByThreadId,
+        activeProvider: selectedProviderByThreadId,
+        modelSelections: Object.values(composerDraft.modelSelectionByProvider),
+        resolveProviderForModelSelection,
+      });
+    }
+
+    if (
+      candidateInstanceId === undefined &&
+      activeThreadModelSelection !== null &&
+      activeThreadModelProvider === selectedProvider &&
+      activeThreadModelSelection.instanceId
+    ) {
+      candidateInstanceId = activeThreadModelSelection.instanceId;
+    }
+
+    if (
+      candidateInstanceId === undefined &&
+      activeProject?.defaultModelSelection !== null &&
+      activeProject?.defaultModelSelection !== undefined &&
+      activeProjectDefaultProvider === selectedProvider &&
+      activeProject.defaultModelSelection.instanceId
+    ) {
+      candidateInstanceId = activeProject.defaultModelSelection.instanceId;
+    }
+
+    return resolveSelectableProviderInstanceId(settings, selectedProvider, candidateInstanceId);
+  }, [
+    activeProject?.defaultModelSelection,
+    activeProjectDefaultProvider,
+    activeThreadModelSelection,
+    activeThreadModelProvider,
+    activeThreadSession?.provider,
+    activeThreadSession?.providerInstanceId,
+    composerDraft.modelSelectionByProvider,
+    resolveProviderForModelSelection,
+    selectedProvider,
+    selectedProviderByThreadId,
+    selectedProviderInstanceByThreadId,
+    settings,
+  ]);
+  const selectedProviderInstances = useMemo(
+    () => providerInstances.filter((instance) => instance.provider === selectedProvider),
+    [providerInstances, selectedProvider],
+  );
+  const selectedProviderInstanceLabel = resolveProviderInstanceLabel(
+    selectedProviderInstances,
+    selectedProviderInstanceId,
+  );
+  const showProviderInstancePicker = shouldShowComposerProviderInstancePicker({
+    provider: selectedProvider,
+    selectedProviderInstanceId,
+    providerInstances: selectedProviderInstances,
   });
   const {
     customModelsByProvider,
@@ -4048,6 +4137,38 @@ export default function ChatView({
       },
     });
   }, [diffEnvironmentPending, diffOpen, navigate, onToggleDiffPanel, threadId]);
+  // Open-only diff action for affordances such as the live-changes Review strip.
+  // A second activation must not close an already-open panel.
+  const onOpenDiff = useCallback(() => {
+    if (diffEnvironmentPending || resolvedDiffOpen) {
+      return;
+    }
+    if (onOpenDiffPanel) {
+      onOpenDiffPanel();
+      return;
+    }
+    if (onToggleDiffPanel) {
+      onToggleDiffPanel();
+      return;
+    }
+    void navigate({
+      to: "/$threadId",
+      params: { threadId },
+      replace: true,
+      search: (previous) => ({
+        ...stripDiffSearchParams(previous),
+        panel: "diff",
+        diff: "1",
+      }),
+    });
+  }, [
+    diffEnvironmentPending,
+    navigate,
+    onOpenDiffPanel,
+    onToggleDiffPanel,
+    resolvedDiffOpen,
+    threadId,
+  ]);
   const onToggleBrowser = useCallback(() => {
     if (onToggleBrowserPanel) {
       onToggleBrowserPanel();

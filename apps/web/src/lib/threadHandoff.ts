@@ -59,7 +59,7 @@ export function resolveAvailableHandoffTargets(input: {
   readonly providerInstances: ReadonlyArray<ProviderInstanceOption>;
 }): ReadonlyArray<ThreadHandoffTarget> {
   const sourceInstanceId = input.sourceProviderInstanceId ?? input.sourceProvider;
-  const providerRank = new Map(HANDOFF_PROVIDER_ORDER.map((provider, index) => [provider, index]));
+  const providerRank = new Map(DEFAULT_PROVIDER_ORDER.map((provider, index) => [provider, index]));
   return input.providerInstances
     .filter((instance) => instance.enabled)
     .filter(
@@ -68,8 +68,8 @@ export function resolveAvailableHandoffTargets(input: {
     )
     .toSorted((left, right) => {
       const providerDelta =
-        (providerRank.get(left.provider) ?? HANDOFF_PROVIDER_ORDER.length) -
-        (providerRank.get(right.provider) ?? HANDOFF_PROVIDER_ORDER.length);
+        (providerRank.get(left.provider) ?? DEFAULT_PROVIDER_ORDER.length) -
+        (providerRank.get(right.provider) ?? DEFAULT_PROVIDER_ORDER.length);
       if (providerDelta !== 0) {
         return providerDelta;
       }

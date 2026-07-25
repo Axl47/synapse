@@ -132,6 +132,15 @@ import {
   supportsThreadImport,
 } from "../lib/providerDiscoveryReactQuery";
 import {
+  externalThreadQueryKeys,
+  externalThreadsQueryOptions,
+} from "../lib/externalThreadsReactQuery";
+import {
+  buildThreadImportCandidates,
+  filterThreadImportTargetsByCapabilities,
+  type ThreadImportTarget,
+} from "../lib/threadImport";
+import {
   resolveCurrentProjectTargetId,
   resolveLatestProjectTargetIdWithFallback,
   resolveNewThreadTarget,
@@ -170,6 +179,7 @@ import { shouldRenderTerminalWorkspace } from "./ChatView.logic";
 import { CHAT_SURFACE_HEADER_HEIGHT_CLASS } from "./chat/chatHeaderControls";
 import { SidebarLeadingControls } from "./SidebarHeaderNavigationControls";
 import { SynaraLogo } from "./SynaraLogo";
+import { ProviderIcon } from "./ProviderIcon";
 import { ProjectSidebarIcon } from "./ProjectSidebarIcon";
 import { ThreadHoverCardContent } from "./ThreadHoverCardContent";
 import { ProjectHoverCardContent } from "./ProjectHoverCardContent";
@@ -1283,6 +1293,7 @@ export default function Sidebar() {
   const isOnSettings = useLocation({
     select: (loc) => loc.pathname === "/settings",
   });
+  const isOnWorkspace = pathname.startsWith("/workspace");
   const isOnStudioRoute = pathname.startsWith("/studio");
   const isOnKanban = pathname.startsWith("/kanban");
   const isOnAutomations = pathname.startsWith("/automations");
@@ -1348,6 +1359,10 @@ export default function Sidebar() {
     [automationListQuery.data],
   );
   const { settings: appSettings, updateSettings } = useAppSettings();
+  const sidebarProviderInstances = useMemo(
+    () => getProviderInstanceOptions(appSettings),
+    [appSettings],
+  );
   // Projects is always available; Studio and the standalone Chats footer can be hidden
   // independently from Settings.
   const chatsSectionVisible = appSettings.showChatsSection;
@@ -3222,6 +3237,68 @@ export default function Sidebar() {
     },
     [keybindings],
   );
+  const handleRelocateProjectFolder = useCallback(
+    async (projectId: ProjectId) => {
+      const api = readNativeApi();
+      if (!api) return;
+      const project = projectById.get(projectId);
+      if (!project) return;
+
+      let pickedPath: string | null = null;
+      try {
+        pickedPath = await api.dialogs.pickFolder();
+      } catch (error) {
+        toastManager.add({
+          type: "error",
+          title: "Unable to open folder picker",
+          description:
+            error instanceof Error ? error.message : "Unable to choose a project folder.",
+        });
+        return;
+      }
+
+      if (!pickedPath) return;
+
+      const existing = findWorkspaceRootMatch(projects, pickedPath, (candidate) => candidate.cwd);
+      if (existing?.id === projectId) {
+        toastManager.add({
+          type: "info",
+          title: "Project already uses this folder",
+          description: pickedPath,
+        });
+        return;
+      }
+
+      const nextTitle =
+        project.localName === null
+          ? (pickedPath.split(/[/\\]/).findLast((segment) => segment.length > 0) ??
+            project.remoteName)
+          : undefined;
+
+      try {
+        await api.orchestration.dispatchCommand({
+          type: "project.meta.update",
+          commandId: newCommandId(),
+          projectId,
+          workspaceRoot: pickedPath,
+          ...(nextTitle !== undefined ? { title: nextTitle } : {}),
+        });
+        toastManager.add({
+          type: "success",
+          title: `Relocated "${project.name}"`,
+          description: pickedPath,
+        });
+      } catch (error) {
+        toastManager.add({
+          type: "error",
+          title: `Failed to relocate "${project.name}"`,
+          description:
+            error instanceof Error ? error.message : "Unable to update the project folder.",
+        });
+      }
+    },
+    [projectById, projects],
+  );
   const handleProjectContextMenuAction = useCallback(
     async (projectId: ProjectId, clicked: ProjectContextMenuId) => {
       setProjectContextMenuState(null);
@@ -4541,6 +4618,161 @@ export default function Sidebar() {
           {renderThreadHoverCardPopup(thread, hoverAnchorId)}
         </Tooltip>
       </SidebarMenuSubItem>
+    );
+  }
+
+  function renderExternalThreadRow(candidate: ExternalThreadCandidate) {
+    const key = externalThreadKey(candidate);
+    const isAdopting = adoptingExternalThreadKey === key;
+    const isActiveElsewhere = candidate.status === "active";
+    return (
+      <SidebarMenuSubButton
+        key={key}
+        render={<button type="button" />}
+        size="sm"
+        aria-disabled={isAdopting || isActiveElsewhere}
+        aria-label={
+          isActiveElsewhere
+            ? `${candidate.title}, active in another Codex client`
+            : `Open external Codex task ${candidate.title}`
+        }
+        title={
+          isActiveElsewhere
+            ? "This task is active in another Codex client. It can be adopted after the turn settles."
+            : candidate.cwd
+        }
+        className="h-7 w-full translate-x-0 justify-start gap-2 rounded-lg pr-2 pl-6 text-left text-[length:var(--app-font-size-ui,12px)] text-muted-foreground/89 hover:bg-[var(--sidebar-accent)] disabled:cursor-default disabled:opacity-60"
+        onClick={() => {
+          if (!isAdopting && !isActiveElsewhere) void handleAdoptExternalThread(candidate);
+        }}
+      >
+        <ProviderIcon provider="codex" />
+        <span className="min-w-0 flex-1 truncate">{candidate.title}</span>
+        <span className="shrink-0 text-[length:var(--app-font-size-ui-meta,10px)] text-muted-foreground/58">
+          {isAdopting
+            ? "Opening…"
+            : isActiveElsewhere
+              ? "Active elsewhere"
+              : candidate.sourceKind === "appServer"
+                ? "Codex App"
+                : candidate.sourceKind}
+        </span>
+      </SidebarMenuSubButton>
+    );
+  }
+
+  function renderProjectExternalThreads(projectId: ProjectId) {
+    const candidates = externalThreadGroups.byProjectId.get(projectId) ?? [];
+    if (candidates.length === 0) return null;
+    const open = !collapsedExternalProjectIds.has(projectId);
+    return (
+      <SidebarMenuSubItem className="w-full">
+        <SidebarMenuSubButton
+          render={<button type="button" />}
+          size="sm"
+          aria-expanded={open}
+          className="h-7 w-full translate-x-0 justify-start gap-1 rounded-lg pr-2 pl-6 text-left text-[length:var(--app-font-size-ui-meta,10px)] font-medium text-muted-foreground/68 hover:bg-[var(--sidebar-accent)]"
+          onClick={() =>
+            setCollapsedExternalProjectIds((current) => {
+              const next = new Set(current);
+              if (next.has(projectId)) next.delete(projectId);
+              else next.add(projectId);
+              return next;
+            })
+          }
+        >
+          <span>From Codex · {candidates.length}</span>
+          <DisclosureChevron open={open} className="text-muted-foreground/58" />
+        </SidebarMenuSubButton>
+        <div className={disclosureShellClassName(open)}>
+          <div className={DISCLOSURE_INNER_CLASS}>
+            <div className={cn("space-y-0.5", disclosureContentClassName(open))}>
+              {candidates.map(renderExternalThreadRow)}
+            </div>
+          </div>
+        </div>
+      </SidebarMenuSubItem>
+    );
+  }
+
+  function renderUnmatchedExternalThreadsSection() {
+    const candidates = externalThreadGroups.unmatched;
+    if (candidates.length === 0) return null;
+    return (
+      <div className="mt-3 group/collapsible">
+        <SidebarMenuButton
+          size="sm"
+          aria-expanded={unmatchedExternalExpanded}
+          className={cn(
+            SIDEBAR_HEADER_ROW_CLASS_NAME,
+            SIDEBAR_ROW_IDLE_TEXT_CLASS_NAME,
+            SIDEBAR_ROW_HOVER_CLASS_NAME,
+            "cursor-pointer",
+          )}
+          onClick={() => setUnmatchedExternalExpanded((current) => !current)}
+        >
+          <span className="min-w-0 flex-1 truncate text-[length:var(--app-font-size-ui,12px)] text-muted-foreground/79">
+            Other Codex tasks · {candidates.length}
+          </span>
+          <DisclosureChevron open={unmatchedExternalExpanded} />
+        </SidebarMenuButton>
+        <div className={cn(disclosureShellClassName(unmatchedExternalExpanded), "pt-1")}>
+          <div className={DISCLOSURE_INNER_CLASS}>
+            <SidebarMenu
+              className={cn("gap-0.5", disclosureContentClassName(unmatchedExternalExpanded))}
+            >
+              {candidates.map((candidate) => (
+                <SidebarMenuItem key={externalThreadKey(candidate)}>
+                  <div className="flex min-w-0 items-center gap-1">
+                    <SidebarMenuButton
+                      size="sm"
+                      className="h-8 min-w-0 flex-1 gap-2 rounded-lg pl-6 pr-2 text-[length:var(--app-font-size-ui,12px)] text-muted-foreground/89 hover:bg-[var(--sidebar-accent)]"
+                      title={`${candidate.cwd} — add this folder as a project`}
+                      onClick={() => void handleAddProjectForExternalThread(candidate)}
+                    >
+                      <ProviderIcon provider="codex" />
+                      <span className="min-w-0 flex-1 truncate">{candidate.title}</span>
+                      <span className="shrink-0 text-[length:var(--app-font-size-ui-meta,10px)] text-muted-foreground/58">
+                        Add project
+                      </span>
+                    </SidebarMenuButton>
+                    <Menu>
+                      <SidebarIconButton
+                        render={<MenuTrigger />}
+                        icon={FolderOpenIcon}
+                        label={`Choose project for ${candidate.title}`}
+                        tooltip="Choose project"
+                        tooltipSide="right"
+                      />
+                      <MenuPopup
+                        align="end"
+                        side="right"
+                        className="max-h-72 min-w-48 overflow-y-auto"
+                      >
+                        <MenuGroup>
+                          {sortedProjects.map((project) => (
+                            <MenuItem
+                              key={project.id}
+                              onClick={() => void handleAdoptExternalThread(candidate, project.id)}
+                            >
+                              <ProjectSidebarIcon
+                                cwd={project.cwd}
+                                expanded={false}
+                                glyphClassName="size-4"
+                              />
+                              <span className="truncate">{project.name}</span>
+                            </MenuItem>
+                          ))}
+                        </MenuGroup>
+                      </MenuPopup>
+                    </Menu>
+                  </div>
+                </SidebarMenuItem>
+              ))}
+            </SidebarMenu>
+          </div>
+        </div>
+      </div>
     );
   }
 

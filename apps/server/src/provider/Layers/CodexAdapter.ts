@@ -241,6 +241,11 @@ function asString(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;
 }
 
+function asTrimmedString(value: unknown): string | undefined {
+  const text = asString(value)?.trim();
+  return text ? text : undefined;
+}
+
 function asArray(value: unknown): unknown[] | undefined {
   return Array.isArray(value) ? value : undefined;
 }
@@ -1508,27 +1513,30 @@ function mapToRuntimeEvents(
   }
 
   if (event.method === "deprecationNotice") {
+    const details = asTrimmedString(payload?.details);
     return [
       {
         type: "deprecation.notice",
         ...runtimeEventBase(event, canonicalThreadId),
         payload: {
-          summary: asString(payload?.summary) ?? "Deprecation notice",
-          ...(asString(payload?.details) ? { details: asString(payload?.details) } : {}),
+          summary: asTrimmedString(payload?.summary) ?? "Deprecation notice",
+          ...(details ? { details } : {}),
         },
       },
     ];
   }
 
   if (event.method === "configWarning") {
+    const details = asTrimmedString(payload?.details);
+    const warningPath = asTrimmedString(payload?.path);
     return [
       {
         type: "config.warning",
         ...runtimeEventBase(event, canonicalThreadId),
         payload: {
-          summary: asString(payload?.summary) ?? "Configuration warning",
-          ...(asString(payload?.details) ? { details: asString(payload?.details) } : {}),
-          ...(asString(payload?.path) ? { path: asString(payload?.path) } : {}),
+          summary: asTrimmedString(payload?.summary) ?? "Configuration warning",
+          ...(details ? { details } : {}),
+          ...(warningPath ? { path: warningPath } : {}),
           ...(payload?.range !== undefined ? { range: payload.range } : {}),
         },
       },

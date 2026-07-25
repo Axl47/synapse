@@ -17,9 +17,6 @@ import {
   type CanonicalItemType,
   type CanonicalRequestType,
   EventId,
-  type GeminiModelOptions,
-  type GeminiThinkingBudget,
-  type GeminiThinkingLevel,
   MODEL_OPTIONS_BY_PROVIDER,
   type ProviderComposerCapabilities,
   type ProviderListModelsResult,
@@ -34,13 +31,8 @@ import {
   TurnId,
 } from "@synara/contracts";
 import {
-  geminiModelOptionsFromEffortValue,
-  getModelCapabilities,
-  getGeminiThinkingConfigKind,
-  getGeminiThinkingModelAlias,
   getModelSelectionStringOptionValue,
   hasEffortLevel,
-  resolveGeminiApiModelId,
 } from "@synara/shared/model";
 import { prepareWindowsSafeProcess } from "@synara/shared/windowsProcess";
 import { Effect, FileSystem, Layer, Queue, Stream } from "effect";
@@ -57,6 +49,16 @@ import {
   type ProviderAdapterError,
 } from "../Errors.ts";
 import { probeGeminiCapabilities } from "../geminiAcpProbe.ts";
+import {
+  geminiCapabilitiesForModel,
+  geminiModelOptionsFromEffortValue,
+  getGeminiThinkingConfigKind,
+  getGeminiThinkingModelAlias,
+  resolveGeminiApiModelId,
+  type GeminiModelOptions,
+  type GeminiThinkingBudget,
+  type GeminiThinkingLevel,
+} from "../geminiModelCapabilities.ts";
 import { GeminiAdapter, type GeminiAdapterShape } from "../Services/GeminiAdapter.ts";
 import { resolveProviderSessionInstanceId } from "../Services/ProviderAdapter.ts";
 import { asArray, asNumber, asRecord, asString, trimToUndefined } from "../geminiValue.ts";
@@ -207,7 +209,7 @@ export function buildGeminiThinkingModelConfigAliases(
       continue;
     }
     seen.add(model);
-    const caps = getModelCapabilities("gemini", model);
+    const caps = geminiCapabilitiesForModel(model);
 
     switch (getGeminiThinkingConfigKind(model)) {
       case "level": {

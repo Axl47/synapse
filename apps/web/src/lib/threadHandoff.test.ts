@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildThreadHandoffImportedActivities,
   resolveAvailableHandoffTargetProviders,
+  resolveAvailableHandoffTargets,
   resolveThreadHandoffTitle,
   resolveThreadHandoffModelSelection,
 } from "./threadHandoff";
@@ -48,6 +49,56 @@ describe("threadHandoff", () => {
         providers.filter((provider) => provider !== source),
       );
     }
+  });
+
+  it("orders enabled handoff instances by the shared provider order", () => {
+    expect(
+      resolveAvailableHandoffTargets({
+        sourceProvider: "codex",
+        sourceProviderInstanceId: "codex",
+        providerInstances: [
+          {
+            provider: "claudeAgent",
+            instanceId: "claude_work",
+            label: "Work",
+            enabled: true,
+            isDefault: false,
+          },
+          {
+            provider: "codex",
+            instanceId: "codex",
+            label: "Codex",
+            enabled: true,
+            isDefault: true,
+          },
+          {
+            provider: "claudeAgent",
+            instanceId: "claudeAgent",
+            label: "Claude",
+            enabled: true,
+            isDefault: true,
+          },
+          {
+            provider: "cursor",
+            instanceId: "cursor",
+            label: "Cursor",
+            enabled: false,
+            isDefault: true,
+          },
+        ],
+      }),
+    ).toEqual([
+      {
+        provider: "claudeAgent",
+        instanceId: "claudeAgent",
+        label: "Claude",
+      },
+      {
+        provider: "claudeAgent",
+        instanceId: "claude_work",
+        label: "Work",
+      },
+    ]);
   });
 
   it("preserves the source thread title for the created handoff thread", () => {

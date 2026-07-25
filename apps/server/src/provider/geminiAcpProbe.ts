@@ -12,7 +12,7 @@ import {
   GEMINI_2_5_MODEL_CAPABILITIES,
   GEMINI_3_MODEL_CAPABILITIES,
   geminiCapabilitiesForModel,
-} from "@synara/shared/model";
+} from "./geminiModelCapabilities.ts";
 import { prepareWindowsSafeProcess } from "@synara/shared/windowsProcess";
 import { Effect } from "effect";
 import { asNumber, asRecord, trimToUndefined } from "./geminiValue.ts";
