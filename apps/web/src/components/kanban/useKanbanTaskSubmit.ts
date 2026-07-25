@@ -17,7 +17,7 @@ import type {
 } from "@synara/contracts";
 import { inferLegacyProviderKindFromModelSelection } from "@synara/shared/providerInstances";
 import { useNavigate } from "@tanstack/react-router";
-import { useCallback, useRef, useState } from "react";
+import { useRef, useState } from "react";
 
 import type { ProviderInstanceOption } from "~/appSettings";
 import { toastManager } from "~/components/ui/toast";
@@ -83,7 +83,7 @@ export function useKanbanTaskSubmit(input: UseKanbanTaskSubmitInput) {
   const canCreate =
     selectedProjectId !== null && hasSendableContent && selectedModel !== null && !isCreating;
 
-  const handleCreate = useCallback(async () => {
+  const handleCreate = async () => {
     if (
       !selectedProjectId ||
       !hasSendableContent ||
@@ -200,29 +200,7 @@ export function useKanbanTaskSubmit(input: UseKanbanTaskSubmitInput) {
         isCreatingRef.current = false;
         setIsCreating(false);
       });
-  }, [
-    assistantDeliveryMode,
-    defaultProvider,
-    envMode,
-    hasSendableContent,
-    interactionMode,
-    isCreating,
-    navigate,
-    onOpenChange,
-    providerOptionsForDispatch,
-    providerInstances,
-    providerStatuses,
-    refreshProviderStatuses,
-    runtimeMode,
-    scratchThreadId,
-    selectedModel,
-    selectedProviderInstanceId,
-    selectedProjectId,
-    selectedProvider,
-    sendAsDraft,
-    taskPreview,
-    trimmedPrompt,
-  ]);
+  };
 
   return {
     isCreating,

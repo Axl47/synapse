@@ -7,7 +7,7 @@
 import type { FileDiffMetadata } from "@pierre/diffs/react";
 import type { ThreadId, TurnId } from "@synara/contracts";
 import { FaPlusMinus } from "react-icons/fa6";
-import { memo, useMemo, useState, type ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 
 import GitActionsControl from "~/components/GitActionsControl";
 import {
@@ -150,30 +150,23 @@ function resolveTurnNumber(
   );
 }
 
-export const DiffPanelToolbar = memo(function DiffPanelToolbar(props: DiffPanelToolbarProps) {
+export const DiffPanelToolbar = function DiffPanelToolbar(props: DiffPanelToolbarProps) {
   const [visibleTurnCount, setVisibleTurnCount] = useState(INITIAL_VISIBLE_TURN_COUNT);
-  const scopePickerLabel = useMemo(
-    () => resolveDiffPanelPickerLabel(props.viewSource, props.turnScopeIntent),
-    [props.turnScopeIntent, props.viewSource],
-  );
+  const scopePickerLabel = resolveDiffPanelPickerLabel(props.viewSource, props.turnScopeIntent);
 
-  const scopePickerIcon = useMemo((): ReactNode => {
-    if (props.viewSource.kind === "turn") {
-      return <FaPlusMinus className="size-2.5 text-[var(--color-text-foreground)]" />;
-    }
-    return <ChangesIcon className={DIFF_PANEL_PICKER_ICON_CLASS_NAME} />;
-  }, [props.viewSource.kind]);
+  let scopePickerIcon: ReactNode;
+  if (props.viewSource.kind === "turn") {
+    scopePickerIcon = <FaPlusMinus className="size-2.5 text-[var(--color-text-foreground)]" />;
+  } else {
+    scopePickerIcon = <ChangesIcon className={DIFF_PANEL_PICKER_ICON_CLASS_NAME} />;
+  }
 
   const scopePickerCount =
     props.viewSource.kind === "repo" ? props.scopeFileCounts[props.viewSource.scope] : undefined;
 
-  const selectedTurnSummary = useMemo(
-    () =>
-      props.selectedTurnId
-        ? props.orderedTurnDiffSummaries.find((summary) => summary.turnId === props.selectedTurnId)
-        : undefined,
-    [props.orderedTurnDiffSummaries, props.selectedTurnId],
-  );
+  const selectedTurnSummary = props.selectedTurnId
+    ? props.orderedTurnDiffSummaries.find((summary) => summary.turnId === props.selectedTurnId)
+    : undefined;
   const turnsMenuLabel =
     props.viewSource.kind === "turn" && props.selectedTurnId === null
       ? "All turns"
@@ -316,37 +309,23 @@ export const DiffPanelToolbar = memo(function DiffPanelToolbar(props: DiffPanelT
             >
               <MenuGroup>
                 <MenuGroupLabel>View</MenuGroupLabel>
-                <div
-                  className="mx-2 mb-1 grid grid-cols-2 rounded-lg bg-[var(--color-background-elevated-secondary)] p-0.5"
-                  role="radiogroup"
-                  aria-label="Diff view"
+                <MenuRadioGroup
+                  value={props.diffRenderMode}
+                  onValueChange={(value) => {
+                    if (value === "stacked" || value === "split") {
+                      props.onDiffRenderModeChange(value);
+                    }
+                  }}
                 >
-                  {(["stacked", "split"] as const).map((mode) => {
-                    const selected = props.diffRenderMode === mode;
-                    return (
-                      <button
-                        key={mode}
-                        type="button"
-                        role="radio"
-                        aria-checked={selected}
-                        className={cn(
-                          "flex h-7 min-w-0 cursor-pointer items-center justify-center gap-1.5 rounded-md px-2 text-[11px] transition-colors",
-                          selected
-                            ? "bg-[var(--color-background-button-secondary)] text-[var(--color-text-foreground)]"
-                            : "text-muted-foreground hover:text-foreground",
-                        )}
-                        onClick={() => props.onDiffRenderModeChange(mode)}
-                      >
-                        {mode === "stacked" ? (
-                          <Rows3Icon className="size-3.5 shrink-0" />
-                        ) : (
-                          <Columns2Icon className="size-3.5 shrink-0" />
-                        )}
-                        <span className="truncate">{mode === "stacked" ? "Stacked" : "Split"}</span>
-                      </button>
-                    );
-                  })}
-                </div>
+                  <MenuRadioItem value="stacked">
+                    <Rows3Icon className={DIFF_PANEL_PICKER_ICON_CLASS_NAME} />
+                    <span>Stacked</span>
+                  </MenuRadioItem>
+                  <MenuRadioItem value="split">
+                    <Columns2Icon className={DIFF_PANEL_PICKER_ICON_CLASS_NAME} />
+                    <span>Split</span>
+                  </MenuRadioItem>
+                </MenuRadioGroup>
                 <MenuCheckboxItem
                   checked={props.diffIgnoreWhitespace}
                   variant="switch"
@@ -512,4 +491,4 @@ export const DiffPanelToolbar = memo(function DiffPanelToolbar(props: DiffPanelT
       </div>
     </div>
   );
-});
+};

@@ -87,12 +87,12 @@ import {
   detailFromResult,
   extractAuthBoolean,
   extractAuthMethod,
-  isCommandMissingCause,
   nonEmptyTrimmed,
   PROVIDER_COMMAND_TIMEOUT_DETAIL,
   toTitleCaseWords,
   type CommandResult,
 } from "../providerCliOutput";
+import { probeProviderCliVersion } from "../providerCliVersionProbe";
 import { ProviderHealth, type ProviderHealthShape } from "../Services/ProviderHealth";
 import {
   orderProviderStatuses,
@@ -1131,13 +1131,13 @@ export const makeCheckCodexProviderStatus = (
     }
 
     // Probe 1: `codex --version` — is the CLI reachable?
-    const versionProbe = yield* runCodexCommand(["--version"], executable, probeEnv).pipe(
-      Effect.timeoutOption(DEFAULT_TIMEOUT_MS),
-      Effect.result,
+    const versionProbe = yield* probeProviderCliVersion(
+      runCodexCommand(["--version"], executable, probeEnv),
+      DEFAULT_TIMEOUT_MS,
     );
 
-    if (Result.isFailure(versionProbe)) {
-      const error = versionProbe.failure;
+    if (versionProbe.outcome === "missing" || versionProbe.outcome === "failure") {
+      const error = versionProbe.cause;
       return {
         provider: CODEX_PROVIDER,
         instanceId: CODEX_PROVIDER,
@@ -1146,13 +1146,14 @@ export const makeCheckCodexProviderStatus = (
         available: false,
         authStatus: "unknown" as const,
         checkedAt,
-        message: isCommandMissingCause(error)
-          ? "Codex CLI (`codex`) is not installed or not on PATH."
-          : `Failed to execute Codex CLI health check: ${error instanceof Error ? error.message : String(error)}.`,
+        message:
+          versionProbe.outcome === "missing"
+            ? "Codex CLI (`codex`) is not installed or not on PATH."
+            : `Failed to execute Codex CLI health check: ${error instanceof Error ? error.message : String(error)}.`,
       };
     }
 
-    if (Option.isNone(versionProbe.success)) {
+    if (versionProbe.outcome === "timeout") {
       return {
         provider: CODEX_PROVIDER,
         instanceId: CODEX_PROVIDER,
@@ -1165,8 +1166,8 @@ export const makeCheckCodexProviderStatus = (
       };
     }
 
-    const version = versionProbe.success.value;
-    if (version.code !== 0) {
+    if (versionProbe.outcome === "nonzero") {
+      const version = versionProbe.result;
       const detail = detailFromResult(version);
       return {
         provider: CODEX_PROVIDER,
@@ -1181,6 +1182,7 @@ export const makeCheckCodexProviderStatus = (
           : "Codex CLI is installed but failed to run.",
       };
     }
+    const version = versionProbe.result;
 
     const parsedVersion = parseCodexCliVersion(`${version.stdout}\n${version.stderr}`);
     if (!parsedVersion) {
@@ -1328,13 +1330,13 @@ export const makeCheckClaudeProviderStatus = (
     });
 
     // Probe 1: `claude --version` — is the CLI reachable?
-    const versionProbe = yield* runClaudeCommand(["--version"], executable, probeEnv).pipe(
-      Effect.timeoutOption(CLAUDE_HEALTH_TIMEOUT_MS),
-      Effect.result,
+    const versionProbe = yield* probeProviderCliVersion(
+      runClaudeCommand(["--version"], executable, probeEnv),
+      CLAUDE_HEALTH_TIMEOUT_MS,
     );
 
-    if (Result.isFailure(versionProbe)) {
-      const error = versionProbe.failure;
+    if (versionProbe.outcome === "missing" || versionProbe.outcome === "failure") {
+      const error = versionProbe.cause;
       return {
         provider: CLAUDE_AGENT_PROVIDER,
         instanceId: CLAUDE_AGENT_PROVIDER,
@@ -1343,13 +1345,14 @@ export const makeCheckClaudeProviderStatus = (
         available: false,
         authStatus: "unknown" as const,
         checkedAt,
-        message: isCommandMissingCause(error)
-          ? "Claude Agent CLI (`claude`) is not installed or not on PATH."
-          : `Failed to execute Claude Agent CLI health check: ${error instanceof Error ? error.message : String(error)}.`,
+        message:
+          versionProbe.outcome === "missing"
+            ? "Claude Agent CLI (`claude`) is not installed or not on PATH."
+            : `Failed to execute Claude Agent CLI health check: ${error instanceof Error ? error.message : String(error)}.`,
       };
     }
 
-    if (Option.isNone(versionProbe.success)) {
+    if (versionProbe.outcome === "timeout") {
       return {
         provider: CLAUDE_AGENT_PROVIDER,
         instanceId: CLAUDE_AGENT_PROVIDER,
@@ -1363,8 +1366,8 @@ export const makeCheckClaudeProviderStatus = (
       };
     }
 
-    const version = versionProbe.success.value;
-    if (version.code !== 0) {
+    if (versionProbe.outcome === "nonzero") {
+      const version = versionProbe.result;
       const detail = detailFromResult(version);
       return {
         provider: CLAUDE_AGENT_PROVIDER,
@@ -1379,6 +1382,7 @@ export const makeCheckClaudeProviderStatus = (
           : "Claude Agent CLI is installed but failed to run.",
       };
     }
+    const version = versionProbe.result;
     const parsedVersion = parseGenericCliVersion(`${version.stdout}\n${version.stderr}`);
 
     // Probe 2: `claude auth status` — is the user authenticated? The command can
@@ -1633,13 +1637,13 @@ export const makeCheckGrokProviderStatus = (
     }
     const probeEnv = probeEnvResult.env;
 
-    const versionProbe = yield* runGrokCommand(["--version"], executable, probeEnv).pipe(
-      Effect.timeoutOption(DEFAULT_TIMEOUT_MS),
-      Effect.result,
+    const versionProbe = yield* probeProviderCliVersion(
+      runGrokCommand(["--version"], executable, probeEnv),
+      DEFAULT_TIMEOUT_MS,
     );
 
-    if (Result.isFailure(versionProbe)) {
-      const error = versionProbe.failure;
+    if (versionProbe.outcome === "missing" || versionProbe.outcome === "failure") {
+      const error = versionProbe.cause;
       return {
         provider: GROK_PROVIDER,
         instanceId: GROK_PROVIDER,
@@ -1648,13 +1652,14 @@ export const makeCheckGrokProviderStatus = (
         available: false,
         authStatus: "unknown" as const,
         checkedAt,
-        message: isCommandMissingCause(error)
-          ? "Grok CLI (`grok`) is not installed or not on PATH."
-          : `Failed to execute Grok CLI health check: ${error instanceof Error ? error.message : String(error)}.`,
+        message:
+          versionProbe.outcome === "missing"
+            ? "Grok CLI (`grok`) is not installed or not on PATH."
+            : `Failed to execute Grok CLI health check: ${error instanceof Error ? error.message : String(error)}.`,
       } satisfies ServerProviderStatus;
     }
 
-    if (Option.isNone(versionProbe.success)) {
+    if (versionProbe.outcome === "timeout") {
       return {
         provider: GROK_PROVIDER,
         instanceId: GROK_PROVIDER,
@@ -1667,8 +1672,8 @@ export const makeCheckGrokProviderStatus = (
       } satisfies ServerProviderStatus;
     }
 
-    const version = versionProbe.success.value;
-    if (version.code !== 0) {
+    if (versionProbe.outcome === "nonzero") {
+      const version = versionProbe.result;
       const detail = detailFromResult(version);
       return {
         provider: GROK_PROVIDER,
@@ -1683,6 +1688,7 @@ export const makeCheckGrokProviderStatus = (
           : "Grok CLI is installed but failed to run.",
       } satisfies ServerProviderStatus;
     }
+    const version = versionProbe.result;
     const parsedVersion = parseGenericCliVersion(`${version.stdout}\n${version.stderr}`);
     const hasApiKey = hasGrokApiKeyEnv(probeEnv);
 
@@ -1744,6 +1750,82 @@ function openCodeCompatibleExternalServerStatus(input: {
   } satisfies ServerProviderStatus;
 }
 
+// ── Droid health check ─────────────────────────────────────────────
+
+const runDroidCommand = (args: ReadonlyArray<string>, executable = "droid") =>
+  runProviderCommand(executable, args, providerCommandEnv(DROID_PROVIDER));
+
+export const makeCheckDroidProviderStatus = (
+  binaryPath?: string,
+): Effect.Effect<ServerProviderStatus, never, ChildProcessSpawner.ChildProcessSpawner> =>
+  Effect.gen(function* () {
+    const checkedAt = new Date().toISOString();
+    const executable = resolveDroidCliBinaryPath(nonEmptyTrimmed(binaryPath) ?? undefined);
+    const versionProbe = yield* probeProviderCliVersion(
+      runDroidCommand(["--version"], executable),
+      DEFAULT_TIMEOUT_MS,
+    );
+
+    if (versionProbe.outcome === "missing" || versionProbe.outcome === "failure") {
+      const error = versionProbe.cause;
+      return {
+        provider: DROID_PROVIDER,
+        status: "error" as const,
+        available: false,
+        authStatus: "unknown" as const,
+        checkedAt,
+        message:
+          versionProbe.outcome === "missing"
+            ? "Droid CLI (`droid`) is not installed or not on PATH."
+            : `Failed to execute Droid CLI health check: ${error instanceof Error ? error.message : String(error)}.`,
+      } satisfies ServerProviderStatus;
+    }
+    if (versionProbe.outcome === "timeout") {
+      return {
+        provider: DROID_PROVIDER,
+        status: "error" as const,
+        available: false,
+        authStatus: "unknown" as const,
+        checkedAt,
+        message: "Droid CLI is installed but failed to run. Timed out while running command.",
+      } satisfies ServerProviderStatus;
+    }
+    if (versionProbe.outcome === "nonzero") {
+      const detail = detailFromResult(versionProbe.result);
+      return {
+        provider: DROID_PROVIDER,
+        status: "error" as const,
+        available: false,
+        authStatus: "unknown" as const,
+        checkedAt,
+        message: detail
+          ? `Droid CLI is installed but failed to run. ${detail}`
+          : "Droid CLI is installed but failed to run.",
+      } satisfies ServerProviderStatus;
+    }
+
+    const parsedVersion = parseGenericCliVersion(
+      `${versionProbe.result.stdout}\n${versionProbe.result.stderr}`,
+    );
+    const hasApiKey = hasDroidApiKeyEnv();
+    return {
+      provider: DROID_PROVIDER,
+      status: "ready" as const,
+      available: true,
+      authStatus: hasApiKey ? ("authenticated" as const) : ("unknown" as const),
+      version: parsedVersion,
+      checkedAt,
+      ...(hasApiKey
+        ? { authType: "apiKey", authLabel: "Factory API Key" }
+        : {
+            message:
+              "Droid CLI is installed. Synara can use the CLI's cached device-pairing login; run `droid` to authenticate locally if needed, or set FACTORY_API_KEY.",
+          }),
+    } satisfies ServerProviderStatus;
+  });
+
+export const checkDroidProviderStatus = makeCheckDroidProviderStatus();
+
 // ── OpenCode health check ───────────────────────────────────────────
 
 export const makeCheckOpenCodeProviderStatus = (
@@ -1777,13 +1859,13 @@ export const makeCheckOpenCodeProviderStatus = (
     }
     const probeEnv = probeEnvResult.env;
 
-    const versionProbe = yield* runOpenCodeCommand(["--version"], executable, probeEnv).pipe(
-      Effect.timeoutOption(OPENCODE_HEALTH_TIMEOUT_MS),
-      Effect.result,
+    const versionProbe = yield* probeProviderCliVersion(
+      runOpenCodeCommand(["--version"], executable, probeEnv),
+      OPENCODE_HEALTH_TIMEOUT_MS,
     );
 
-    if (Result.isFailure(versionProbe)) {
-      const error = versionProbe.failure;
+    if (versionProbe.outcome === "missing" || versionProbe.outcome === "failure") {
+      const error = versionProbe.cause;
       return {
         provider: OPENCODE_PROVIDER,
         instanceId: OPENCODE_PROVIDER,
@@ -1792,13 +1874,14 @@ export const makeCheckOpenCodeProviderStatus = (
         available: false,
         authStatus: "unknown" as const,
         checkedAt,
-        message: isCommandMissingCause(error)
-          ? "OpenCode CLI (`opencode`) is not installed or not on PATH."
-          : `Failed to execute OpenCode CLI health check: ${error instanceof Error ? error.message : String(error)}.`,
+        message:
+          versionProbe.outcome === "missing"
+            ? "OpenCode CLI (`opencode`) is not installed or not on PATH."
+            : `Failed to execute OpenCode CLI health check: ${error instanceof Error ? error.message : String(error)}.`,
       } satisfies ServerProviderStatus;
     }
 
-    if (Option.isNone(versionProbe.success)) {
+    if (versionProbe.outcome === "timeout") {
       return {
         provider: OPENCODE_PROVIDER,
         instanceId: OPENCODE_PROVIDER,
@@ -1811,8 +1894,8 @@ export const makeCheckOpenCodeProviderStatus = (
       } satisfies ServerProviderStatus;
     }
 
-    const version = versionProbe.success.value;
-    if (version.code !== 0) {
+    if (versionProbe.outcome === "nonzero") {
+      const version = versionProbe.result;
       const detail = detailFromResult(version);
       return {
         provider: OPENCODE_PROVIDER,
@@ -1827,6 +1910,7 @@ export const makeCheckOpenCodeProviderStatus = (
           : "OpenCode CLI is installed but failed to run.",
       } satisfies ServerProviderStatus;
     }
+    const version = versionProbe.result;
     const parsedVersion = parseGenericCliVersion(`${version.stdout}\n${version.stderr}`);
 
     return {
@@ -1876,13 +1960,13 @@ export const makeCheckKiloProviderStatus = (
     }
     const probeEnv = probeEnvResult.env;
 
-    const versionProbe = yield* runKiloCommand(["--version"], executable, probeEnv).pipe(
-      Effect.timeoutOption(DEFAULT_TIMEOUT_MS),
-      Effect.result,
+    const versionProbe = yield* probeProviderCliVersion(
+      runKiloCommand(["--version"], executable, probeEnv),
+      DEFAULT_TIMEOUT_MS,
     );
 
-    if (Result.isFailure(versionProbe)) {
-      const error = versionProbe.failure;
+    if (versionProbe.outcome === "missing" || versionProbe.outcome === "failure") {
+      const error = versionProbe.cause;
       return {
         provider: KILO_PROVIDER,
         instanceId: KILO_PROVIDER,
@@ -1891,13 +1975,14 @@ export const makeCheckKiloProviderStatus = (
         available: false,
         authStatus: "unknown" as const,
         checkedAt,
-        message: isCommandMissingCause(error)
-          ? "Kilo CLI (`kilo`) is not installed or not on PATH."
-          : `Failed to execute Kilo CLI health check: ${error instanceof Error ? error.message : String(error)}.`,
+        message:
+          versionProbe.outcome === "missing"
+            ? "Kilo CLI (`kilo`) is not installed or not on PATH."
+            : `Failed to execute Kilo CLI health check: ${error instanceof Error ? error.message : String(error)}.`,
       } satisfies ServerProviderStatus;
     }
 
-    if (Option.isNone(versionProbe.success)) {
+    if (versionProbe.outcome === "timeout") {
       return {
         provider: KILO_PROVIDER,
         instanceId: KILO_PROVIDER,
@@ -1910,8 +1995,8 @@ export const makeCheckKiloProviderStatus = (
       } satisfies ServerProviderStatus;
     }
 
-    const version = versionProbe.success.value;
-    if (version.code !== 0) {
+    if (versionProbe.outcome === "nonzero") {
+      const version = versionProbe.result;
       const detail = detailFromResult(version);
       return {
         provider: KILO_PROVIDER,
@@ -1926,6 +2011,7 @@ export const makeCheckKiloProviderStatus = (
           : "Kilo CLI is installed but failed to run.",
       } satisfies ServerProviderStatus;
     }
+    const version = versionProbe.result;
     const parsedVersion = parseGenericCliVersion(`${version.stdout}\n${version.stderr}`);
 
     return {
@@ -1961,15 +2047,15 @@ export const checkPiProviderStatus = (
     }
     const probeEnv = probeEnvResult.env;
 
-    const versionProbe = yield* runPiCommand(["--version"], executable, probeEnv).pipe(
-      Effect.timeoutOption(DEFAULT_TIMEOUT_MS),
-      Effect.result,
+    const versionProbe = yield* probeProviderCliVersion(
+      runPiCommand(["--version"], executable, probeEnv),
+      DEFAULT_TIMEOUT_MS,
     );
 
     // Pi itself is SDK-backed in Synara. Keep this CLI probe advisory so health
     // refreshes do not import the SDK and initialize its native clipboard module.
-    if (Result.isFailure(versionProbe)) {
-      const error = versionProbe.failure;
+    if (versionProbe.outcome === "missing" || versionProbe.outcome === "failure") {
+      const error = versionProbe.cause;
       return {
         provider: PI_PROVIDER,
         instanceId: PI_PROVIDER,
@@ -1978,13 +2064,14 @@ export const checkPiProviderStatus = (
         available: true,
         authStatus: "unknown" as const,
         checkedAt,
-        message: isCommandMissingCause(error)
-          ? "Pi SDK is bundled, but the Pi CLI (`pi`) is not on PATH, so Synara could not verify the installed CLI version."
-          : `Pi SDK is bundled, but the CLI health check failed: ${error instanceof Error ? error.message : String(error)}.`,
+        message:
+          versionProbe.outcome === "missing"
+            ? "Pi SDK is bundled, but the Pi CLI (`pi`) is not on PATH, so Synara could not verify the installed CLI version."
+            : `Pi SDK is bundled, but the CLI health check failed: ${error instanceof Error ? error.message : String(error)}.`,
       } satisfies ServerProviderStatus;
     }
 
-    if (Option.isNone(versionProbe.success)) {
+    if (versionProbe.outcome === "timeout") {
       return {
         provider: PI_PROVIDER,
         instanceId: PI_PROVIDER,
@@ -1998,8 +2085,8 @@ export const checkPiProviderStatus = (
       } satisfies ServerProviderStatus;
     }
 
-    const version = versionProbe.success.value;
-    if (version.code !== 0) {
+    if (versionProbe.outcome === "nonzero") {
+      const version = versionProbe.result;
       const detail = detailFromResult(version);
       return {
         provider: PI_PROVIDER,
@@ -2015,6 +2102,7 @@ export const checkPiProviderStatus = (
       } satisfies ServerProviderStatus;
     }
 
+    const version = versionProbe.result;
     const parsedVersion = parseGenericCliVersion(`${version.stdout}\n${version.stderr}`);
     const configuredAgentDir = nonEmptyTrimmed(agentDir);
     return {
@@ -2040,23 +2128,24 @@ export const checkAntigravityProviderStatus = (
   Effect.gen(function* () {
     const checkedAt = new Date().toISOString();
     const executable = nonEmptyTrimmed(binaryPath) ?? "agy";
-    const versionProbe = yield* runAntigravityCommand(["--version"], executable).pipe(
-      Effect.timeoutOption(DEFAULT_TIMEOUT_MS),
-      Effect.result,
+    const versionProbe = yield* probeProviderCliVersion(
+      runAntigravityCommand(["--version"], executable),
+      DEFAULT_TIMEOUT_MS,
     );
-    if (Result.isFailure(versionProbe)) {
+    if (versionProbe.outcome === "missing" || versionProbe.outcome === "failure") {
       return {
         provider: ANTIGRAVITY_PROVIDER,
         status: "error",
         available: false,
         authStatus: "unknown",
         checkedAt,
-        message: isCommandMissingCause(versionProbe.failure)
-          ? "Antigravity CLI (`agy`) is not installed or is not on PATH."
-          : `Antigravity CLI health check failed: ${String(versionProbe.failure)}`,
+        message:
+          versionProbe.outcome === "missing"
+            ? "Antigravity CLI (`agy`) is not installed or is not on PATH."
+            : `Antigravity CLI health check failed: ${String(versionProbe.cause)}`,
       } satisfies ServerProviderStatus;
     }
-    if (Option.isNone(versionProbe.success)) {
+    if (versionProbe.outcome === "timeout") {
       return {
         provider: ANTIGRAVITY_PROVIDER,
         status: "warning",
@@ -2066,8 +2155,8 @@ export const checkAntigravityProviderStatus = (
         message: "Antigravity CLI version check timed out.",
       } satisfies ServerProviderStatus;
     }
-    const version = versionProbe.success.value;
-    if (version.code !== 0) {
+    if (versionProbe.outcome === "nonzero") {
+      const version = versionProbe.result;
       return {
         provider: ANTIGRAVITY_PROVIDER,
         status: "error",
@@ -2077,6 +2166,7 @@ export const checkAntigravityProviderStatus = (
         message: detailFromResult(version) ?? "Antigravity CLI version check failed.",
       } satisfies ServerProviderStatus;
     }
+    const version = versionProbe.result;
     const parsedVersion = parseGenericCliVersion(`${version.stdout}\n${version.stderr}`);
     if (
       parsedVersion !== null &&
@@ -2143,18 +2233,19 @@ export const makeCheckCursorProviderStatus = (
     const inheritedSynaraKeys = Object.keys(environment ?? {}).filter((key) =>
       key.startsWith("SYNARA_"),
     );
-    const versionProbe = yield* runCursorCommand(
+    const versionCommand = runCursorCommand(
       ["--version"],
       executable,
       probeEnv,
       inheritedSynaraKeys,
-    ).pipe(
-      Effect.timeoutOption(DEFAULT_TIMEOUT_MS),
-      Effect.result,
+    );
+    const versionProbe = yield* probeProviderCliVersion(
+      versionCommand,
+      DEFAULT_TIMEOUT_MS,
     );
 
-    if (Result.isFailure(versionProbe)) {
-      const error = versionProbe.failure;
+    if (versionProbe.outcome === "missing" || versionProbe.outcome === "failure") {
+      const error = versionProbe.cause;
       return {
         provider: CURSOR_PROVIDER,
         instanceId: CURSOR_PROVIDER,
@@ -2163,13 +2254,14 @@ export const makeCheckCursorProviderStatus = (
         available: false,
         authStatus: "unknown" as const,
         checkedAt,
-        message: isCommandMissingCause(error)
-          ? "Cursor Agent CLI (`cursor-agent`) is not installed or not on PATH."
-          : `Failed to execute Cursor Agent CLI health check: ${error instanceof Error ? error.message : String(error)}.`,
+        message:
+          versionProbe.outcome === "missing"
+            ? "Cursor Agent CLI (`cursor-agent`) is not installed or not on PATH."
+            : `Failed to execute Cursor Agent CLI health check: ${error instanceof Error ? error.message : String(error)}.`,
       } satisfies ServerProviderStatus;
     }
 
-    if (Option.isNone(versionProbe.success)) {
+    if (versionProbe.outcome === "timeout") {
       return {
         provider: CURSOR_PROVIDER,
         instanceId: CURSOR_PROVIDER,
@@ -2183,8 +2275,8 @@ export const makeCheckCursorProviderStatus = (
       } satisfies ServerProviderStatus;
     }
 
-    const version = versionProbe.success.value;
-    if (version.code !== 0) {
+    if (versionProbe.outcome === "nonzero") {
+      const version = versionProbe.result;
       const detail = detailFromResult(version);
       return {
         provider: CURSOR_PROVIDER,
@@ -2199,6 +2291,7 @@ export const makeCheckCursorProviderStatus = (
           : "Cursor Agent CLI is installed but failed to run.",
       } satisfies ServerProviderStatus;
     }
+    const version = versionProbe.result;
     const parsedVersion = parseGenericCliVersion(`${version.stdout}\n${version.stderr}`);
 
     const authProbe = yield* runCursorCommand(

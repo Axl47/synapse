@@ -7,11 +7,12 @@
  * @module CursorAcpSupport
  */
 import { type CursorModelOptions, type ProviderModelDescriptor } from "@synara/contracts";
-import { formatModelDisplayName } from "@synara/shared/model";
+import { formatModelDisplayName, parseCursorCliReasoningEffort } from "@synara/shared/model";
 import { Effect, Layer, Schema, Scope, ServiceMap } from "effect";
 import { ChildProcessSpawner } from "effect/unstable/process";
-import * as EffectAcpErrors from "effect-acp/errors";
-import * as EffectAcpSchema from "effect-acp/schema";
+import * as AcpErrors from "./AcpErrors.ts";
+import type * as Acp from "@agentclientprotocol/sdk";
+import { SessionConfigOption as SessionConfigOptionCodec } from "./AcpExtensions.ts";
 
 import {
   AcpSessionRuntime,
@@ -39,7 +40,7 @@ export const CURSOR_PARAMETERIZED_MODEL_PICKER_CAPABILITIES = {
   _meta: {
     parameterizedModelPicker: true,
   },
-} satisfies NonNullable<EffectAcpSchema.InitializeRequest["clientCapabilities"]>;
+} satisfies NonNullable<Acp.InitializeRequest["clientCapabilities"]>;
 
 export interface CursorAcpRuntimeInput extends Omit<
   AcpSessionRuntimeOptions,
@@ -50,7 +51,7 @@ export interface CursorAcpRuntimeInput extends Omit<
 }
 
 export interface CursorAcpModelSelectionErrorContext {
-  readonly cause: EffectAcpErrors.AcpError;
+  readonly cause: AcpErrors.AcpError;
   readonly step: "set-config-option" | "set-model";
   readonly configId?: string;
 }
@@ -115,7 +116,7 @@ export function buildCursorCliModelListCommand(
 
 export const makeCursorAcpRuntime = (
   input: CursorAcpRuntimeInput,
-): Effect.Effect<AcpSessionRuntimeShape, EffectAcpErrors.AcpError, Scope.Scope> =>
+): Effect.Effect<AcpSessionRuntimeShape, AcpErrors.AcpError, Scope.Scope> =>
   Effect.gen(function* () {
     const acpContext = yield* Layer.build(
       AcpSessionRuntime.layer({
@@ -138,8 +139,8 @@ interface CursorAcpModelSelectionRuntime {
   readonly setConfigOption: (
     configId: string,
     value: string | boolean,
-  ) => Effect.Effect<unknown, EffectAcpErrors.AcpError>;
-  readonly setModel: (model: string) => Effect.Effect<unknown, EffectAcpErrors.AcpError>;
+  ) => Effect.Effect<unknown, AcpErrors.AcpError>;
+  readonly setModel: (model: string) => Effect.Effect<unknown, AcpErrors.AcpError>;
 }
 
 export function resolveCursorAcpBaseModelId(model: string | null | undefined): string {
@@ -157,7 +158,7 @@ function normalizedText(value: string): string {
 }
 
 function flattenSessionConfigSelectOptions(
-  configOption: EffectAcpSchema.SessionConfigOption | undefined,
+  configOption: Acp.SessionConfigOption | undefined,
 ): ReadonlyArray<CursorAcpSelectOption> {
   if (!configOption || configOption.type !== "select") {
     return [];
@@ -179,15 +180,15 @@ function flattenSessionConfigSelectOptions(
 }
 
 function findCursorModelConfigOption(
-  configOptions: ReadonlyArray<EffectAcpSchema.SessionConfigOption>,
-): EffectAcpSchema.SessionConfigOption | undefined {
+  configOptions: ReadonlyArray<Acp.SessionConfigOption>,
+): Acp.SessionConfigOption | undefined {
   return configOptions.find((option) => option.category === "model");
 }
 
 function findConfigOption(
-  options: ReadonlyArray<EffectAcpSchema.SessionConfigOption>,
+  options: ReadonlyArray<Acp.SessionConfigOption>,
   aliases: ReadonlyArray<string>,
-): EffectAcpSchema.SessionConfigOption | undefined {
+): Acp.SessionConfigOption | undefined {
   const normalizedAliases = aliases.map(normalizedText);
   return options.find((option) => {
     const haystack = normalizedText(`${option.id} ${option.name} ${option.category ?? ""}`);
@@ -336,7 +337,7 @@ function inferCursorUpstreamProvider(choice: CursorAcpSelectOption): {
 }
 
 export function flattenCursorAcpModelChoices(
-  configOptions: ReadonlyArray<EffectAcpSchema.SessionConfigOption>,
+  configOptions: ReadonlyArray<Acp.SessionConfigOption>,
 ): ReadonlyArray<CursorAcpModelChoice> {
   const seen = new Set<string>();
   const choices: Array<CursorAcpModelChoice> = [];
@@ -431,7 +432,7 @@ const CURSOR_ACP_AUTO_MODEL_ID = "default";
 const CursorAcpAvailableModel = Schema.Struct({
   value: Schema.String,
   name: Schema.optional(Schema.Union([Schema.String, Schema.Null])),
-  configOptions: Schema.optional(Schema.Array(EffectAcpSchema.SessionConfigOption)),
+  configOptions: Schema.optional(Schema.Array(SessionConfigOptionCodec)),
 });
 export type CursorAcpAvailableModel = typeof CursorAcpAvailableModel.Type;
 
@@ -449,14 +450,14 @@ function cursorContextWindowLabel(value: string): string {
 }
 
 function findCursorThinkingConfigOption(
-  configOptions: ReadonlyArray<EffectAcpSchema.SessionConfigOption>,
-): EffectAcpSchema.SessionConfigOption | undefined {
+  configOptions: ReadonlyArray<Acp.SessionConfigOption>,
+): Acp.SessionConfigOption | undefined {
   return configOptions.find((option) => option.id.trim().toLowerCase() === "thinking");
 }
 
 function findCursorFastConfigOption(
-  configOptions: ReadonlyArray<EffectAcpSchema.SessionConfigOption>,
-): EffectAcpSchema.SessionConfigOption | undefined {
+  configOptions: ReadonlyArray<Acp.SessionConfigOption>,
+): Acp.SessionConfigOption | undefined {
   return configOptions.find((option) => option.id.trim().toLowerCase() === "fast");
 }
 
@@ -549,12 +550,12 @@ export function buildCursorAcpModelDescriptorsFromAvailableModels(
 export function fetchCursorAcpModelDescriptors(
   runtime: Pick<AcpSessionRuntimeShape, "request">,
   sessionId: string,
-): Effect.Effect<ReadonlyArray<ProviderModelDescriptor>, EffectAcpErrors.AcpError> {
+): Effect.Effect<ReadonlyArray<ProviderModelDescriptor>, AcpErrors.AcpError> {
   return runtime.request(CURSOR_LIST_AVAILABLE_MODELS_METHOD, { sessionId }).pipe(
     Effect.flatMap((raw) =>
       decodeCursorAcpListAvailableModelsResult(raw).pipe(
         Effect.mapError((cause) =>
-          EffectAcpErrors.AcpRequestError.parseError(
+          AcpErrors.AcpRequestError.parseError(
             "Failed to decode Cursor available models response.",
             cause,
           ),
@@ -589,32 +590,6 @@ function normalizeCursorCliBaseModelId(model: string): string {
     return `claude-${family}-${version.replace(".", "-")}`;
   }
   return withoutVariantSuffixes;
-}
-
-function parseCursorCliReasoningEffort(model: string): string | undefined {
-  const tokens = model.trim().toLowerCase().split("-");
-  for (let index = tokens.length - 1; index >= 0; index -= 1) {
-    const token = tokens[index];
-    if (!token) {
-      continue;
-    }
-    if (token === "xhigh") {
-      return "xhigh";
-    }
-    if (token === "high" && tokens[index - 1] === "extra") {
-      return "xhigh";
-    }
-    if (
-      token === "max" ||
-      token === "none" ||
-      token === "low" ||
-      token === "medium" ||
-      token === "high"
-    ) {
-      return token;
-    }
-  }
-  return undefined;
 }
 
 function isCursorCliOneMillionContextModel(model: string): boolean {
@@ -771,7 +746,7 @@ function cursorContextLabel(
   );
 }
 
-function isCursorEffortConfigOption(option: EffectAcpSchema.SessionConfigOption): boolean {
+function isCursorEffortConfigOption(option: Acp.SessionConfigOption): boolean {
   const id = option.id.trim().toLowerCase();
   const name = option.name.trim().toLowerCase();
   return (
@@ -785,8 +760,8 @@ function isCursorEffortConfigOption(option: EffectAcpSchema.SessionConfigOption)
 }
 
 function findCursorEffortConfigOption(
-  configOptions: ReadonlyArray<EffectAcpSchema.SessionConfigOption>,
-): EffectAcpSchema.SessionConfigOption | undefined {
+  configOptions: ReadonlyArray<Acp.SessionConfigOption>,
+): Acp.SessionConfigOption | undefined {
   const candidates = configOptions.filter(
     (option) => option.type === "select" && isCursorEffortConfigOption(option),
   );
@@ -798,7 +773,7 @@ function findCursorEffortConfigOption(
   );
 }
 
-function isCursorContextConfigOption(option: EffectAcpSchema.SessionConfigOption): boolean {
+function isCursorContextConfigOption(option: Acp.SessionConfigOption): boolean {
   const id = option.id.trim().toLowerCase();
   const name = option.name.trim().toLowerCase();
   return id === "context" || id === "context_size" || name.includes("context");
@@ -956,7 +931,7 @@ function expandCursorParameterizedModelDescriptors(input: {
 }
 
 export function buildCursorAcpModelDescriptors(
-  configOptions: ReadonlyArray<EffectAcpSchema.SessionConfigOption>,
+  configOptions: ReadonlyArray<Acp.SessionConfigOption>,
 ): ReadonlyArray<ProviderModelDescriptor> {
   const choices = flattenCursorAcpModelChoices(configOptions);
   if (choices.length === 0) {
@@ -1016,7 +991,7 @@ export function buildCursorAcpModelDescriptors(
 }
 
 function toConfigValue(
-  option: EffectAcpSchema.SessionConfigOption,
+  option: Acp.SessionConfigOption,
   value: string | boolean,
 ): string | boolean | undefined {
   if (option.type === "boolean") {
@@ -1087,7 +1062,7 @@ function resolveCursorChoiceParameterValue(input: {
 }
 
 function cursorModelOptionValueSupported(input: {
-  readonly configOptions: ReadonlyArray<EffectAcpSchema.SessionConfigOption>;
+  readonly configOptions: ReadonlyArray<Acp.SessionConfigOption>;
   readonly choices: ReadonlyArray<CursorAcpModelChoice>;
   readonly baseModel: string;
   readonly aliases: ReadonlyArray<string>;
@@ -1125,7 +1100,7 @@ function cursorModelOptionValueSupported(input: {
 }
 
 function normalizeCursorAcpRuntimeOptions(input: {
-  readonly configOptions: ReadonlyArray<EffectAcpSchema.SessionConfigOption>;
+  readonly configOptions: ReadonlyArray<Acp.SessionConfigOption>;
   readonly choices: ReadonlyArray<CursorAcpModelChoice>;
   readonly baseModel: string;
   readonly options: CursorModelOptions | null | undefined;
@@ -1200,7 +1175,7 @@ function normalizeCursorAcpRuntimeOptions(input: {
 }
 
 function collectCursorAcpConfigUpdates(
-  configOptions: ReadonlyArray<EffectAcpSchema.SessionConfigOption>,
+  configOptions: ReadonlyArray<Acp.SessionConfigOption>,
   options: CursorModelOptions | null | undefined,
 ): ReadonlyArray<{ readonly configId: string; readonly value: string | boolean }> {
   if (!options) return [];
@@ -1323,7 +1298,7 @@ function resolveCursorAutoModelValue(
 }
 
 function resolveCursorAcpModelValue(
-  configOptions: ReadonlyArray<EffectAcpSchema.SessionConfigOption>,
+  configOptions: ReadonlyArray<Acp.SessionConfigOption>,
   model: string | null | undefined,
   options: CursorModelOptions | null | undefined,
 ): string | undefined {

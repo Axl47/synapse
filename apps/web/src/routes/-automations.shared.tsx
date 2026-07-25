@@ -3,7 +3,9 @@ import {
   type AutomationDefinition,
   type AutomationId,
   type AutomationListResult,
+  type AutomationMemory,
   type AutomationMode,
+  type AutomationNotificationPolicy,
   type AutomationRun,
   type AutomationRunResult,
   type AutomationStreamEvent,
@@ -21,7 +23,7 @@ import {
   inferLegacyProviderKindFromModelSelection,
 } from "@synara/shared/providerInstances";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 
 import {
   getProviderInstanceOptions,
@@ -69,8 +71,10 @@ import {
   datetimeLocalFromIso,
   defaultModelSelection,
   formatCadence,
+  formatCadenceLong,
   formatClockTime,
   formatDateTime,
+  formatNextRun,
   formatSchedule,
   formFromDefinition,
   groupHeartbeatAutomationsByTargetThread,
@@ -107,7 +111,11 @@ import { useStore } from "~/store";
 import { resolveThreadPickerTitle } from "./-chatThreadRoute.logic";
 
 export const automationQueryKey = ["automations"] as const;
-export const EMPTY_AUTOMATION_LIST: AutomationListResult = { definitions: [], runs: [] };
+export const EMPTY_AUTOMATION_LIST: AutomationListResult = {
+  definitions: [],
+  runs: [],
+  memories: [],
+};
 
 export {
   acknowledgedRiskIdsForFormWarnings,
@@ -118,8 +126,10 @@ export {
   datetimeLocalFromIso,
   defaultModelSelection,
   formatCadence,
+  formatCadenceLong,
   formatClockTime,
   formatDateTime,
+  formatNextRun,
   formatSchedule,
   formFromDefinition,
   groupHeartbeatAutomationsByTargetThread,
@@ -271,15 +281,13 @@ export function RunStatusIndicator({
 }
 
 export function isTriageRun(run: AutomationRun): boolean {
-  if (run.result) {
-    return isUnresolvedTriageResult(run.result);
+  if (run.status === "waiting-for-approval") {
+    return true;
   }
-  return (
-    run.status === "failed" ||
-    run.status === "cancelled" ||
-    run.status === "interrupted" ||
-    run.status === "waiting-for-approval"
-  );
+  if (run.result) {
+    return run.finishedAt !== null && isUnresolvedTriageResult(run.result);
+  }
+  return run.status === "failed" || run.status === "cancelled" || run.status === "interrupted";
 }
 
 export function isUnresolvedTriageResult(result: AutomationRunResult | null): boolean {
@@ -293,7 +301,7 @@ export function unresolvedTriageRuns(runs: readonly AutomationRun[]): Automation
 export function allVisibleTriageRuns(runs: readonly AutomationRun[]): AutomationRun[] {
   return runs.filter((run) => {
     if (run.result) {
-      return run.result.archivedAt === null;
+      return run.finishedAt !== null && run.result.archivedAt === null;
     }
     return isTriageRun(run);
   });
@@ -345,6 +353,11 @@ export function runResultSummary(run: AutomationRun): string {
   }
 }
 
+export function runResultTitle(run: AutomationRun): string | null {
+  const title = run.result?.title?.trim();
+  return title ? title : null;
+}
+
 export function canCancelAutomationRun(run: AutomationRun): boolean {
   return (
     run.status === "pending" ||
@@ -354,6 +367,78 @@ export function canCancelAutomationRun(run: AutomationRun): boolean {
   );
 }
 
+/**
+ * Plain-language warning for a latest run that needs the user's attention, or null when
+ * the run ended normally (or is still progressing). Drives the amber glyph and the
+ * subtitle warning segment on automation list rows.
+ */
+export function automationAttentionLabel(run: AutomationRun): string | null {
+  switch (run.status) {
+    case "waiting-for-approval":
+      return "Waiting for approval";
+    case "failed":
+      return "Last run failed";
+    case "cancelled":
+      return "Last run cancelled";
+    case "interrupted":
+      return "Last run interrupted";
+    default:
+      return null;
+  }
+}
+
+type LiveAutomationRun = AutomationRun & {
+  readonly status: "pending" | "claimed" | "running" | "waiting-for-approval";
+};
+
+export function isLiveRun(run: AutomationRun | null): run is LiveAutomationRun {
+  return (
+    run?.status === "pending" ||
+    run?.status === "claimed" ||
+    run?.status === "running" ||
+    run?.status === "waiting-for-approval"
+  );
+}
+
+/**
+ * Icon + tint for an automation list row's leading status glyph.
+ * - Live runs spin with a circular loading glyph.
+ * - Completed successful runs show a checkmark circle.
+ * - Failed/cancelled/interrupted runs keep the warning exclamation.
+ * - Scheduled (enabled with a future next run) shows a clock.
+ * - Paused automations show a pause glyph.
+ */
+export function automationListRowIcon(
+  definition: AutomationDefinition,
+  latestRun: AutomationRun | null,
+): { readonly name: string; readonly className: string } {
+  // Pausing prevents future dispatches but does not cancel an in-flight run, so the
+  // active run state must take precedence over the definition's enabled flag.
+  if (isLiveRun(latestRun)) {
+    return {
+      name: "loading-circle",
+      className: "size-4 animate-spin text-blue-500 motion-reduce:animate-none",
+    };
+  }
+  if (!definition.enabled) {
+    return { name: "pause", className: "size-4 text-muted-foreground/40" };
+  }
+  if (latestRun?.status === "succeeded") {
+    return { name: "circle-check", className: "size-4 text-green-500" };
+  }
+  if (latestRun && automationAttentionLabel(latestRun) !== null) {
+    return { name: "exclamation-circle", className: "size-4 text-amber-500" };
+  }
+  if (definition.nextRunAt) {
+    return { name: "clock", className: "size-4 text-foreground/70" };
+  }
+  return { name: "circle-placeholder-on", className: "size-4 text-foreground/70" };
+}
+
+/**
+ * Tint for the list row's leading status glyph: dimmed when paused, blue while a run is
+ * live, amber when the latest run needs attention, otherwise neutral.
+ */
 export function automationStatusDotClass(
   definition: AutomationDefinition,
   latestRun: AutomationRun | null,
@@ -366,8 +451,8 @@ export function automationStatusDotClass(
   ) {
     return "text-blue-500";
   }
-  if (latestRun && isTriageRun(latestRun)) return "text-destructive";
-  return "text-emerald-500";
+  if (latestRun && automationAttentionLabel(latestRun) !== null) return "text-amber-500";
+  return "text-foreground/70";
 }
 
 const deletedAutomationIdsInCache = new Set<string>();
@@ -456,6 +541,52 @@ function upsertRunByUpdatedAt(
     : [incoming, ...runs];
 }
 
+function mergeMemoriesByUpdatedAt(
+  snapshotMemories: readonly AutomationMemory[],
+  previousMemories: readonly AutomationMemory[],
+  visibleAutomationIds: ReadonlySet<AutomationId>,
+): AutomationMemory[] {
+  const previousByAutomationId = new Map(
+    previousMemories.map((memory) => [memory.automationId, memory]),
+  );
+  const seen = new Set<AutomationId>();
+  const memories: AutomationMemory[] = [];
+  for (const snapshotMemory of snapshotMemories) {
+    if (!visibleAutomationIds.has(snapshotMemory.automationId)) {
+      continue;
+    }
+    seen.add(snapshotMemory.automationId);
+    const previousMemory = previousByAutomationId.get(snapshotMemory.automationId);
+    memories.push(
+      previousMemory && isSameOrNewerTimestamp(previousMemory.updatedAt, snapshotMemory.updatedAt)
+        ? previousMemory
+        : snapshotMemory,
+    );
+  }
+  for (const previousMemory of previousMemories) {
+    if (
+      !seen.has(previousMemory.automationId) &&
+      visibleAutomationIds.has(previousMemory.automationId)
+    ) {
+      memories.push(previousMemory);
+    }
+  }
+  return memories;
+}
+
+function upsertMemoryByUpdatedAt(
+  memories: readonly AutomationMemory[],
+  incoming: AutomationMemory,
+): AutomationMemory[] {
+  const existing = memories.find((memory) => memory.automationId === incoming.automationId);
+  if (existing && isNewerTimestamp(existing.updatedAt, incoming.updatedAt)) {
+    return [...memories];
+  }
+  return existing
+    ? memories.map((memory) => (memory.automationId === incoming.automationId ? incoming : memory))
+    : [incoming, ...memories];
+}
+
 export function applyAutomationEvent(
   prev: AutomationListResult | undefined,
   event: AutomationStreamEvent,
@@ -468,6 +599,11 @@ export function applyAutomationEvent(
       return {
         definitions,
         runs: mergeRunsByUpdatedAt(event.runs, base.runs, visibleAutomationIds),
+        memories: mergeMemoriesByUpdatedAt(
+          event.memories ?? [],
+          base.memories ?? [],
+          visibleAutomationIds,
+        ),
       };
     }
     case "definition-upserted": {
@@ -476,20 +612,28 @@ export function applyAutomationEvent(
       }
       deletedAutomationIdsInCache.delete(event.definition.id);
       const definitions = upsertDefinitionByUpdatedAt(base.definitions, event.definition);
-      return { definitions, runs: base.runs };
+      return { definitions, runs: base.runs, memories: base.memories ?? [] };
     }
     case "definition-deleted":
       deletedAutomationIdsInCache.add(event.automationId);
       return {
         definitions: base.definitions.filter((definition) => definition.id !== event.automationId),
         runs: base.runs.filter((run) => run.automationId !== event.automationId),
+        memories: (base.memories ?? []).filter(
+          (memory) => memory.automationId !== event.automationId,
+        ),
       };
     case "run-upserted": {
       if (deletedAutomationIdsInCache.has(event.run.automationId)) {
         return base;
       }
       const runs = upsertRunByUpdatedAt(base.runs, event.run);
-      return { definitions: base.definitions, runs };
+      return { definitions: base.definitions, runs, memories: base.memories ?? [] };
+    }
+    case "memory-upserted": {
+      const currentMemories = base.memories ?? [];
+      const memories = upsertMemoryByUpdatedAt(currentMemories, event.memory);
+      return { definitions: base.definitions, runs: base.runs, memories };
     }
   }
 }
@@ -523,6 +667,7 @@ export function useAutomations(onRunStarted?: (threadId: ThreadId) => void) {
               : definition,
           ),
           runs: base.runs,
+          memories: base.memories ?? [],
         };
       });
       return { previous };
@@ -570,18 +715,15 @@ export function useAutomations(onRunStarted?: (threadId: ThreadId) => void) {
     onError: (error) => toastManager.add({ type: "error", title: error.message }),
   });
 
-  const runsByAutomationId = useMemo(() => {
-    const map = new Map<string, AutomationRun[]>();
-    for (const run of data.runs) {
-      const runs = map.get(run.automationId) ?? [];
-      runs.push(run);
-      map.set(run.automationId, runs);
-    }
-    for (const runs of map.values()) {
-      runs.sort((left, right) => right.scheduledFor.localeCompare(left.scheduledFor));
-    }
-    return map;
-  }, [data.runs]);
+  const runsByAutomationId = new Map<string, AutomationRun[]>();
+  for (const run of data.runs) {
+    const runs = runsByAutomationId.get(run.automationId) ?? [];
+    runs.push(run);
+    runsByAutomationId.set(run.automationId, runs);
+  }
+  for (const runs of runsByAutomationId.values()) {
+    runs.sort((left, right) => right.scheduledFor.localeCompare(left.scheduledFor));
+  }
 
   return {
     data,
@@ -708,32 +850,26 @@ export function AutomationModelPicker({
   const serverConfigQuery = useQuery(serverConfigQueryOptions());
   const providerStatuses = useProviderStatusesForLocalConfig();
   const [open, setOpen] = useState(false);
-  const handleFavoriteModelsChange = useCallback(
-    (favorites: ProviderModelFavorite[]) => {
-      updateSettings({ favorites });
-    },
-    [updateSettings],
-  );
-  const providerInstances = useMemo(() => getProviderInstanceOptions(settings), [settings]);
-  const providerByInstanceId = useMemo(() => {
-    const result = new Map<ProviderInstanceId, ProviderKind>();
-    for (const instance of providerInstances) {
-      result.set(instance.instanceId, instance.provider);
-    }
-    return result;
-  }, [providerInstances]);
+  const handleFavoriteModelsChange = (favorites: ProviderModelFavorite[]) => {
+    updateSettings({ favorites });
+  };
+  const providerInstances = getProviderInstanceOptions(settings);
+  const providerByInstanceId = new Map<ProviderInstanceId, ProviderKind>();
+  for (const instance of providerInstances) {
+    providerByInstanceId.set(instance.instanceId, instance.provider);
+  }
   const selectedProvider =
     providerByInstanceId.get(value.instanceId) ??
     inferLegacyProviderKindFromInstanceId(value.instanceId) ??
     inferLegacyProviderKindFromModelSelection(value);
-  const selectedProviderInstanceId = useMemo(
-    () => resolveSelectableProviderInstanceId(settings, selectedProvider, value.instanceId),
-    [settings, selectedProvider, value.instanceId],
+  const selectedProviderInstanceId = resolveSelectableProviderInstanceId(
+    settings,
+    selectedProvider,
+    value.instanceId,
   );
-  const modelHintByProvider = useMemo<Partial<Record<ProviderKind, string | null>>>(
-    () => ({ [selectedProvider]: value.model }),
-    [selectedProvider, value.model],
-  );
+  const modelHintByProvider: Partial<Record<ProviderKind, string | null>> = {
+    [selectedProvider]: value.model,
+  };
   const providerModelDiscoveryCwd = resolveProviderDiscoveryCwd({
     activeThreadWorktreePath: null,
     activeProjectCwd: projectCwd,
@@ -888,7 +1024,7 @@ export function AutomationDialog({
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogPopup surface="solid" showCloseButton={false} className="max-w-3xl">
+      <DialogPopup showCloseButton={false} className="max-w-3xl">
         <DialogTitle className="sr-only">
           {editing ? "Edit automation" : "New automation"}
         </DialogTitle>
@@ -1262,6 +1398,19 @@ export function AutomationDialog({
                         {preset.label}
                       </MenuRadioItem>
                     ))}
+                  </MenuRadioGroup>
+                </MenuGroup>
+                <MenuSeparator />
+                <MenuGroup>
+                  <MenuGroupLabel>Notify</MenuGroupLabel>
+                  <MenuRadioGroup
+                    value={form.notificationPolicy}
+                    onValueChange={(value) =>
+                      setField("notificationPolicy", value as AutomationNotificationPolicy)
+                    }
+                  >
+                    <MenuRadioItem value="all">All runs</MenuRadioItem>
+                    <MenuRadioItem value="failed-runs-only">Failed runs only</MenuRadioItem>
                   </MenuRadioGroup>
                 </MenuGroup>
               </ComposerPickerMenuPopup>

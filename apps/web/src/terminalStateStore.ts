@@ -8,7 +8,8 @@
 import { type TerminalActivityState, type TerminalCliKind } from "@synara/shared/terminalThreads";
 import type { ThreadId } from "@synara/contracts";
 import { create } from "zustand";
-import { createJSONStorage, persist } from "zustand/middleware";
+import { persist } from "zustand/middleware";
+import { createDeferredPersistStorage, flushStorageBeforePageHide } from "./lib/storage";
 import {
   DEFAULT_THREAD_TERMINAL_HEIGHT,
   DEFAULT_THREAD_TERMINAL_ID,
@@ -30,10 +31,6 @@ import {
   setActiveTerminalInGroupLayout,
   splitTerminalGroupLayout,
 } from "./terminalPaneLayout";
-import {
-  createWorkspaceTerminalGroupFromPreset,
-  type WorkspaceLayoutPresetId,
-} from "./workspaceTerminalLayoutPresets";
 import { createMemoryStorage, type StateStorage } from "./lib/storage";
 
 export interface ThreadTerminalState {
@@ -492,6 +489,11 @@ export function sanitizePersistedTerminalStateByThreadId(
 ): Record<ThreadId, ThreadTerminalState> {
   const next: Record<ThreadId, ThreadTerminalState> = {};
   for (const [threadId, state] of Object.entries(terminalStateByThreadId ?? {})) {
+    // Dedicated Workspace pages used synthetic `workspace:*` terminal scopes.
+    // Drop those retired entries while hydrating the shared terminal store.
+    if (threadId.startsWith("workspace:")) {
+      continue;
+    }
     const sanitized = stripVolatileTerminalRuntimeState(state);
     if (!isDefaultThreadTerminalState(sanitized)) {
       next[threadId as ThreadId] = sanitized;
@@ -809,7 +811,6 @@ function setThreadTerminalCliKind(
     nextCliKindsById[terminalId] = cliKind;
   }
 
-  const currentLabel = normalized.terminalLabelsById[terminalId] ?? "";
   const currentTitleOverride = normalized.terminalTitleOverridesById[terminalId]?.trim() ?? "";
   const terminalLabelsById =
     cliKind !== null && currentTitleOverride.length === 0
@@ -1151,63 +1152,6 @@ function setThreadTerminalActivity(
   };
 }
 
-function applyThreadWorkspaceLayoutPreset(
-  state: ThreadTerminalState,
-  presetId: WorkspaceLayoutPresetId,
-  terminalIds: readonly string[],
-): ThreadTerminalState {
-  const normalized = normalizeThreadTerminalState(state);
-  const nextTerminalIds = normalizeTerminalIds([...terminalIds]);
-  const activeTerminalId = nextTerminalIds.includes(normalized.activeTerminalId)
-    ? normalized.activeTerminalId
-    : (nextTerminalIds[0] ?? DEFAULT_THREAD_TERMINAL_ID);
-  const terminalLabelsById = ensureTerminalLabels({
-    terminalCliKindsById: normalizeTerminalCliKinds(
-      normalized.terminalCliKindsById,
-      nextTerminalIds,
-    ),
-    terminalIds: nextTerminalIds,
-    terminalLabelsById: normalizeTerminalLabels(normalized.terminalLabelsById, nextTerminalIds),
-    terminalTitleOverridesById: normalizeTerminalTitleOverrides(
-      normalized.terminalTitleOverridesById,
-      nextTerminalIds,
-    ),
-  });
-  const terminalTitleOverridesById = normalizeTerminalTitleOverrides(
-    normalized.terminalTitleOverridesById,
-    nextTerminalIds,
-  );
-  const terminalCliKindsById = normalizeTerminalCliKinds(
-    normalized.terminalCliKindsById,
-    nextTerminalIds,
-  );
-  const terminalGroup = createWorkspaceTerminalGroupFromPreset({
-    presetId,
-    terminalIds: nextTerminalIds,
-    activeTerminalId,
-  });
-
-  return normalizeThreadTerminalState({
-    ...normalized,
-    terminalOpen: true,
-    presentationMode: "workspace",
-    workspaceLayout: "terminal-only",
-    workspaceActiveTab: "terminal",
-    terminalIds: nextTerminalIds,
-    terminalLabelsById,
-    terminalTitleOverridesById,
-    terminalCliKindsById,
-    terminalAttentionStatesById: normalizeTerminalAttentionStates(
-      normalized.terminalAttentionStatesById,
-      nextTerminalIds,
-    ),
-    runningTerminalIds: normalizeRunningTerminalIds(normalized.runningTerminalIds, nextTerminalIds),
-    activeTerminalId,
-    terminalGroups: [terminalGroup],
-    activeTerminalGroupId: terminalGroup.id,
-  });
-}
-
 export function selectThreadTerminalState(
   terminalStateByThreadId: Record<ThreadId, ThreadTerminalState>,
   threadId: ThreadId,
@@ -1294,14 +1238,28 @@ interface TerminalStateStoreState {
     terminalId: string,
     activity: { agentState: TerminalActivityState | null; hasRunningSubprocess: boolean },
   ) => void;
-  applyWorkspaceLayoutPreset: (
-    threadId: ThreadId,
-    presetId: WorkspaceLayoutPresetId,
-    terminalIds: readonly string[],
-  ) => void;
   clearTerminalState: (threadId: ThreadId) => void;
   removeOrphanedTerminalStates: (activeThreadIds: Set<ThreadId>) => void;
 }
+
+// Defers partialize + JSON.stringify off the hot set() path (terminal layout
+// changes, resizes, activity updates fire rapidly). Serialization now runs once
+// per debounce window at flush time instead of synchronously on every set().
+const terminalPersistStorage = createDeferredPersistStorage<
+  TerminalStateStoreState,
+  Pick<TerminalStateStoreState, "terminalStateByThreadId">
+>({
+  getStorage: resolveTerminalStateStorage,
+  partialize: (state) => ({
+    terminalStateByThreadId: sanitizePersistedTerminalStateByThreadId(
+      state.terminalStateByThreadId,
+    ),
+  }),
+});
+
+// Flush pending terminal-state writes before the page goes away so at most one
+// debounce window of changes can be lost.
+flushStorageBeforePageHide(() => terminalPersistStorage.flush());
 
 export const useTerminalStateStore = create<TerminalStateStoreState>()(
   persist(
@@ -1385,10 +1343,6 @@ export const useTerminalStateStore = create<TerminalStateStoreState>()(
           updateTerminal(threadId, (state) =>
             setThreadTerminalActivity(state, terminalId, activity),
           ),
-        applyWorkspaceLayoutPreset: (threadId, presetId, terminalIds) =>
-          updateTerminal(threadId, (state) =>
-            applyThreadWorkspaceLayoutPreset(state, presetId, terminalIds),
-          ),
         clearTerminalState: (threadId) =>
           updateTerminal(threadId, () => createDefaultThreadTerminalState()),
         removeOrphanedTerminalStates: (activeThreadIds) =>
@@ -1408,12 +1362,9 @@ export const useTerminalStateStore = create<TerminalStateStoreState>()(
     {
       name: TERMINAL_STATE_STORAGE_KEY,
       version: 1,
-      storage: createJSONStorage(resolveTerminalStateStorage),
-      partialize: (state) => ({
-        terminalStateByThreadId: sanitizePersistedTerminalStateByThreadId(
-          state.terminalStateByThreadId,
-        ),
-      }),
+      // partialize is owned by the deferred storage (runs at flush time, not
+      // eagerly on every set()).
+      storage: terminalPersistStorage,
       merge: (persistedState, currentState) => ({
         ...currentState,
         terminalStateByThreadId: sanitizePersistedTerminalStateByThreadId(

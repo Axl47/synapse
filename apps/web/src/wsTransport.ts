@@ -200,6 +200,7 @@ const STREAM_ADMISSION_ERROR_CODES = new Set([
   "STREAM_DUPLICATE_SUBSCRIPTION",
   "STREAM_CAPACITY_EXCEEDED",
   "THREAD_STREAM_CAPACITY_EXCEEDED",
+  "THREAD_SNAPSHOT_NOT_FOUND",
   "WS_NEGOTIATION_REQUIRED",
   "WS_PROTOCOL_INCOMPATIBLE",
   "WS_CAPABILITIES_INCOMPATIBLE",
@@ -233,6 +234,128 @@ export function shouldReconnectAfterStreamFailure(cause: Cause.Cause<unknown>): 
     const code = "code" in error ? error.code : undefined;
     return typeof code === "string" && STREAM_ADMISSION_ERROR_CODES.has(code);
   });
+}
+
+const RETRYABLE_STREAM_CAPACITY_ERROR_CODES = new Set([
+  "STREAM_CAPACITY_EXCEEDED",
+  "THREAD_STREAM_CAPACITY_EXCEEDED",
+]);
+const DEFAULT_STREAM_CAPACITY_RETRY_MS = 1_000;
+const MAX_STREAM_CAPACITY_RETRY_MS = 10_000;
+
+/**
+ * Capacity rejections are admission failures the server marks retryable: the
+ * budget frees up as soon as another lease releases, so the stream must be
+ * retried in place rather than dropped or escalated to a socket reconnect.
+ */
+export function getStreamCapacityRetryDelayMs(cause: Cause.Cause<unknown>): number | null {
+  for (const reason of cause.reasons) {
+    if (!Cause.isFailReason(reason)) continue;
+    const error = reason.error;
+    if (!error || typeof error !== "object") continue;
+    const code = "code" in error ? error.code : undefined;
+    if (typeof code !== "string" || !RETRYABLE_STREAM_CAPACITY_ERROR_CODES.has(code)) continue;
+    if ("retryable" in error && error.retryable === false) continue;
+    const retryAfterMs = "retryAfterMs" in error ? error.retryAfterMs : undefined;
+    return typeof retryAfterMs === "number" && retryAfterMs > 0
+      ? retryAfterMs
+      : DEFAULT_STREAM_CAPACITY_RETRY_MS;
+  }
+  return null;
+}
+
+const RETRYABLE_STREAM_DUPLICATE_ERROR_CODES = new Set([
+  "STREAM_DUPLICATE_SUBSCRIPTION",
+  "THREAD_STREAM_DUPLICATE_SUBSCRIPTION",
+]);
+const DEFAULT_STREAM_DUPLICATE_RETRY_MS = 250;
+export const MAX_STREAM_DUPLICATE_RETRY_ATTEMPTS = 5;
+
+/**
+ * Duplicate rejections arrive marked `retryable: false` because one socket may
+ * not hold two leases for the same stream. A cancel→fast-resubscribe still
+ * races the server-side lease release (the lease frees only when the server
+ * stream scope closes), so a bounded in-place retry is required to let the
+ * stale lease drain instead of leaving the stream permanently dead.
+ */
+export function getStreamDuplicateRetryDelayMs(
+  cause: Cause.Cause<unknown>,
+  previousAttempts: number,
+): number | null {
+  if (previousAttempts >= MAX_STREAM_DUPLICATE_RETRY_ATTEMPTS) return null;
+  for (const reason of cause.reasons) {
+    if (!Cause.isFailReason(reason)) continue;
+    const error = reason.error;
+    if (!error || typeof error !== "object") continue;
+    const code = "code" in error ? error.code : undefined;
+    if (typeof code !== "string" || !RETRYABLE_STREAM_DUPLICATE_ERROR_CODES.has(code)) continue;
+    const retryAfterMs = "retryAfterMs" in error ? error.retryAfterMs : undefined;
+    return typeof retryAfterMs === "number" && retryAfterMs > 0
+      ? retryAfterMs
+      : DEFAULT_STREAM_DUPLICATE_RETRY_MS;
+  }
+  return null;
+}
+
+export type StreamAdmissionRetry =
+  | { readonly kind: "capacity"; readonly attempt: number; readonly delayMs: number }
+  | { readonly kind: "duplicate"; readonly attempt: number; readonly delayMs: number };
+
+export function resolveStreamAdmissionRetry(
+  cause: Cause.Cause<unknown>,
+  capacityAttempts: number,
+  duplicateAttempts: number,
+): StreamAdmissionRetry | null {
+  const capacityDelayMs = getStreamCapacityRetryDelayMs(cause);
+  if (capacityDelayMs !== null) {
+    return {
+      kind: "capacity",
+      attempt: capacityAttempts + 1,
+      delayMs: capacityDelayMs,
+    };
+  }
+  const duplicateDelayMs = getStreamDuplicateRetryDelayMs(cause, duplicateAttempts);
+  if (duplicateDelayMs === null) {
+    return null;
+  }
+  return {
+    kind: "duplicate",
+    attempt: duplicateAttempts + 1,
+    delayMs: duplicateDelayMs,
+  };
+}
+
+export function getStreamFailureCode(cause: Cause.Cause<unknown>): string | null {
+  for (const reason of cause.reasons) {
+    if (!Cause.isFailReason(reason)) continue;
+    const error = reason.error;
+    if (!error || typeof error !== "object") continue;
+    const code = "code" in error ? error.code : undefined;
+    if (typeof code === "string") return code;
+  }
+  return null;
+}
+
+const THREAD_STREAM_KEY_PREFIX = "orchestration.thread:";
+
+function threadIdFromStreamKey(key: string): string | null {
+  return key.startsWith(THREAD_STREAM_KEY_PREFIX)
+    ? key.slice(THREAD_STREAM_KEY_PREFIX.length)
+    : null;
+}
+
+export function threadStreamInputsEqual(left: unknown, right: unknown): boolean {
+  if (left === right) return true;
+  if (!left || !right || typeof left !== "object" || typeof right !== "object") return false;
+  const leftEntries = Object.entries(left);
+  if (leftEntries.length !== Object.keys(right).length) return false;
+  return leftEntries.every(([key, value]) => (right as Record<string, unknown>)[key] === value);
+}
+
+export interface WsThreadStreamFailure {
+  readonly threadId: string;
+  readonly code: string | null;
+  readonly error: Error;
 }
 
 function omitNullUserInputAnswers(input: unknown): unknown {
@@ -272,6 +395,9 @@ export class WsTransport {
   private readonly listeners = new Map<string, Set<(message: WsPush) => void>>();
   private readonly stateListeners = new Set<(state: WsTransportState) => void>();
   private readonly compatibilityListeners = new Set<(issue: WsCompatibilityError | null) => void>();
+  private readonly threadStreamFailureListeners = new Set<
+    (failure: WsThreadStreamFailure) => void
+  >();
   private readonly latestPushByChannel = new Map<string, WsPush>();
   private sequence = 0;
   private sessionVersion = 0;
@@ -288,6 +414,10 @@ export class WsTransport {
   private reconnectFailures = 0;
   private readonly streamCleanups = new Map<string, () => void>();
   private readonly streamSettled = new Map<string, Promise<void>>();
+  private readonly streamCapacityRetries = new Map<string, number>();
+  private readonly streamDuplicateRetries = new Map<string, number>();
+  private readonly streamCapacityRetryTimers = new Map<string, number>();
+  private readonly activeThreadStreamInputs = new Map<string, unknown>();
   private shellSubscribed = false;
   private readonly threadSubscriptions = new Map<string, unknown>();
   private compatibility: WsBootstrapNegotiateResult | null = null;
@@ -311,8 +441,22 @@ export class WsTransport {
       options?.timeoutMs === undefined ? { ...options, timeoutMs: REQUEST_TIMEOUT_MS } : options;
     const abortScope = makeRequestAbortScope(requestOptions);
     try {
+      if (method === ORCHESTRATION_WS_METHODS.unsubscribeShell) {
+        this.shellSubscribed = false;
+        await awaitWithAbort(this.stopStream("orchestration.shell"), abortScope.signal);
+        return undefined as T;
+      }
+      if (method === ORCHESTRATION_WS_METHODS.unsubscribeThread) {
+        const threadId = (params as { threadId: string }).threadId;
+        this.threadSubscriptions.delete(threadId);
+        await awaitWithAbort(
+          this.stopStream(`orchestration.thread:${threadId}`),
+          abortScope.signal,
+        );
+        return undefined as T;
+      }
+
       const client = await awaitWithAbort(this.getClient(), abortScope.signal);
-      const clientRuntime = this.getClientRuntime(client);
 
       if (method === WS_METHODS.gitRunStackedAction) {
         return (await this.runGitActionStream(client, params, abortScope.signal)) as T;
@@ -320,24 +464,19 @@ export class WsTransport {
 
       if (method === ORCHESTRATION_WS_METHODS.subscribeShell) {
         this.shellSubscribed = true;
+        this.resetStreamCapacityRetry("orchestration.shell");
         this.startShellStream(client);
-        return undefined as T;
-      }
-      if (method === ORCHESTRATION_WS_METHODS.unsubscribeShell) {
-        this.shellSubscribed = false;
-        this.stopStream("orchestration.shell");
         return undefined as T;
       }
       if (method === ORCHESTRATION_WS_METHODS.subscribeThread) {
         const threadId = (params as { threadId: string }).threadId;
-        this.threadSubscriptions.set(threadId, params);
-        await this.startThreadStream(client, threadId, params as never);
-        return undefined as T;
-      }
-      if (method === ORCHESTRATION_WS_METHODS.unsubscribeThread) {
-        const threadId = (params as { threadId: string }).threadId;
-        this.threadSubscriptions.delete(threadId);
-        this.stopStream(`orchestration.thread:${threadId}`);
+        this.resetStreamCapacityRetry(`orchestration.thread:${threadId}`);
+        // Preserve the stored input identity across explicit refreshes so stale
+        // restart callbacks cannot supersede the newly requested stream.
+        const existingInput = this.threadSubscriptions.get(threadId);
+        const input = threadStreamInputsEqual(existingInput, params) ? existingInput : params;
+        this.threadSubscriptions.set(threadId, input);
+        await this.startThreadStream(client, threadId, input as never, true);
         return undefined as T;
       }
 
@@ -353,6 +492,7 @@ export class WsTransport {
         >
       )[method];
       if (!call) throw new WsTransportRpcError({ message: `Unknown RPC method: ${method}` });
+      const clientRuntime = this.getClientRuntime(client);
       return (await clientRuntime.runPromise(
         call(normalizedRpcInput),
         abortScope.signal ? { signal: abortScope.signal } : undefined,
@@ -450,12 +590,33 @@ export class WsTransport {
     };
   }
 
+  /** Fires when a per-thread stream dies with no retry or reconnect left. */
+  onThreadStreamFailure(listener: (failure: WsThreadStreamFailure) => void): () => void {
+    this.threadStreamFailureListeners.add(listener);
+    return () => {
+      this.threadStreamFailureListeners.delete(listener);
+    };
+  }
+
+  private emitThreadStreamFailure(failure: WsThreadStreamFailure): void {
+    for (const listener of this.threadStreamFailureListeners) {
+      try {
+        listener(failure);
+      } catch {
+        // Listener errors must not break transport streams.
+      }
+    }
+  }
+
   async dispose(): Promise<void> {
     if (this.disposed) return;
     this.disposed = true;
     this.setState("disposed");
+    this.resetAllStreamCapacityRetries();
     for (const cleanup of this.streamCleanups.values()) cleanup();
     this.streamCleanups.clear();
+    this.activeThreadStreamInputs.clear();
+    this.threadStreamFailureListeners.clear();
     // Dispose can race with initial connection or reconnect promises. Mark them
     // handled before closing the runtime so test/browser teardown stays quiet.
     void this.clientPromise.catch(() => undefined);
@@ -560,8 +721,10 @@ export class WsTransport {
 
     const oldRuntime = this.runtime;
     const oldClientScope = this.clientScope;
+    this.resetAllStreamCapacityRetries();
     for (const cleanup of this.streamCleanups.values()) cleanup();
     this.streamCleanups.clear();
+    this.activeThreadStreamInputs.clear();
 
     this.setState("connecting");
 
@@ -588,6 +751,28 @@ export class WsTransport {
         // Listener errors must not break reconnect or RPC state transitions.
       }
     }
+  }
+
+  private clearStreamCapacityRetryTimer(key: string): void {
+    const timeoutId = this.streamCapacityRetryTimers.get(key);
+    if (timeoutId === undefined) return;
+    window.clearTimeout(timeoutId);
+    this.streamCapacityRetryTimers.delete(key);
+  }
+
+  private resetStreamCapacityRetry(key: string): void {
+    this.clearStreamCapacityRetryTimer(key);
+    this.streamCapacityRetries.delete(key);
+    this.streamDuplicateRetries.delete(key);
+  }
+
+  private resetAllStreamCapacityRetries(): void {
+    for (const timeoutId of this.streamCapacityRetryTimers.values()) {
+      window.clearTimeout(timeoutId);
+    }
+    this.streamCapacityRetryTimers.clear();
+    this.streamCapacityRetries.clear();
+    this.streamDuplicateRetries.clear();
   }
 
   private setCompatibilityIssue(issue: WsCompatibilityError | null): void {
@@ -801,10 +986,21 @@ export class WsTransport {
     client: RpcClientInstance,
     threadId: string,
     input: unknown,
+    forceRestart = false,
   ): Promise<void> {
     const key = `orchestration.thread:${threadId}`;
+    if (this.disposed || this.threadSubscriptions.get(threadId) !== input) {
+      return;
+    }
+    if (
+      !forceRestart &&
+      this.streamCleanups.has(key) &&
+      this.activeThreadStreamInputs.get(key) === input
+    ) {
+      return;
+    }
     const sessionVersion = this.sessionVersion;
-    await this.stopStream(key);
+    await this.stopStream(key, { resetCapacityRetry: false });
     if (
       this.disposed ||
       this.sessionVersion !== sessionVersion ||
@@ -819,6 +1015,7 @@ export class WsTransport {
         .then((nextClient) => this.startThreadStream(nextClient, threadId, desiredInput))
         .catch((error) => console.warn("WebSocket RPC thread stream failed to restart", error));
     };
+    this.activeThreadStreamInputs.set(key, input);
     this.startStream(
       client,
       key,
@@ -837,13 +1034,24 @@ export class WsTransport {
     restart?: (() => void) | undefined,
   ): void {
     if (this.streamCleanups.has(key)) return;
+    this.clearStreamCapacityRetryTimer(key);
     const runnableStream = stream as Stream.Stream<T, WsTransportRpcError, never>;
     let resolveSettled: () => void = () => undefined;
     const settled = new Promise<void>((resolve) => {
       resolveSettled = resolve;
     });
     const cancel = this.getClientRuntime(client).runCallback(
-      Stream.runForEach(runnableStream, (event) => Effect.sync(() => listener(event))),
+      Stream.runForEach(runnableStream, (event) =>
+        Effect.sync(() => {
+          if (this.streamCapacityRetries.has(key)) {
+            this.streamCapacityRetries.delete(key);
+          }
+          if (this.streamDuplicateRetries.has(key)) {
+            this.streamDuplicateRetries.delete(key);
+          }
+          listener(event);
+        }),
+      ),
       {
         onExit: (exit) => {
           if (this.streamSettled.get(key) === settled) {
@@ -853,9 +1061,40 @@ export class WsTransport {
           const wasReplacedOrStopped = this.streamCleanups.get(key) !== cancel;
           if (!wasReplacedOrStopped) {
             this.streamCleanups.delete(key);
+            this.activeThreadStreamInputs.delete(key);
           }
           if (wasReplacedOrStopped || this.disposed) {
             return;
+          }
+          if (restart && Exit.isFailure(exit)) {
+            const admissionRetry = resolveStreamAdmissionRetry(
+              exit.cause,
+              this.streamCapacityRetries.get(key) ?? 0,
+              this.streamDuplicateRetries.get(key) ?? 0,
+            );
+            if (admissionRetry !== null) {
+              const retries =
+                admissionRetry.kind === "capacity"
+                  ? this.streamCapacityRetries
+                  : this.streamDuplicateRetries;
+              retries.set(key, admissionRetry.attempt);
+              this.clearStreamCapacityRetryTimer(key);
+              const timeoutId = window.setTimeout(
+                () => {
+                  if (this.streamCapacityRetryTimers.get(key) !== timeoutId) return;
+                  this.streamCapacityRetryTimers.delete(key);
+                  if (!this.disposed && !this.streamCleanups.has(key)) {
+                    restart();
+                  }
+                },
+                Math.min(
+                  admissionRetry.delayMs * admissionRetry.attempt,
+                  MAX_STREAM_CAPACITY_RETRY_MS,
+                ),
+              );
+              this.streamCapacityRetryTimers.set(key, timeoutId);
+              return;
+            }
           }
           if (restart && Exit.isFailure(exit) && shouldReconnectAfterStreamFailure(exit.cause)) {
             window.setTimeout(
@@ -875,7 +1114,16 @@ export class WsTransport {
             return;
           }
           if (Exit.isFailure(exit) && !this.disposed && !Cause.hasInterruptsOnly(exit.cause)) {
-            console.warn("WebSocket RPC stream failed", causeToError(exit.cause));
+            const error = causeToError(exit.cause);
+            console.warn("WebSocket RPC stream failed", error);
+            const threadId = threadIdFromStreamKey(key);
+            if (threadId !== null && this.threadSubscriptions.has(threadId)) {
+              this.emitThreadStreamFailure({
+                threadId,
+                code: getStreamFailureCode(exit.cause),
+                error,
+              });
+            }
           }
         },
       },
@@ -884,7 +1132,16 @@ export class WsTransport {
     this.streamSettled.set(key, settled);
   }
 
-  private stopStream(key: string): Promise<void> {
+  private stopStream(
+    key: string,
+    options?: { readonly resetCapacityRetry?: boolean },
+  ): Promise<void> {
+    this.clearStreamCapacityRetryTimer(key);
+    if (options?.resetCapacityRetry !== false) {
+      this.streamCapacityRetries.delete(key);
+      this.streamDuplicateRetries.delete(key);
+    }
+    this.activeThreadStreamInputs.delete(key);
     const cleanup = this.streamCleanups.get(key);
     const settled = this.streamSettled.get(key) ?? Promise.resolve();
     if (!cleanup) return settled;

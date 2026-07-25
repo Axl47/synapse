@@ -10,6 +10,7 @@ import {
   type WsCompatibilityError,
 } from "@synara/contracts";
 import { defaultTerminalTitleForCliKind } from "@synara/shared/terminalThreads";
+import { inferLegacyProviderKindFromModelSelection } from "@synara/shared/providerInstances";
 import {
   Outlet,
   createRootRouteWithContext,
@@ -18,7 +19,7 @@ import {
   useParams,
   useRouterState,
 } from "@tanstack/react-router";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { QueryClient, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Throttler } from "@tanstack/react-pacer";
 
@@ -63,6 +64,7 @@ import {
   onServerProviderStatusesUpdated,
   onServerSettingsUpdated,
   onServerWelcome,
+  onThreadStreamFailure,
 } from "../wsNativeApi";
 import {
   addWsCompatibilityIssueListener,
@@ -74,9 +76,10 @@ import { collectActiveTerminalThreadIds } from "../lib/terminalStateCleanup";
 import { useProjectRunStore } from "../projectRunStore";
 import { dockTerminalThreadId } from "../lib/dockTerminalScope";
 import { TaskCompletionNotifications } from "../notifications/taskCompletion";
-import { useWorkspaceStore, workspaceThreadId } from "../workspaceStore";
+import { useWorkspacePathsStore } from "../workspacePathsStore";
 import {
   resolveThreadDetailSubscriptionLeaseIds,
+  subscribeThreadDetailEvictions,
   useRetainedThreadDetailIds,
 } from "../threadDetailSubscriptionRetention";
 import { getThreadFromState, getThreadsFromState } from "../threadDerivation";
@@ -131,8 +134,16 @@ const seenProviderUpdateNotificationKeys = new Set<string>();
 
 type ProviderUpdateToastId = ReturnType<typeof toastManager.add>;
 type ActiveProviderUpdateToast =
-  | { readonly kind: "prompt"; readonly key: string; readonly toastId: ProviderUpdateToastId }
-  | { readonly kind: "update"; readonly key: string; readonly toastId: ProviderUpdateToastId };
+  | {
+      readonly kind: "prompt";
+      readonly key: string;
+      readonly toastId: ProviderUpdateToastId;
+    }
+  | {
+      readonly kind: "update";
+      readonly key: string;
+      readonly toastId: ProviderUpdateToastId;
+    };
 
 function shellThreadHasStarted(thread: OrchestrationShellSnapshot["threads"][number]): boolean {
   return thread.latestTurn !== null || thread.session !== null;
@@ -324,204 +335,203 @@ function ProviderStatusRefreshCoordinator() {
   return null;
 }
 
+// Extracted to module scope so its run-always cleanup can stay a try/finally: the
+// React Compiler does not compile module functions, so the finally block is fine
+// here even though it would bail out the component body.
+async function runProviderUpdateAll(params: {
+  providers: ReadonlyArray<ServerProviderStatus>;
+  queryClient: QueryClient;
+  activeToastRef: { current: ActiveProviderUpdateToast | null };
+  isUpdatingAllRef: { current: boolean };
+  progressToastDismissedRef: { current: boolean };
+  setIsUpdatingAll: (value: boolean) => void;
+}): Promise<void> {
+  const {
+    providers,
+    queryClient,
+    activeToastRef,
+    isUpdatingAllRef,
+    progressToastDismissedRef,
+    setIsUpdatingAll,
+  } = params;
+  const activeNotificationKey = providerUpdateNotificationKey(providers);
+  if (isUpdatingAllRef.current || providers.length === 0 || !activeNotificationKey) {
+    return;
+  }
+
+  isUpdatingAllRef.current = true;
+  progressToastDismissedRef.current = false;
+  setIsUpdatingAll(true);
+  const trackedToast = activeToastRef.current;
+  const toastId =
+    trackedToast?.toastId ??
+    toastManager.add({
+      type: "loading",
+      title: "Updating providers...",
+      description:
+        providers.length === 1
+          ? `Updating ${PROVIDER_DISPLAY_NAMES[providers[0]!.provider]}.`
+          : `Updating ${providers.length} providers.`,
+      timeout: 0,
+    });
+  activeToastRef.current = { kind: "update", key: activeNotificationKey, toastId };
+  const dismissProgressToast = () => {
+    progressToastDismissedRef.current = true;
+    if (activeToastRef.current?.toastId === toastId) {
+      activeToastRef.current = null;
+    }
+    toastManager.close(toastId);
+  };
+
+  toastManager.update(toastId, {
+    type: "loading",
+    title: "Updating providers...",
+    description:
+      providers.length === 1
+        ? `Updating ${PROVIDER_DISPLAY_NAMES[providers[0]!.provider]}.`
+        : `Updating ${providers.length} providers.`,
+    actionProps: undefined,
+    data: { onClose: dismissProgressToast },
+    timeout: 0,
+  });
+
+  const failures: Array<{ provider: ServerProviderStatus; reason: string }> = [];
+
+  try {
+    const api = ensureNativeApi();
+    for (const provider of providers) {
+      try {
+        const result = await withProviderUpdateTimeout({
+          provider: provider.provider,
+          request: api.server.updateProvider({ provider: provider.provider }),
+        });
+        const refreshed = result.providers.find((entry) => entry.provider === provider.provider);
+        const updateState = refreshed?.updateState;
+        if (updateState?.status === "failed" || updateState?.status === "unchanged") {
+          failures.push({
+            provider,
+            reason: updateState.message ?? "The update command did not complete successfully.",
+          });
+        } else if (refreshed?.versionAdvisory?.status === "behind_latest") {
+          failures.push({
+            provider,
+            reason: "The provider still appears outdated after updating.",
+          });
+        }
+      } catch (error) {
+        failures.push({
+          provider,
+          reason: error instanceof Error ? error.message : "The update request failed.",
+        });
+      }
+    }
+  } catch (error) {
+    for (const provider of providers) {
+      failures.push({
+        provider,
+        reason:
+          error instanceof Error ? error.message : "The provider update request could not start.",
+      });
+    }
+  } finally {
+    // Refresh is best-effort UI sync; it must not keep the progress toast alive.
+    await queryClient
+      .invalidateQueries({ queryKey: serverQueryKeys.config() })
+      .catch(() => undefined);
+    isUpdatingAllRef.current = false;
+    setIsUpdatingAll(false);
+  }
+
+  if (progressToastDismissedRef.current || activeToastRef.current?.toastId !== toastId) {
+    return;
+  }
+
+  if (failures.length > 0) {
+    activeToastRef.current = null;
+    // Surface the exact manual commands so a user whose one-click update
+    // failed (EACCES on global npm, PATH/package-manager mismatch, etc.) can
+    // copy and run them in a terminal instead of being stuck.
+    const manualCommands = Array.from(
+      new Set(
+        failures
+          .map(({ provider }) => provider.versionAdvisory?.updateCommand)
+          .filter(
+            (command): command is string =>
+              typeof command === "string" && command.trim().length > 0,
+          ),
+      ),
+    );
+    const failureLines = failures
+      .map(({ provider, reason }) => `${PROVIDER_DISPLAY_NAMES[provider.provider]}: ${reason}`)
+      .join("\n");
+    toastManager.update(toastId, {
+      type: "error",
+      title:
+        failures.length === providers.length
+          ? "Provider updates failed"
+          : "Some provider updates failed",
+      description:
+        manualCommands.length > 0
+          ? `${failureLines}\n\nCopy the command${manualCommands.length === 1 ? "" : "s"} below to update manually in a terminal.`
+          : failureLines,
+      data: {
+        onClose: dismissProgressToast,
+        ...(manualCommands.length > 0 ? { copyText: manualCommands.join("\n") } : {}),
+      },
+      timeout: 0,
+    });
+    return;
+  }
+
+  activeToastRef.current = null;
+  toastManager.update(toastId, {
+    type: "success",
+    title:
+      providers.length === 1
+        ? `${PROVIDER_DISPLAY_NAMES[providers[0]!.provider]} updated`
+        : `${providers.length} providers updated`,
+    description: "New sessions will use the refreshed provider tools.",
+    data: { onClose: dismissProgressToast },
+    timeout: 6000,
+  });
+}
+
 function ProviderUpdateNotifications() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { settings } = useAppSettings();
   const serverConfigQuery = useQuery(serverConfigQueryOptions());
   const serverSettingsQuery = useQuery(serverSettingsQueryOptions());
-  const providerUpdateServerSettings = useMemo(
-    () =>
-      serverSettingsQuery.data
-        ? {
-            ...serverSettingsQuery.data,
-            enableProviderUpdateChecks: settings.enableProviderUpdateChecks,
-          }
-        : null,
-    [serverSettingsQuery.data, settings.enableProviderUpdateChecks],
-  );
+  const providerUpdateServerSettings = serverSettingsQuery.data
+    ? {
+        ...serverSettingsQuery.data,
+        enableProviderUpdateChecks: settings.enableProviderUpdateChecks,
+      }
+    : null;
   const [isUpdatingAll, setIsUpdatingAll] = useState(false);
   const activeToastRef = useRef<ActiveProviderUpdateToast | null>(null);
   const isUpdatingAllRef = useRef(false);
   const progressToastDismissedRef = useRef(false);
-  const outdatedProviders = useMemo(
-    () =>
-      getVisibleProviderUpdateStatuses({
-        providers: serverConfigQuery.data?.providers ?? [],
-        hiddenProviders: settings.hiddenProviders,
-        serverSettings: providerUpdateServerSettings,
-        oneClickOnly: true,
-      }),
-    [providerUpdateServerSettings, serverConfigQuery.data?.providers, settings.hiddenProviders],
+  const outdatedProviders = getVisibleProviderUpdateStatuses({
+    providers: serverConfigQuery.data?.providers ?? [],
+    hiddenProviders: settings.hiddenProviders,
+    serverSettings: providerUpdateServerSettings,
+    oneClickOnly: true,
+  });
+  const oneClickProviders = outdatedProviders.filter(
+    (provider) => !isProviderUpdateActive(provider),
   );
-  const oneClickProviders = useMemo(
-    () => outdatedProviders.filter((provider) => !isProviderUpdateActive(provider)),
-    [outdatedProviders],
-  );
-  const notificationKey = useMemo(
-    () => providerUpdateNotificationKey(outdatedProviders),
-    [outdatedProviders],
-  );
+  const notificationKey = providerUpdateNotificationKey(outdatedProviders);
 
-  const updateAll = useCallback(
-    async (providers: ReadonlyArray<ServerProviderStatus>) => {
-      const activeNotificationKey = providerUpdateNotificationKey(providers);
-      if (isUpdatingAllRef.current || providers.length === 0 || !activeNotificationKey) {
-        return;
-      }
-
-      isUpdatingAllRef.current = true;
-      progressToastDismissedRef.current = false;
-      setIsUpdatingAll(true);
-      const trackedToast = activeToastRef.current;
-      const toastId =
-        trackedToast?.toastId ??
-        toastManager.add({
-          type: "loading",
-          title: "Updating providers...",
-          description:
-            providers.length === 1
-              ? `Updating ${providerStatusDisplayName(providers[0]!)}.`
-              : `Updating ${providers.length} providers.`,
-          timeout: 0,
-        });
-      activeToastRef.current = { kind: "update", key: activeNotificationKey, toastId };
-      const dismissProgressToast = () => {
-        progressToastDismissedRef.current = true;
-        if (activeToastRef.current?.toastId === toastId) {
-          activeToastRef.current = null;
-        }
-        toastManager.close(toastId);
-      };
-
-      toastManager.update(toastId, {
-        type: "loading",
-        title: "Updating providers...",
-        description:
-          providers.length === 1
-            ? `Updating ${providerStatusDisplayName(providers[0]!)}.`
-            : `Updating ${providers.length} providers.`,
-        actionProps: undefined,
-        data: { onClose: dismissProgressToast },
-        timeout: 0,
-      });
-
-      const failures: Array<{ provider: ServerProviderStatus; reason: string }> = [];
-
-      try {
-        const api = ensureNativeApi();
-        for (const provider of providers) {
-          try {
-            if (!isProviderKind(provider.provider)) {
-              failures.push({
-                provider,
-                reason: "This provider driver cannot be updated by this Synara build.",
-              });
-              continue;
-            }
-            const result = await withProviderUpdateTimeout({
-              provider: provider.provider,
-              request: api.server.updateProvider({
-                provider: provider.provider,
-                instanceId: provider.instanceId,
-              }),
-            });
-            const refreshed = result.providers.find(
-              (entry) => entry.instanceId === provider.instanceId,
-            );
-            const updateState = refreshed?.updateState;
-            if (updateState?.status === "failed" || updateState?.status === "unchanged") {
-              failures.push({
-                provider,
-                reason: updateState.message ?? "The update command did not complete successfully.",
-              });
-            } else if (refreshed?.versionAdvisory?.status === "behind_latest") {
-              failures.push({
-                provider,
-                reason: "The provider still appears outdated after updating.",
-              });
-            }
-          } catch (error) {
-            failures.push({
-              provider,
-              reason: error instanceof Error ? error.message : "The update request failed.",
-            });
-          }
-        }
-      } catch (error) {
-        for (const provider of providers) {
-          failures.push({
-            provider,
-            reason:
-              error instanceof Error
-                ? error.message
-                : "The provider update request could not start.",
-          });
-        }
-      } finally {
-        // Refresh is best-effort UI sync; it must not keep the progress toast alive.
-        await queryClient
-          .invalidateQueries({ queryKey: serverQueryKeys.config() })
-          .catch(() => undefined);
-        isUpdatingAllRef.current = false;
-        setIsUpdatingAll(false);
-      }
-
-      if (progressToastDismissedRef.current || activeToastRef.current?.toastId !== toastId) {
-        return;
-      }
-
-      if (failures.length > 0) {
-        activeToastRef.current = null;
-        // Surface the exact manual commands so a user whose one-click update
-        // failed (EACCES on global npm, PATH/package-manager mismatch, etc.) can
-        // copy and run them in a terminal instead of being stuck.
-        const manualCommands = Array.from(
-          new Set(
-            failures
-              .map(({ provider }) => provider.versionAdvisory?.updateCommand)
-              .filter(
-                (command): command is string =>
-                  typeof command === "string" && command.trim().length > 0,
-              ),
-          ),
-        );
-        const failureLines = failures
-          .map(({ provider, reason }) => `${providerStatusDisplayName(provider)}: ${reason}`)
-          .join("\n");
-        toastManager.update(toastId, {
-          type: "error",
-          title:
-            failures.length === providers.length
-              ? "Provider updates failed"
-              : "Some provider updates failed",
-          description:
-            manualCommands.length > 0
-              ? `${failureLines}\n\nCopy the command${manualCommands.length === 1 ? "" : "s"} below to update manually in a terminal.`
-              : failureLines,
-          data: {
-            onClose: dismissProgressToast,
-            ...(manualCommands.length > 0 ? { copyText: manualCommands.join("\n") } : {}),
-          },
-          timeout: 0,
-        });
-        return;
-      }
-
-      activeToastRef.current = null;
-      toastManager.update(toastId, {
-        type: "success",
-        title:
-          providers.length === 1
-            ? `${providerStatusDisplayName(providers[0]!)} updated`
-            : `${providers.length} providers updated`,
-        description: "New sessions will use the refreshed provider tools.",
-        data: { onClose: dismissProgressToast },
-        timeout: 6000,
-      });
-    },
-    [queryClient],
-  );
+  const updateAll = (providers: ReadonlyArray<ServerProviderStatus>) =>
+    runProviderUpdateAll({
+      providers,
+      queryClient,
+      activeToastRef,
+      isUpdatingAllRef,
+      progressToastDismissedRef,
+      setIsUpdatingAll,
+    });
 
   useEffect(() => {
     const activeToast = activeToastRef.current;
@@ -653,25 +663,24 @@ function GlobalFeedbackDialog() {
   const isOpen = useFeedbackDialogStore((state) => state.isOpen);
   const requestedContext = useFeedbackDialogStore((state) => state.context);
   const setOpen = useFeedbackDialogStore((state) => state.setOpen);
-  const context = useMemo<FeedbackThreadContext>(
-    () =>
-      requestedContext ?? {
-        provider: activeThread?.modelSelection.provider ?? null,
-        model: activeThread?.modelSelection.model ?? null,
-        projectKind: activeProject?.kind ?? null,
-        environmentMode: activeThread?.envMode ?? null,
-        runtimeMode: activeThread?.runtimeMode ?? null,
-        interactionMode: activeThread?.interactionMode ?? null,
-        sessionStatus: activeThread?.session?.status ?? null,
-        latestTurnState: activeThread?.latestTurn?.state ?? null,
-        messageCount: activeThread?.messages.length ?? 0,
-        activityCount: activeThread?.activities.length ?? 0,
-        hasPendingApproval: activeThread?.hasPendingApprovals === true,
-        hasPendingUserInput: activeThread?.hasPendingUserInput === true,
-        hasThreadError: Boolean(activeThread?.error),
-      },
-    [activeProject?.kind, activeThread, requestedContext],
-  );
+  const context: FeedbackThreadContext = requestedContext ?? {
+    provider: activeThread
+      ? (activeThread.session?.provider ??
+        inferLegacyProviderKindFromModelSelection(activeThread.modelSelection))
+      : null,
+    model: activeThread?.modelSelection.model ?? null,
+    projectKind: activeProject?.kind ?? null,
+    environmentMode: activeThread?.envMode ?? null,
+    runtimeMode: activeThread?.runtimeMode ?? null,
+    interactionMode: activeThread?.interactionMode ?? null,
+    sessionStatus: activeThread?.session?.status ?? null,
+    latestTurnState: activeThread?.latestTurn?.state ?? null,
+    messageCount: activeThread?.messages.length ?? 0,
+    activityCount: activeThread?.activities.length ?? 0,
+    hasPendingApproval: activeThread?.hasPendingApprovals === true,
+    hasPendingUserInput: activeThread?.hasPendingUserInput === true,
+    hasThreadError: Boolean(activeThread?.error),
+  };
 
   return <FeedbackDialog open={isOpen} context={context} onOpenChange={setOpen} />;
 }
@@ -918,8 +927,7 @@ function EventRouter() {
   const removeOrphanedTerminalStates = useTerminalStateStore(
     (store) => store.removeOrphanedTerminalStates,
   );
-  const setServerWorkspacePaths = useWorkspaceStore((store) => store.setServerWorkspacePaths);
-  const workspacePages = useWorkspaceStore((store) => store.workspacePages);
+  const setServerWorkspacePaths = useWorkspacePathsStore((store) => store.setServerWorkspacePaths);
   const serverThreads = useStore(selectAllThreads);
   const queryClient = useQueryClient();
   const navigate = useNavigate();
@@ -929,28 +937,21 @@ function EventRouter() {
     select: (params) => (params.threadId ? ThreadId.makeUnsafe(params.threadId) : null),
   });
   const routeSearch = useDiffRouteSearch();
-  const activeSplitView = useSplitViewStore(selectSplitView(routeSearch.splitViewId ?? null));
-  const visibleThreadIds = useMemo(() => {
-    if (activeSplitView) {
-      return resolveSplitViewThreadIds(activeSplitView);
-    }
-    return routeThreadId ? [routeThreadId] : [];
-  }, [activeSplitView, routeThreadId]);
+  const activeSplitView = useSplitViewStore(
+    useMemo(() => selectSplitView(routeSearch.splitViewId ?? null), [routeSearch.splitViewId]),
+  );
+  const visibleThreadIds = activeSplitView
+    ? resolveSplitViewThreadIds(activeSplitView)
+    : routeThreadId
+      ? [routeThreadId]
+      : [];
   const retainedThreadIds = useRetainedThreadDetailIds();
-  const serverThreadIds = useMemo(
-    () => new Set(serverThreads.map((thread) => thread.id)),
-    [serverThreads],
-  );
-  const subscribedThreadIds = useMemo(
-    () =>
-      resolveThreadDetailSubscriptionLeaseIds({
-        visibleThreadIds,
-        retainedThreadIds,
-        serverThreadIds,
-      }),
-    [retainedThreadIds, serverThreadIds, visibleThreadIds],
-  );
-  const workspacePagesRef = useRef(workspacePages);
+  const serverThreadIds = new Set(serverThreads.map((thread) => thread.id));
+  const subscribedThreadIds = resolveThreadDetailSubscriptionLeaseIds({
+    visibleThreadIds,
+    retainedThreadIds,
+    serverThreadIds,
+  });
   const pathnameRef = useRef(pathname);
   const handledBootstrapThreadIdRef = useRef<string | null>(null);
   const visibleThreadIdsRef = useRef(subscribedThreadIds);
@@ -958,9 +959,14 @@ function EventRouter() {
     ((threadIds: readonly ThreadId[]) => Promise<void>) | null
   >(null);
 
-  workspacePagesRef.current = workspacePages;
-  pathnameRef.current = pathname;
-  visibleThreadIdsRef.current = subscribedThreadIds;
+  // Latest-value mirrors read by the subscription effect's post-commit async
+  // callbacks (welcome handler, scoped-subscription reconcile, terminal cleanup).
+  // The refs are seeded via useRef init, so mount reads stay correct before this
+  // runs; subsequent renders refresh them here instead of during render.
+  useEffect(() => {
+    pathnameRef.current = pathname;
+    visibleThreadIdsRef.current = subscribedThreadIds;
+  }, [pathname, subscribedThreadIds]);
 
   useEffect(() => {
     const api = readNativeApi();
@@ -987,23 +993,6 @@ function EventRouter() {
       threadSnapshotSequenceById.delete(threadId);
       pendingThreadEventsById.set(threadId, []);
       threadSnapshotRequestInFlight.delete(threadId);
-    };
-
-    // Draft routes can subscribe before the server thread exists. Once the shell
-    // row appears, explicitly request the first thread snapshot so buffered detail
-    // events can flush instead of waiting forever.
-    const requestThreadSnapshot = async (threadId: ThreadId) => {
-      if (threadSnapshotSequenceById.has(threadId) || threadSnapshotRequestInFlight.has(threadId)) {
-        return;
-      }
-      threadSnapshotRequestInFlight.add(threadId);
-      try {
-        await api.orchestration.subscribeThread({ threadId });
-      } catch {
-        // Keep the pending buffer intact and retry on the next shell/detail update.
-      } finally {
-        threadSnapshotRequestInFlight.delete(threadId);
-      }
     };
 
     const flushThreadBuffer = (threadId: ThreadId, snapshotSequence: number) => {
@@ -1035,17 +1024,9 @@ function EventRouter() {
       const removals = [...subscribedThreadIds].filter((threadId) => !nextThreadIds.has(threadId));
       const additions = [...nextThreadIds].filter((threadId) => !subscribedThreadIds.has(threadId));
 
-      // Start new detail snapshots first so route changes can paint from the hot thread cache.
-      for (const threadId of additions) {
-        beginThreadSubscription(threadId);
-        subscribedThreadIds.add(threadId);
-      }
-      await Promise.all(
-        additions.map((threadId) =>
-          api.orchestration.subscribeThread({ threadId }).catch(() => undefined),
-        ),
-      );
-
+      // Release dropped leases before subscribing additions: the server enforces a
+      // per-client thread-stream budget, and subscribing while a stale lease still
+      // holds its slot gets the new thread's stream rejected at admission.
       for (const threadId of removals) {
         threadSnapshotSequenceById.delete(threadId);
         pendingThreadEventsById.delete(threadId);
@@ -1058,14 +1039,57 @@ function EventRouter() {
           api.orchestration.unsubscribeThread({ threadId }).catch(() => undefined),
         ),
       );
+
+      for (const threadId of additions) {
+        beginThreadSubscription(threadId);
+        subscribedThreadIds.add(threadId);
+      }
+      await Promise.all(
+        additions.map((threadId) =>
+          api.orchestration.subscribeThread({ threadId }).catch(() => undefined),
+        ),
+      );
+    };
+
+    const enqueueThreadSubscriptionOperation = (operation: () => Promise<void>) => {
+      reconcileThreadSubscriptionsChain = reconcileThreadSubscriptionsChain
+        .catch(() => undefined)
+        .then(operation);
+      return reconcileThreadSubscriptionsChain;
     };
 
     const enqueueThreadSubscriptionReconcile = (threadIds: readonly ThreadId[]) => {
       const nextThreadIds = [...threadIds];
-      reconcileThreadSubscriptionsChain = reconcileThreadSubscriptionsChain
-        .catch(() => undefined)
-        .then(() => reconcileThreadSubscriptions(nextThreadIds));
-      return reconcileThreadSubscriptionsChain;
+      return enqueueThreadSubscriptionOperation(() => reconcileThreadSubscriptions(nextThreadIds));
+    };
+
+    const refreshThreadSnapshot = (threadId: ThreadId): Promise<void> => {
+      if (threadSnapshotRequestInFlight.has(threadId)) {
+        return Promise.resolve();
+      }
+      threadSnapshotRequestInFlight.add(threadId);
+      return enqueueThreadSubscriptionOperation(async () => {
+        if (disposed || !subscribedThreadIds.has(threadId)) {
+          return;
+        }
+        await api.orchestration.unsubscribeThread({ threadId }).catch(() => undefined);
+        if (disposed || !subscribedThreadIds.has(threadId)) {
+          return;
+        }
+        await api.orchestration.subscribeThread({ threadId }).catch(() => undefined);
+      }).finally(() => {
+        threadSnapshotRequestInFlight.delete(threadId);
+      });
+    };
+
+    // Draft routes can subscribe before the server thread exists. Once the shell
+    // row appears, explicitly restart the stream for a first thread snapshot so
+    // buffered detail events can flush instead of waiting forever.
+    const requestThreadSnapshot = async (threadId: ThreadId) => {
+      if (threadSnapshotSequenceById.has(threadId)) {
+        return;
+      }
+      await refreshThreadSnapshot(threadId);
     };
 
     const shouldApplyBootstrapShellSnapshot = (snapshot: OrchestrationShellSnapshot) => {
@@ -1079,6 +1103,7 @@ function EventRouter() {
       // Desktop can briefly hydrate from an empty startup stream before the
       // projection reader is fully ready. Let the later non-empty shell query win.
       return (
+        (currentState.spaces.length === 0 && snapshot.spaces.length > 0) ||
         (currentState.projects.length === 0 && snapshot.projects.length > 0) ||
         ((currentState.threadIds?.length ?? 0) === 0 && snapshot.threads.length > 0)
       );
@@ -1099,12 +1124,21 @@ function EventRouter() {
     const ensureScopedSubscriptions = async () => {
       shellSnapshotSequence = -1;
       pendingShellEvents = [];
-      threadSnapshotSequenceById.clear();
-      pendingThreadEventsById.clear();
-      threadSnapshotRequestInFlight.clear();
-      threadReplayRequestInFlight.clear();
       await api.orchestration.subscribeShell().catch(() => loadShellSnapshotOnce());
-      await enqueueThreadSubscriptionReconcile(visibleThreadIdsRef.current);
+      await enqueueThreadSubscriptionOperation(async () => {
+        threadSnapshotSequenceById.clear();
+        pendingThreadEventsById.clear();
+        threadSnapshotRequestInFlight.clear();
+        threadReplayRequestInFlight.clear();
+        const previousThreadIds = [...subscribedThreadIds];
+        subscribedThreadIds.clear();
+        await Promise.all(
+          previousThreadIds.map((threadId) =>
+            api.orchestration.unsubscribeThread({ threadId }).catch(() => undefined),
+          ),
+        );
+        await reconcileThreadSubscriptions(visibleThreadIdsRef.current);
+      });
     };
 
     const removeOrphanedTerminalsForCurrentState = () => {
@@ -1118,9 +1152,6 @@ function EventRouter() {
           archivedAt: thread.archivedAt ?? null,
         })),
         draftThreadIds,
-        retainedThreadIds: workspacePagesRef.current.map((workspace) =>
-          workspaceThreadId(workspace.id),
-        ),
       });
       // Right-dock terminals live under a synthetic scope derived from each active
       // thread; retain those scopes so docked terminals are not pruned mid-session.
@@ -1239,24 +1270,28 @@ function EventRouter() {
         return;
       }
       threadReplayRequestInFlight.add(threadId);
-      try {
-        const replayedEvents = await api.orchestration.replayEvents(fromSequence);
-        for (const event of replayedEvents
-          .filter((candidate) => isThreadDetailEventForThread(candidate, threadId))
-          .filter(
-            (candidate) => targetSequence === undefined || candidate.sequence <= targetSequence,
-          )
-          .toSorted((left, right) => left.sequence - right.sequence)) {
-          const latestThreadSequence = threadSnapshotSequenceById.get(threadId) ?? fromSequence;
-          if (event.sequence <= latestThreadSequence) {
-            continue;
+      // Promise chain keeps the run-always cleanup (finally) and lets a replay
+      // rejection propagate to callers exactly as the try/finally did.
+      await api.orchestration
+        .replayEvents(fromSequence)
+        .then((replayedEvents) => {
+          for (const event of replayedEvents
+            .filter((candidate) => isThreadDetailEventForThread(candidate, threadId))
+            .filter(
+              (candidate) => targetSequence === undefined || candidate.sequence <= targetSequence,
+            )
+            .toSorted((left, right) => left.sequence - right.sequence)) {
+            const latestThreadSequence = threadSnapshotSequenceById.get(threadId) ?? fromSequence;
+            if (event.sequence <= latestThreadSequence) {
+              continue;
+            }
+            threadSnapshotSequenceById.set(threadId, event.sequence);
+            queueDomainEvent(event);
           }
-          threadSnapshotSequenceById.set(threadId, event.sequence);
-          queueDomainEvent(event);
-        }
-      } finally {
-        threadReplayRequestInFlight.delete(threadId);
-      }
+        })
+        .finally(() => {
+          threadReplayRequestInFlight.delete(threadId);
+        });
     };
 
     const domainEventFlushThrottler = new Throttler(
@@ -1333,6 +1368,29 @@ function EventRouter() {
       }
       threadSnapshotSequenceById.set(threadId, item.event.sequence);
       queueDomainEvent(item.event);
+    });
+    const unsubThreadStreamFailure = onThreadStreamFailure((failure) => {
+      const threadId = ThreadId.makeUnsafe(failure.threadId);
+      if (disposed || !subscribedThreadIds.has(threadId)) {
+        return;
+      }
+      // The stream is dead with retries and reconnects exhausted: forget its
+      // cursor so a future resubscribe requests a fresh snapshot, and surface
+      // the failure so the thread view stops posing as an empty conversation.
+      threadSnapshotSequenceById.delete(threadId);
+      threadSnapshotRequestInFlight.delete(threadId);
+      useStore.getState().markThreadDetailSyncFailed(threadId);
+    });
+    // Retention can evict a thread's detail slices while its stream lease stays
+    // active. The wiped messages never refresh on their own, so drop the cursor
+    // and restart the stream to fetch a fresh snapshot.
+    const unsubThreadDetailEviction = subscribeThreadDetailEvictions((threadId) => {
+      if (disposed || !subscribedThreadIds.has(threadId)) {
+        return;
+      }
+      threadSnapshotSequenceById.delete(threadId);
+      pendingThreadEventsById.set(threadId, []);
+      void refreshThreadSnapshot(threadId);
     });
     const unsubTerminalEvent = api.terminal.onEvent((event) => {
       const terminalThreadId = ThreadId.makeUnsafe(event.threadId);
@@ -1533,6 +1591,8 @@ function EventRouter() {
       );
       unsubShellEvent();
       unsubThreadEvent();
+      unsubThreadStreamFailure();
+      unsubThreadDetailEviction();
       unsubTerminalEvent();
       unsubDevServerEvent();
       unsubWelcome();

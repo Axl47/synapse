@@ -1,8 +1,7 @@
 // FILE: useTerminalSurfaceController.ts
-// Purpose: Shared terminal-store controller for non-chat terminal surfaces
-//          (right-dock terminal pane + workspace page). Owns the store selector
-//          slice, the focus-request bump, and the standard create/split/tab/move/
-//          activate/close handlers that were duplicated across those surfaces.
+// Purpose: Terminal-store controller for the right-dock terminal pane. Owns the
+//          store selector slice, focus-request bump, and standard create/split/tab/
+//          move/activate/close handlers.
 // Layer: Web terminal UI hook
 // Note: ChatView is intentionally NOT a consumer — it adds split limits, placeholder
 //       thread cleanup, and split-view navigation, so it shares only the lower-level
@@ -10,7 +9,7 @@
 
 import { type ThreadId } from "@synara/contracts";
 import { type TerminalCliKind } from "@synara/shared/terminalThreads";
-import { useCallback, useState } from "react";
+import { useState } from "react";
 
 import { useAppSettings } from "~/appSettings";
 import {
@@ -38,7 +37,6 @@ export function useTerminalSurfaceController(threadId: ThreadId) {
     selectThreadTerminalState(state.terminalStateByThreadId, threadId),
   );
   const openTerminalThreadPage = useTerminalStateStore((s) => s.openTerminalThreadPage);
-  const applyWorkspaceLayoutPreset = useTerminalStateStore((s) => s.applyWorkspaceLayoutPreset);
   const newTerminal = useTerminalStateStore((s) => s.newTerminal);
   const newTerminalTab = useTerminalStateStore((s) => s.newTerminalTab);
   const splitTerminalRightStore = useTerminalStateStore((s) => s.splitTerminalRight);
@@ -52,138 +50,96 @@ export function useTerminalSurfaceController(threadId: ThreadId) {
   const setTerminalActivityStore = useTerminalStateStore((s) => s.setTerminalActivity);
 
   const [focusRequestId, setFocusRequestId] = useState(0);
-  const bumpFocusRequest = useCallback(() => setFocusRequestId((value) => value + 1), []);
+  const bumpFocusRequest = () => setFocusRequestId((value) => value + 1);
 
-  const newTerminalGroup = useCallback(() => {
+  const newTerminalGroup = () => {
     newTerminal(threadId, randomTerminalId());
     bumpFocusRequest();
-  }, [bumpFocusRequest, newTerminal, threadId]);
+  };
 
-  const splitRight = useCallback(() => {
+  const splitRight = () => {
     splitTerminalRightStore(threadId, randomTerminalId());
     bumpFocusRequest();
-  }, [bumpFocusRequest, splitTerminalRightStore, threadId]);
+  };
 
-  const splitDown = useCallback(() => {
+  const splitDown = () => {
     splitTerminalDownStore(threadId, randomTerminalId());
     bumpFocusRequest();
-  }, [bumpFocusRequest, splitTerminalDownStore, threadId]);
+  };
 
-  const createTerminalTab = useCallback(
-    (targetTerminalId: string) => {
-      newTerminalTab(threadId, targetTerminalId, randomTerminalId());
-      bumpFocusRequest();
-    },
-    [bumpFocusRequest, newTerminalTab, threadId],
-  );
+  const createTerminalTab = (targetTerminalId: string) => {
+    newTerminalTab(threadId, targetTerminalId, randomTerminalId());
+    bumpFocusRequest();
+  };
 
-  const moveTerminalToNewGroup = useCallback(
-    (terminalId: string) => {
-      newTerminal(threadId, terminalId);
-      bumpFocusRequest();
-    },
-    [bumpFocusRequest, newTerminal, threadId],
-  );
+  const moveTerminalToNewGroup = (terminalId: string) => {
+    newTerminal(threadId, terminalId);
+    bumpFocusRequest();
+  };
 
-  const activateTerminal = useCallback(
-    (terminalId: string) => {
-      setActiveTerminalStore(threadId, terminalId);
-      bumpFocusRequest();
-    },
-    [bumpFocusRequest, setActiveTerminalStore, threadId],
-  );
+  const activateTerminal = (terminalId: string) => {
+    setActiveTerminalStore(threadId, terminalId);
+    bumpFocusRequest();
+  };
 
-  const closeTerminal = useCallback(
-    async (terminalId: string) => {
-      const api = readNativeApi();
-      const confirmed = await confirmTerminalTabClose({
+  const closeTerminal = async (terminalId: string) => {
+    const api = readNativeApi();
+    const confirmed = await confirmTerminalTabClose({
+      api,
+      enabled: shouldPromptForTerminalClose({
+        confirmationEnabled: settings.confirmTerminalTabClose,
+        runningTerminalIds: terminalState.runningTerminalIds,
+        terminalAttentionStatesById: terminalState.terminalAttentionStatesById,
+        terminalId,
+      }),
+      terminalTitle: resolveTerminalCloseTitle({
+        terminalId,
+        terminalLabelsById: terminalState.terminalLabelsById,
+        terminalTitleOverridesById: terminalState.terminalTitleOverridesById,
+      }),
+    });
+    if (!confirmed) {
+      return;
+    }
+    disposeAndCloseTerminalSession({ api, threadId, terminalId });
+    closeTerminalStore(threadId, terminalId);
+    bumpFocusRequest();
+  };
+
+  const closeTerminalGroup = (groupId: string) => {
+    const api = readNativeApi();
+    const groupToClose = terminalState.terminalGroups.find((group) => group.id === groupId);
+    const terminalIdsToClose = groupToClose
+      ? collectTerminalIdsFromLayout(groupToClose.layout)
+      : [];
+    const isClosingAllTerminals = terminalIdsToClose.length >= terminalState.terminalIds.length;
+    for (const terminalId of terminalIdsToClose) {
+      disposeAndCloseTerminalSession({
         api,
-        enabled: shouldPromptForTerminalClose({
-          confirmationEnabled: settings.confirmTerminalTabClose,
-          runningTerminalIds: terminalState.runningTerminalIds,
-          terminalAttentionStatesById: terminalState.terminalAttentionStatesById,
-          terminalId,
-        }),
-        terminalTitle: resolveTerminalCloseTitle({
-          terminalId,
-          terminalLabelsById: terminalState.terminalLabelsById,
-          terminalTitleOverridesById: terminalState.terminalTitleOverridesById,
-        }),
+        threadId,
+        terminalId,
+        clearHistoryBeforeClose: isClosingAllTerminals,
       });
-      if (!confirmed) {
-        return;
-      }
-      disposeAndCloseTerminalSession({ api, threadId, terminalId });
-      closeTerminalStore(threadId, terminalId);
-      bumpFocusRequest();
-    },
-    [
-      bumpFocusRequest,
-      closeTerminalStore,
-      settings.confirmTerminalTabClose,
-      terminalState.runningTerminalIds,
-      terminalState.terminalAttentionStatesById,
-      terminalState.terminalLabelsById,
-      terminalState.terminalTitleOverridesById,
-      threadId,
-    ],
-  );
+    }
+    closeTerminalGroupStore(threadId, groupId);
+  };
 
-  const closeTerminalGroup = useCallback(
-    (groupId: string) => {
-      const api = readNativeApi();
-      const groupToClose = terminalState.terminalGroups.find((group) => group.id === groupId);
-      const terminalIdsToClose = groupToClose
-        ? collectTerminalIdsFromLayout(groupToClose.layout)
-        : [];
-      const isClosingAllTerminals = terminalIdsToClose.length >= terminalState.terminalIds.length;
-      for (const terminalId of terminalIdsToClose) {
-        disposeAndCloseTerminalSession({
-          api,
-          threadId,
-          terminalId,
-          clearHistoryBeforeClose: isClosingAllTerminals,
-        });
-      }
-      closeTerminalGroupStore(threadId, groupId);
-    },
-    [
-      closeTerminalGroupStore,
-      terminalState.terminalGroups,
-      terminalState.terminalIds.length,
-      threadId,
-    ],
-  );
+  const setTerminalHeight = (height: number) => setTerminalHeightStore(threadId, height);
 
-  const setTerminalHeight = useCallback(
-    (height: number) => setTerminalHeightStore(threadId, height),
-    [setTerminalHeightStore, threadId],
-  );
+  const resizeTerminalSplit = (groupId: string, splitId: string, weights: number[]) =>
+    resizeTerminalSplitStore(threadId, groupId, splitId, weights);
 
-  const resizeTerminalSplit = useCallback(
-    (groupId: string, splitId: string, weights: number[]) =>
-      resizeTerminalSplitStore(threadId, groupId, splitId, weights),
-    [resizeTerminalSplitStore, threadId],
-  );
+  const setTerminalMetadata = (terminalId: string, metadata: TerminalMetadata) =>
+    setTerminalMetadataStore(threadId, terminalId, metadata);
 
-  const setTerminalMetadata = useCallback(
-    (terminalId: string, metadata: TerminalMetadata) =>
-      setTerminalMetadataStore(threadId, terminalId, metadata),
-    [setTerminalMetadataStore, threadId],
-  );
-
-  const setTerminalActivity = useCallback(
-    (terminalId: string, activity: TerminalActivity) =>
-      setTerminalActivityStore(threadId, terminalId, activity),
-    [setTerminalActivityStore, threadId],
-  );
+  const setTerminalActivity = (terminalId: string, activity: TerminalActivity) =>
+    setTerminalActivityStore(threadId, terminalId, activity);
 
   return {
     terminalState,
     focusRequestId,
     bumpFocusRequest,
     openTerminalThreadPage,
-    applyWorkspaceLayoutPreset,
     newTerminalGroup,
     splitRight,
     splitDown,

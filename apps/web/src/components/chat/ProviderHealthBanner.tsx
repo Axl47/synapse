@@ -4,7 +4,6 @@
 // Exports: ProviderHealthBanner
 
 import { PROVIDER_DISPLAY_NAMES, type ServerProviderStatus } from "@synara/contracts";
-import { memo } from "react";
 import { Alert, AlertAction, AlertDescription, AlertTitle } from "../ui/alert";
 import { IconButton } from "../ui/icon-button";
 import {
@@ -16,7 +15,7 @@ import { cn } from "~/lib/utils";
 import { ChatColumnBannerFrame } from "./ChatColumnBannerFrame";
 import { isProviderKind } from "../../providerOrdering";
 
-export const ProviderHealthBanner = memo(function ProviderHealthBanner({
+export const ProviderHealthBanner = function ProviderHealthBanner({
   onDismiss,
   status,
 }: {
@@ -67,4 +66,4 @@ export const ProviderHealthBanner = memo(function ProviderHealthBanner({
       </Alert>
     </ChatColumnBannerFrame>
   );
-});
+};

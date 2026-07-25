@@ -142,6 +142,7 @@ export function useComposerSlashCommands(input: {
     providerNativeCommandNames,
   });
 
+  // Manual memoization kept: this file does not compile under React Compiler (see compile-report).
   const compactProviderThread = useCallback(async (): Promise<boolean> => {
     const api = readNativeApi();
     if (
@@ -278,6 +279,7 @@ export function useComposerSlashCommands(input: {
         envMode: resolvedTarget.envMode,
         branch: resolvedTarget.branch,
         worktreePath: resolvedTarget.worktreePath,
+        workingDirectory: activeThread.workingDirectory ?? null,
         associatedWorktreePath: resolvedTarget.associatedWorktreePath,
         associatedWorktreeBranch: resolvedTarget.associatedWorktreeBranch,
         associatedWorktreeRef: resolvedTarget.associatedWorktreeRef,
@@ -337,6 +339,7 @@ export function useComposerSlashCommands(input: {
         envMode: activeThread.envMode ?? (activeThread.worktreePath ? "worktree" : "local"),
         branch: activeThread.branch,
         worktreePath: activeThread.worktreePath,
+        workingDirectory: activeThread.workingDirectory ?? null,
         associatedWorktreePath: activeThread.associatedWorktreePath ?? null,
         associatedWorktreeBranch: activeThread.associatedWorktreeBranch ?? null,
         associatedWorktreeRef: activeThread.associatedWorktreeRef ?? null,
@@ -442,6 +445,7 @@ export function useComposerSlashCommands(input: {
           envMode: activeThread.envMode ?? (activeThread.worktreePath ? "worktree" : "local"),
           branch: activeThread.branch,
           worktreePath: activeThread.worktreePath,
+          workingDirectory: activeThread.workingDirectory ?? null,
           lastKnownPr: activeThread.lastKnownPr ?? null,
           ...associatedWorktree,
           createdAt,

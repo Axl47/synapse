@@ -10,19 +10,134 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { AuthStorage, ModelRegistry } from "@earendil-works/pi-coding-agent";
+import { ModelRegistry, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import { describe, expect, it, vi } from "vitest";
 import {
   applyPiRuntimeApiKeysFromEnvironment,
   createPiModelRegistry,
+  createPiModelRuntime,
+  ensurePiAnthropicCatalogModels,
   getPiDiscoverableModels,
   getPiSupportedThinkingOptions,
+  buildPiAgentGatewayCustomTools,
   makePiBashProcessSupervisor,
   makePiRuntimeEventBase,
   makePiUserInputOptions,
   PLAIN_PI_EXTENSION_THEME,
 } from "./PiAdapter";
+
+describe("Pi native Synara gateway tools", () => {
+  it("uses canonical MCP schemas and keeps same-cwd thread tokens distinct", async () => {
+    const requests: Array<{ readonly token: string | null; readonly body: any }> = [];
+    const fetch = async (_input: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body));
+      requests.push({
+        token: new Headers(init?.headers).get("Authorization"),
+        body,
+      });
+      return Response.json({
+        jsonrpc: "2.0",
+        id: body.id,
+        result:
+          body.method === "tools/list"
+            ? {
+                tools: [
+                  {
+                    name: "synara_list_threads",
+                    description: "List Synara threads.",
+                    inputSchema: {
+                      type: "object",
+                      properties: { limit: { type: "number" } },
+                    },
+                  },
+                ],
+              }
+            : {
+                content: [{ type: "text", text: body.params.arguments.owner }],
+              },
+      });
+    };
+    const defineTool = (tool: any) => tool;
+    const first = await buildPiAgentGatewayCustomTools({
+      connection: { url: "http://127.0.0.1:3773/mcp", bearerToken: "token-a" },
+      defineTool,
+      fetch,
+    });
+    const second = await buildPiAgentGatewayCustomTools({
+      connection: { url: "http://127.0.0.1:3773/mcp", bearerToken: "token-b" },
+      defineTool,
+      fetch,
+    });
+
+    expect(first[0]?.parameters).toEqual({
+      type: "object",
+      properties: { limit: { type: "number" } },
+    });
+    await expect(
+      first[0]?.execute("call-a", { owner: "thread-a" }, undefined, undefined, {} as never),
+    ).resolves.toMatchObject({ content: [{ type: "text", text: "thread-a" }] });
+    await expect(
+      second[0]?.execute("call-b", { owner: "thread-b" }, undefined, undefined, {} as never),
+    ).resolves.toMatchObject({ content: [{ type: "text", text: "thread-b" }] });
+    expect(requests.map((request) => request.token)).toEqual([
+      "Bearer token-a",
+      "Bearer token-b",
+      "Bearer token-a",
+      "Bearer token-b",
+    ]);
+    expect(requests[2]?.body.params.arguments).toEqual({ owner: "thread-a" });
+    expect(requests[3]?.body.params.arguments).toEqual({ owner: "thread-b" });
+  });
+
+  it("forwards Pi tool cancellation to the in-flight MCP request", async () => {
+    let callSignal: AbortSignal | null = null;
+    const fetch = async (_input: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body));
+      if (body.method === "tools/list") {
+        return Response.json({
+          jsonrpc: "2.0",
+          id: body.id,
+          result: {
+            tools: [
+              {
+                name: "synara_create_threads",
+                description: "Create Synara threads.",
+                inputSchema: { type: "object", properties: {} },
+              },
+            ],
+          },
+        });
+      }
+
+      callSignal = init?.signal ?? null;
+      return await new Promise<Response>((_resolve, reject) => {
+        const rejectAborted = () =>
+          reject(
+            callSignal?.reason ?? new DOMException("The operation was aborted.", "AbortError"),
+          );
+        if (callSignal?.aborted) {
+          rejectAborted();
+          return;
+        }
+        callSignal?.addEventListener("abort", rejectAborted, { once: true });
+      });
+    };
+    const tools = await buildPiAgentGatewayCustomTools({
+      connection: { url: "http://127.0.0.1:3773/mcp", bearerToken: "token-a" },
+      defineTool: (tool) => tool,
+      fetch,
+    });
+    const controller = new AbortController();
+    const execution = tools[0]?.execute("call-a", {}, controller.signal, undefined, {} as never);
+
+    controller.abort();
+
+    await expect(execution).rejects.toMatchObject({ name: "AbortError" });
+    expect(callSignal).toBe(controller.signal);
+    expect(controller.signal.aborted).toBe(true);
+  });
+});
 
 describe("Pi Bash process supervision", () => {
   it("keeps an aborted command pending until process-tree exit is proven", async () => {
@@ -91,9 +206,43 @@ function makePiModel(input: {
 }
 
 describe("getPiDiscoverableModels", () => {
-  it("includes custom-provider models authenticated through auth.json semantics", () => {
+  it("isolates extension providers between sessions that share an agent directory", async () => {
+    const agentDir = mkdtempSync(path.join(tmpdir(), "synara-pi-runtime-isolation-"));
+
+    try {
+      const firstRuntime = await createPiModelRuntime(agentDir, { ModelRuntime });
+      const secondRuntime = await createPiModelRuntime(agentDir, { ModelRuntime });
+      const firstRegistry = new ModelRegistry(firstRuntime);
+      const secondRegistry = new ModelRegistry(secondRuntime);
+
+      firstRegistry.registerProvider("project-local", {
+        baseUrl: "http://127.0.0.1:11434/v1",
+        api: "openai-completions",
+        apiKey: "test-key",
+        models: [
+          {
+            id: "project-model",
+            name: "Project Model",
+            reasoning: false,
+            input: ["text"],
+            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+            contextWindow: 128_000,
+            maxTokens: 16_384,
+          },
+        ],
+      });
+
+      expect(firstRegistry.find("project-local", "project-model")).toBeDefined();
+      expect(secondRegistry.find("project-local", "project-model")).toBeUndefined();
+    } finally {
+      rmSync(agentDir, { recursive: true, force: true });
+    }
+  });
+
+  it("includes custom-provider models authenticated through auth.json semantics", async () => {
     const agentDir = mkdtempSync(path.join(tmpdir(), "synara-pi-models-"));
     const modelsPath = path.join(agentDir, "models.json");
+    const authPath = path.join(agentDir, "auth.json");
 
     try {
       writeFileSync(
@@ -108,10 +257,18 @@ describe("getPiDiscoverableModels", () => {
           },
         }),
       );
-      const authStorage = AuthStorage.inMemory({
-        local: { type: "api_key", key: "test-key" },
+      writeFileSync(
+        authPath,
+        JSON.stringify({
+          local: { type: "api_key", key: "test-key" },
+        }),
+      );
+      const modelRuntime = await ModelRuntime.create({
+        authPath,
+        modelsPath,
+        allowModelNetwork: false,
       });
-      const registry = ModelRegistry.create(authStorage, modelsPath);
+      const registry = new ModelRegistry(modelRuntime);
 
       const models = getPiDiscoverableModels(registry);
 
@@ -122,6 +279,120 @@ describe("getPiDiscoverableModels", () => {
     } finally {
       rmSync(agentDir, { recursive: true, force: true });
     }
+  });
+
+  it("restores Fable 5 and Opus 4.8 after an extension replaces the Anthropic catalog", async () => {
+    const agentDir = mkdtempSync(path.join(tmpdir(), "synara-pi-anthropic-"));
+    const modelsPath = path.join(agentDir, "models.json");
+    const authPath = path.join(agentDir, "auth.json");
+
+    try {
+      writeFileSync(modelsPath, "{}");
+      writeFileSync(
+        authPath,
+        JSON.stringify({
+          anthropic: {
+            type: "oauth",
+            access: "tok",
+            refresh: "ref",
+            expires: Date.now() + 60_000,
+          },
+        }),
+      );
+      const modelRuntime = await ModelRuntime.create({
+        authPath,
+        modelsPath,
+        allowModelNetwork: false,
+      });
+      const registry = new ModelRegistry(modelRuntime);
+      registry.registerProvider("anthropic", {
+        baseUrl: "https://api.anthropic.com",
+        api: "anthropic-messages",
+        apiKey: "test-key",
+        models: [
+          {
+            id: "claude-opus-4-7",
+            name: "Claude Opus 4.7",
+            api: "anthropic-messages",
+            reasoning: true,
+            input: ["text", "image"],
+            cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
+            contextWindow: 1_000_000,
+            maxTokens: 128_000,
+          },
+        ],
+      });
+
+      expect(
+        registry
+          .getAll()
+          .filter((model) => model.provider === "anthropic")
+          .map((model) => model.id),
+      ).toEqual(["claude-opus-4-7"]);
+      const models = getPiDiscoverableModels(registry);
+
+      expect(
+        models.some((model) => model.provider === "anthropic" && model.id === "claude-fable-5"),
+      ).toBe(true);
+      expect(
+        models.some((model) => model.provider === "anthropic" && model.id === "claude-opus-4-8"),
+      ).toBe(true);
+    } finally {
+      rmSync(agentDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("ensurePiAnthropicCatalogModels", () => {
+  it("does not invent Anthropic models when Anthropic is unauthenticated", () => {
+    const models = ensurePiAnthropicCatalogModels([
+      {
+        id: "glm-5.2",
+        name: "GLM 5.2",
+        api: "openai-completions",
+        provider: "local",
+        baseUrl: "http://127.0.0.1:11434/v1",
+        reasoning: false,
+        input: ["text"],
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+        contextWindow: 128_000,
+        maxTokens: 16_384,
+      },
+    ]);
+
+    expect(models.every((model) => model.provider !== "anthropic")).toBe(true);
+  });
+
+  it("restores Fable 5 and Opus 4.8 when an oauth catalog omitted them", () => {
+    const peer = {
+      id: "claude-opus-4-7",
+      name: "Claude Opus 4.7",
+      api: "anthropic-messages" as const,
+      provider: "anthropic",
+      baseUrl: "https://api.anthropic.com",
+      reasoning: true,
+      input: ["text", "image"] as Array<"text" | "image">,
+      cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
+      contextWindow: 1_000_000,
+      maxTokens: 128_000,
+    };
+    const models = ensurePiAnthropicCatalogModels([peer], [peer]);
+
+    expect(models.map((model) => model.id)).toEqual([
+      "claude-opus-4-7",
+      "claude-fable-5",
+      "claude-opus-4-8",
+    ]);
+    expect(models.find((model) => model.id === "claude-fable-5")).toMatchObject({
+      provider: "anthropic",
+      name: "Claude Fable 5",
+      reasoning: true,
+    });
+    expect(models.find((model) => model.id === "claude-opus-4-8")).toMatchObject({
+      provider: "anthropic",
+      name: "Claude Opus 4.8",
+      reasoning: true,
+    });
   });
 });
 

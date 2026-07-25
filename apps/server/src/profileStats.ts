@@ -693,6 +693,7 @@ const makeProfileStatsQuery = Effect.gen(function* () {
           JOIN projection_threads t ON t.thread_id = m.thread_id
           WHERE m.role = 'user'
             AND m.source = 'native'
+            AND (m.dispatch_origin IS NULL OR m.dispatch_origin = 'user')
           UNION ALL
           SELECT d.created_at AS created_at
           FROM profile_stats_deleted_prompts d
@@ -731,6 +732,7 @@ const makeProfileStatsQuery = Effect.gen(function* () {
             STRFTIME('%Y-%m-%d', DATETIME(a.created_at, ${tz})) AS day,
             COALESCE(
               tm.provider,
+              json_extract(a.payload_json, '$.provider'),
               CASE
                 WHEN tm.instance_id = s.provider_instance_id THEN s.provider_name
                 ELSE tm.instance_id
@@ -759,6 +761,7 @@ const makeProfileStatsQuery = Effect.gen(function* () {
               END,
               s.provider_instance_id,
               tm.provider,
+              json_extract(a.payload_json, '$.provider'),
               CASE
                 WHEN th.model_selection_json IS NOT NULL AND json_valid(th.model_selection_json)
                 THEN json_extract(th.model_selection_json, '$.provider')
@@ -769,13 +772,20 @@ const makeProfileStatsQuery = Effect.gen(function* () {
             COALESCE(
               tm.model,
               CASE
-                WHEN th.model_selection_json IS NOT NULL AND json_valid(th.model_selection_json)
+                WHEN th.model_selection_json IS NOT NULL
+                  AND json_valid(th.model_selection_json)
+                  AND (
+                    json_extract(a.payload_json, '$.provider') IS NULL
+                    OR json_extract(a.payload_json, '$.provider') =
+                      json_extract(th.model_selection_json, '$.provider')
+                  )
                 THEN json_extract(th.model_selection_json, '$.model')
               END,
               'unknown'
             ) AS model,
             CAST(json_extract(a.payload_json, '$.totalProcessedTokens') AS INTEGER) AS tp,
             CAST(json_extract(a.payload_json, '$.usedTokens') AS INTEGER) AS ut,
+            pm.dispatch_origin AS dispatch_origin,
             a.sequence AS sequence,
             a.created_at AS created_at,
             a.activity_id AS activity_id
@@ -785,6 +795,12 @@ const makeProfileStatsQuery = Effect.gen(function* () {
             ON tm.thread_id = a.thread_id
            AND tm.turn_id = a.turn_id
           LEFT JOIN projection_thread_sessions s ON s.thread_id = th.thread_id
+          LEFT JOIN projection_turns pt
+            ON pt.thread_id = a.thread_id
+           AND pt.turn_id = a.turn_id
+          LEFT JOIN projection_thread_messages pm
+            ON pm.thread_id = pt.thread_id
+           AND pm.message_id = pt.pending_message_id
           WHERE a.kind = 'context-window.updated'
             AND COALESCE(
               json_extract(a.payload_json, '$.totalProcessedTokens'),
@@ -809,6 +825,7 @@ const makeProfileStatsQuery = Effect.gen(function* () {
             model,
             thread_id,
             tp AS tot,
+            dispatch_origin,
             sequence,
             created_at,
             activity_id
@@ -821,6 +838,7 @@ const makeProfileStatsQuery = Effect.gen(function* () {
             provider,
             instanceId,
             model,
+            dispatch_origin,
             CASE
               WHEN previous_tot IS NULL OR tot < previous_tot THEN tot
               ELSE MAX(0, tot - previous_tot)
@@ -831,6 +849,7 @@ const makeProfileStatsQuery = Effect.gen(function* () {
               provider,
               instanceId,
               model,
+              dispatch_origin,
               tot,
               LAG(tot) OVER (
                 PARTITION BY thread_id
@@ -851,6 +870,7 @@ const makeProfileStatsQuery = Effect.gen(function* () {
             ev.model AS model,
             ev.thread_id AS thread_id,
             ev.ut AS tot,
+            ev.dispatch_origin AS dispatch_origin,
             ev.sequence AS sequence,
             ev.created_at AS created_at,
             ev.activity_id AS activity_id
@@ -870,6 +890,7 @@ const makeProfileStatsQuery = Effect.gen(function* () {
             provider,
             instanceId,
             model,
+            dispatch_origin,
             CASE
               WHEN previous_tot IS NULL THEN tot
               WHEN tot < previous_tot
@@ -887,6 +908,7 @@ const makeProfileStatsQuery = Effect.gen(function* () {
               provider,
               instanceId,
               model,
+              dispatch_origin,
               tot,
               LAG(tot) OVER (
                 PARTITION BY thread_id
@@ -925,8 +947,10 @@ const makeProfileStatsQuery = Effect.gen(function* () {
         ),
         all_tokens AS (
           SELECT day, provider, instanceId, model, d FROM cumulative_delta
+          WHERE dispatch_origin IS NULL OR dispatch_origin = 'user'
           UNION ALL
           SELECT day, provider, instanceId, model, d FROM used_only_delta
+          WHERE dispatch_origin IS NULL OR dispatch_origin = 'user'
           UNION ALL
           SELECT
             STRFTIME('%Y-%m-%d', DATETIME(a.created_at, ${tz})) AS day,
@@ -1074,7 +1098,11 @@ const makeProfileStatsQuery = Effect.gen(function* () {
           JOIN projection_threads t
             ON t.thread_id = COALESCE(json_extract(e.payload_json, '$.threadId'), e.stream_id)
           LEFT JOIN projection_thread_sessions s ON s.thread_id = t.thread_id
+          LEFT JOIN projection_thread_messages um
+            ON um.thread_id = COALESCE(json_extract(e.payload_json, '$.threadId'), e.stream_id)
+           AND um.message_id = json_extract(e.payload_json, '$.messageId')
           WHERE e.event_type = 'thread.turn-start-requested'
+            AND (um.dispatch_origin IS NULL OR um.dispatch_origin = 'user')
         ),
         turn_counts AS (
           SELECT provider, instanceId, model, reasoning, COUNT(*) AS count
@@ -1112,6 +1140,7 @@ const makeProfileStatsQuery = Effect.gen(function* () {
       JOIN projection_threads t ON t.thread_id = m.thread_id
       WHERE m.role = 'user'
         AND m.source = 'native'
+        AND (m.dispatch_origin IS NULL OR m.dispatch_origin = 'user')
         AND (
           (m.skills_json IS NOT NULL AND TRIM(m.skills_json) NOT IN ('', '[]'))
           OR (m.mentions_json IS NOT NULL AND TRIM(m.mentions_json) NOT IN ('', '[]'))
@@ -1168,6 +1197,7 @@ const makeProfileStatsQuery = Effect.gen(function* () {
           JOIN projection_threads t ON t.thread_id = m.thread_id
           WHERE m.role = 'user'
             AND m.source = 'native'
+            AND (m.dispatch_origin IS NULL OR m.dispatch_origin = 'user')
           UNION ALL
           SELECT
             d.project_id AS project_id,

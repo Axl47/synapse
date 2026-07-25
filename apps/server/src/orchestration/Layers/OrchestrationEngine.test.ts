@@ -34,13 +34,40 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 
 const asProjectId = (value: string): ProjectId => ProjectId.makeUnsafe(value);
 const asMessageId = (value: string): MessageId => MessageId.makeUnsafe(value);
+
+const makeThreadEventReadMethods = (
+  events: ReadonlyArray<OrchestrationEvent>,
+): Pick<OrchestrationEventStoreShape, "getThreadHighWaterSequence" | "readThreadEvents"> => ({
+  getThreadHighWaterSequence: (threadId) =>
+    Effect.succeed(
+      events
+        .filter((event) => event.aggregateKind === "thread" && event.aggregateId === threadId)
+        .at(-1)?.sequence ?? 0,
+    ),
+  readThreadEvents: (input) =>
+    Effect.succeed(
+      events
+        .filter(
+          (event) =>
+            event.aggregateKind === "thread" &&
+            event.aggregateId === input.threadId &&
+            event.sequence <= input.throughSequenceInclusive &&
+            event.sequence < (input.beforeSequenceExclusive ?? Number.MAX_SAFE_INTEGER) &&
+            (input.eventTypes === undefined || input.eventTypes.includes(event.type)),
+        )
+        .toSorted((left, right) => right.sequence - left.sequence)
+        .slice(0, input.limit),
+    ),
+});
 const asTurnId = (value: string): TurnId => TurnId.makeUnsafe(value);
 const asCheckpointRef = (value: string): CheckpointRef => CheckpointRef.makeUnsafe(value);
 
+const TestServerConfigLayer = ServerConfig.layerTest(process.cwd(), {
+  prefix: "synara-orchestration-engine-test-",
+});
+
 async function createOrchestrationSystem() {
-  const ServerConfigLayer = ServerConfig.layerTest(process.cwd(), {
-    prefix: "synara-orchestration-engine-test-",
-  });
+  const ServerConfigLayer = TestServerConfigLayer;
   const orchestrationLayer = OrchestrationEngineLive.pipe(
     Layer.provide(OrchestrationProjectionPipelineLive),
     Layer.provide(OrchestrationProjectionSnapshotQueryLive),
@@ -93,7 +120,7 @@ describe("OrchestrationEngine", () => {
         projectId: asProjectId("project-engine-quiesce"),
         title: "Engine quiesce thread",
         modelSelection: {
-          provider: "codex",
+          instanceId: "codex",
           model: "gpt-5-codex",
         },
         interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
@@ -285,7 +312,7 @@ describe("OrchestrationEngine", () => {
         projectId: asProjectId("project-managed-attachment"),
         title: "Managed attachment project",
         workspaceRoot: "/tmp/project-managed-attachment",
-        defaultModelSelection: { provider: "codex", model: "gpt-5-codex" },
+        defaultModelSelection: { instanceId: "codex", model: "gpt-5-codex" },
         createdAt,
       }),
     );
@@ -296,7 +323,7 @@ describe("OrchestrationEngine", () => {
         threadId,
         projectId: asProjectId("project-managed-attachment"),
         title: "Managed attachment thread",
-        modelSelection: { provider: "codex", model: "gpt-5-codex" },
+        modelSelection: { instanceId: "codex", model: "gpt-5-codex" },
         interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
         runtimeMode: "approval-required",
         branch: null,
@@ -622,6 +649,7 @@ describe("OrchestrationEngine", () => {
       getHighWaterSequence() {
         return Effect.succeed(events.at(-1)?.sequence ?? 0);
       },
+      ...makeThreadEventReadMethods(events),
       readFromSequence(sequenceExclusive) {
         return Stream.fromIterable(events.filter((event) => event.sequence > sequenceExclusive));
       },
@@ -629,10 +657,6 @@ describe("OrchestrationEngine", () => {
         return Stream.fromIterable(events);
       },
     };
-
-    const ServerConfigLayer = ServerConfig.layerTest(process.cwd(), {
-      prefix: "synara-orchestration-engine-test-",
-    });
 
     const runtime = ManagedRuntime.make(
       OrchestrationEngineLive.pipe(
@@ -642,7 +666,7 @@ describe("OrchestrationEngine", () => {
         Layer.provide(OrchestrationCommandReceiptRepositoryLive),
         Layer.provide(SqlitePersistenceMemory),
         Layer.provide(ServerSettingsService.layerTest()),
-        Layer.provideMerge(ServerConfigLayer),
+        Layer.provideMerge(TestServerConfigLayer),
         Layer.provideMerge(NodeServices.layer),
       ),
     );
@@ -715,7 +739,7 @@ describe("OrchestrationEngine", () => {
       bootstrap: Effect.void,
       projectMetadataEvent: () => Effect.void,
       projectEvent: () => Effect.void,
-      projectHotEvent: (event) => {
+      projectHotEventInCurrentTransaction: (event) => {
         if (
           shouldFailRequestedProjection &&
           event.commandId === CommandId.makeUnsafe("cmd-turn-start-atomic") &&
@@ -742,6 +766,8 @@ describe("OrchestrationEngine", () => {
         Layer.provide(OrchestrationCommandReceiptRepositoryLive),
         Layer.provide(SqlitePersistenceMemory),
         Layer.provide(ServerSettingsService.layerTest()),
+        Layer.provideMerge(TestServerConfigLayer),
+        Layer.provideMerge(NodeServices.layer),
       ),
     );
     const engine = await runtime.runPromise(Effect.service(OrchestrationEngineService));
@@ -852,6 +878,7 @@ describe("OrchestrationEngine", () => {
       getHighWaterSequence() {
         return Effect.succeed(events.at(-1)?.sequence ?? 0);
       },
+      ...makeThreadEventReadMethods(events),
       readFromSequence(sequenceExclusive) {
         return Stream.fromIterable(events.filter((event) => event.sequence > sequenceExclusive));
       },
@@ -874,7 +901,7 @@ describe("OrchestrationEngine", () => {
         return Effect.void;
       },
       projectEvent: () => Effect.void,
-      projectHotEvent: () => Effect.void,
+      projectHotEventInCurrentTransaction: () => Effect.void,
       projectDeferredEvent: () => Effect.void,
     };
 
@@ -886,6 +913,8 @@ describe("OrchestrationEngine", () => {
         Layer.provide(OrchestrationCommandReceiptRepositoryLive),
         Layer.provide(SqlitePersistenceMemory),
         Layer.provide(ServerSettingsService.layerTest()),
+        Layer.provideMerge(TestServerConfigLayer),
+        Layer.provideMerge(NodeServices.layer),
       ),
     );
     const engine = await runtime.runPromise(Effect.service(OrchestrationEngineService));
@@ -964,6 +993,7 @@ describe("OrchestrationEngine", () => {
       getHighWaterSequence() {
         return Effect.succeed(events.at(-1)?.sequence ?? 0);
       },
+      ...makeThreadEventReadMethods(events),
       readFromSequence(sequenceExclusive) {
         return Stream.fromIterable(events.filter((event) => event.sequence > sequenceExclusive));
       },
@@ -977,7 +1007,7 @@ describe("OrchestrationEngine", () => {
       bootstrap: Effect.void,
       projectMetadataEvent: () => Effect.void,
       projectEvent: () => Effect.void,
-      projectHotEvent: (event) => {
+      projectHotEventInCurrentTransaction: (event) => {
         if (
           shouldFailProjection &&
           event.commandId === CommandId.makeUnsafe("cmd-thread-meta-sync-fail")
@@ -1003,6 +1033,8 @@ describe("OrchestrationEngine", () => {
         Layer.provide(OrchestrationCommandReceiptRepositoryLive),
         Layer.provide(SqlitePersistenceMemory),
         Layer.provide(ServerSettingsService.layerTest()),
+        Layer.provideMerge(TestServerConfigLayer),
+        Layer.provideMerge(NodeServices.layer),
       ),
     );
     const engine = await runtime.runPromise(Effect.service(OrchestrationEngineService));
@@ -1114,7 +1146,7 @@ describe("OrchestrationEngine", () => {
       }),
       projectMetadataEvent: () => Effect.void,
       projectEvent: () => Effect.void,
-      projectHotEvent: () => Effect.void,
+      projectHotEventInCurrentTransaction: () => Effect.void,
       projectDeferredEvent: () => {
         deferredCalls += 1;
         if (deferredCalls === 1) {
@@ -1137,6 +1169,8 @@ describe("OrchestrationEngine", () => {
         Layer.provide(OrchestrationCommandReceiptRepositoryLive),
         Layer.provide(SqlitePersistenceMemory),
         Layer.provide(ServerSettingsService.layerTest()),
+        Layer.provideMerge(TestServerConfigLayer),
+        Layer.provideMerge(NodeServices.layer),
       ),
     );
     const engine = await runtime.runPromise(Effect.service(OrchestrationEngineService));
@@ -1214,7 +1248,7 @@ describe("OrchestrationEngine", () => {
       bootstrap: Effect.void,
       projectMetadataEvent: () => Effect.void,
       projectEvent: () => Effect.void,
-      projectHotEvent: () => Effect.void,
+      projectHotEventInCurrentTransaction: () => Effect.void,
       projectDeferredEvent: () => Effect.void,
     };
     const runtime = ManagedRuntime.make(
@@ -1227,6 +1261,8 @@ describe("OrchestrationEngine", () => {
         Layer.provide(OrchestrationCommandReceiptRepositoryLive),
         Layer.provide(SqlitePersistenceMemory),
         Layer.provide(ServerSettingsService.layerTest()),
+        Layer.provideMerge(TestServerConfigLayer),
+        Layer.provideMerge(NodeServices.layer),
       ),
     );
     const engine = await runtime.runPromise(Effect.service(OrchestrationEngineService));

@@ -4,13 +4,15 @@ import type { MessageId, ProjectId, ThreadId } from "@synara/contracts";
 
 import type { AppState } from "./store";
 import {
+  createAllThreadsSelector,
   createAllThreadsMessagelessSelector,
+  createComposerThreadMentionSourcesSelector,
   createThreadExistsSelector,
   createThreadProjectIdSelector,
   createThreadShellsSelector,
   createThreadWorkspaceMetadataSelector,
 } from "./storeSelectors";
-import type { ThreadShell } from "./types";
+import type { SidebarThreadSummary, ThreadShell } from "./types";
 
 const threadIdA = "thread-a" as ThreadId;
 const threadIdB = "thread-b" as ThreadId;
@@ -19,10 +21,20 @@ const projectId = "project-1" as ProjectId;
 
 const shellA = { id: threadIdA, projectId, title: "A" } as ThreadShell;
 const shellB = { id: threadIdB, projectId, title: "B" } as ThreadShell;
+const summaryA = {
+  id: threadIdA,
+  projectId,
+  title: "A",
+  modelSelection: { instanceId: "codex", model: "gpt-5-codex" },
+  session: null,
+  createdAt: "2026-01-01T00:00:00.000Z",
+  latestUserMessageAt: null,
+} as SidebarThreadSummary;
 
 interface TestStateSlices {
   threadIds?: readonly ThreadId[];
   threadShellById?: Readonly<Record<string, ThreadShell>>;
+  sidebarThreadSummaryById?: Readonly<Record<string, SidebarThreadSummary>>;
   messageIdsByThreadId?: Readonly<Record<string, readonly MessageId[]>>;
 }
 
@@ -30,6 +42,7 @@ function makeState(slices: TestStateSlices): AppState {
   return {
     threadIds: slices.threadIds ?? [],
     threadShellById: slices.threadShellById ?? {},
+    sidebarThreadSummaryById: slices.sidebarThreadSummaryById ?? {},
     messageIdsByThreadId: slices.messageIdsByThreadId ?? {},
   } as unknown as AppState;
 }
@@ -76,6 +89,61 @@ describe("createThreadShellsSelector", () => {
 
     expect(after).not.toBe(before);
     expect(after[0]?.title).toBe("renamed");
+  });
+});
+
+describe("createComposerThreadMentionSourcesSelector", () => {
+  it("does not rescan summaries when only streaming detail changes", () => {
+    const selectSources = createComposerThreadMentionSourcesSelector();
+    const threadIds = [threadIdA];
+    let summaryReads = 0;
+    const summaryById = new Proxy(
+      { [threadIdA]: summaryA },
+      {
+        get(target, property, receiver) {
+          summaryReads += 1;
+          return Reflect.get(target, property, receiver);
+        },
+      },
+    );
+
+    const before = selectSources(makeState({ threadIds, sidebarThreadSummaryById: summaryById }));
+    const readsAfterFirstSelection = summaryReads;
+    const after = selectSources(
+      makeState({
+        threadIds,
+        sidebarThreadSummaryById: summaryById,
+        messageIdsByThreadId: { [threadIdA]: [messageId] },
+      }),
+    );
+
+    expect(after).toBe(before);
+    expect(summaryReads).toBe(readsAfterFirstSelection);
+  });
+});
+
+describe("createAllThreadsSelector", () => {
+  it("preserves the untouched thread identity when another thread shell changes", () => {
+    const selectThreads = createAllThreadsSelector();
+    const threadIds = [threadIdA, threadIdB];
+    const before = selectThreads(
+      makeState({
+        threadIds,
+        threadShellById: { [threadIdA]: shellA, [threadIdB]: shellB },
+      }),
+    );
+    const after = selectThreads(
+      makeState({
+        threadIds,
+        threadShellById: {
+          [threadIdA]: { ...shellA, title: "renamed" },
+          [threadIdB]: shellB,
+        },
+      }),
+    );
+
+    expect(after[0]).not.toBe(before[0]);
+    expect(after[1]).toBe(before[1]);
   });
 });
 
@@ -144,6 +212,42 @@ describe("thread shell route selectors", () => {
     expect(after).toEqual({
       envMode: "worktree",
       worktreePath: "/repo/.worktrees/feature",
+      workingDirectory: null,
+    });
+  });
+
+  it("updates workspace metadata when a Studio working directory changes", () => {
+    const selectWorkspaceMetadata = createThreadWorkspaceMetadataSelector(threadIdA);
+    const before = selectWorkspaceMetadata(
+      makeState({
+        threadIds: [threadIdA],
+        threadShellById: {
+          [threadIdA]: {
+            ...shellA,
+            envMode: "local",
+            workingDirectory: "/repo/one",
+          },
+        },
+      }),
+    );
+    const after = selectWorkspaceMetadata(
+      makeState({
+        threadIds: [threadIdA],
+        threadShellById: {
+          [threadIdA]: {
+            ...shellA,
+            envMode: "local",
+            workingDirectory: "/repo/two",
+          },
+        },
+      }),
+    );
+
+    expect(after).not.toBe(before);
+    expect(after).toEqual({
+      envMode: "local",
+      worktreePath: null,
+      workingDirectory: "/repo/two",
     });
   });
 });

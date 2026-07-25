@@ -6,8 +6,10 @@ import {
   AutomationArchiveRunInput,
   AutomationCreateInput,
   AutomationDeleteInput,
+  AutomationGetMemoryInput,
   AutomationListInput,
   AutomationMarkRunReadInput,
+  AutomationResolveProposalInput,
   AutomationRunNowInput,
   AutomationStreamEvent,
   AutomationUpdateInput,
@@ -120,6 +122,11 @@ import {
   PullRequestSetPinnedInput,
   PullRequestsListInput,
 } from "./pullRequests";
+import {
+  ExternalMcpCreateIntegrationInput,
+  ExternalMcpRefreshPairingInput,
+  ExternalMcpRevokeIntegrationInput,
+} from "./externalMcp";
 
 // ── WebSocket RPC Method Names ───────────────────────────────────────
 
@@ -198,6 +205,10 @@ export const WS_METHODS = {
   serverUpdateSettings: "server.updateSettings",
   serverRefreshProviders: "server.refreshProviders",
   serverUpdateProvider: "server.updateProvider",
+  serverListExternalMcpIntegrations: "server.listExternalMcpIntegrations",
+  serverCreateExternalMcpIntegration: "server.createExternalMcpIntegration",
+  serverRevokeExternalMcpIntegration: "server.revokeExternalMcpIntegration",
+  serverRefreshExternalMcpPairing: "server.refreshExternalMcpPairing",
   serverListWorktrees: "server.listWorktrees",
   serverListLocalServers: "server.listLocalServers",
   serverStopLocalServer: "server.stopLocalServer",
@@ -233,6 +244,7 @@ export const WS_METHODS = {
 
   // Automation methods
   automationList: "automation.list",
+  automationGetMemory: "automation.getMemory",
   automationCreate: "automation.create",
   automationUpdate: "automation.update",
   automationDelete: "automation.delete",
@@ -240,6 +252,7 @@ export const WS_METHODS = {
   automationCancelRun: "automation.cancelRun",
   automationMarkRunRead: "automation.markRunRead",
   automationArchiveRun: "automation.archiveRun",
+  automationResolveProposal: "automation.resolveProposal",
   subscribeAutomationEvents: "automation.subscribe",
 } as const;
 
@@ -372,6 +385,10 @@ const WebSocketRequestBody = Schema.Union([
   tagRequestBody(WS_METHODS.serverUpdateSettings, ServerUpdateSettingsInput),
   tagRequestBody(WS_METHODS.serverRefreshProviders, Schema.Struct({})),
   tagRequestBody(WS_METHODS.serverUpdateProvider, ServerProviderUpdateInput),
+  tagRequestBody(WS_METHODS.serverListExternalMcpIntegrations, Schema.Struct({})),
+  tagRequestBody(WS_METHODS.serverCreateExternalMcpIntegration, ExternalMcpCreateIntegrationInput),
+  tagRequestBody(WS_METHODS.serverRevokeExternalMcpIntegration, ExternalMcpRevokeIntegrationInput),
+  tagRequestBody(WS_METHODS.serverRefreshExternalMcpPairing, ExternalMcpRefreshPairingInput),
   tagRequestBody(WS_METHODS.serverListWorktrees, Schema.Struct({})),
   tagRequestBody(WS_METHODS.serverListLocalServers, Schema.Struct({})),
   tagRequestBody(WS_METHODS.serverStopLocalServer, ServerStopLocalServerInput),
@@ -399,6 +416,7 @@ const WebSocketRequestBody = Schema.Union([
 
   // Automation methods
   tagRequestBody(WS_METHODS.automationList, AutomationListInput),
+  tagRequestBody(WS_METHODS.automationGetMemory, AutomationGetMemoryInput),
   tagRequestBody(WS_METHODS.automationCreate, AutomationCreateInput),
   tagRequestBody(WS_METHODS.automationUpdate, AutomationUpdateInput),
   tagRequestBody(WS_METHODS.automationDelete, AutomationDeleteInput),
@@ -406,6 +424,7 @@ const WebSocketRequestBody = Schema.Union([
   tagRequestBody(WS_METHODS.automationCancelRun, AutomationCancelRunInput),
   tagRequestBody(WS_METHODS.automationMarkRunRead, AutomationMarkRunReadInput),
   tagRequestBody(WS_METHODS.automationArchiveRun, AutomationArchiveRunInput),
+  tagRequestBody(WS_METHODS.automationResolveProposal, AutomationResolveProposalInput),
   tagRequestBody(WS_METHODS.subscribeAutomationEvents, Schema.Struct({})),
 ]);
 

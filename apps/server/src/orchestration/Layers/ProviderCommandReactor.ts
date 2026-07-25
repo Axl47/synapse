@@ -17,6 +17,7 @@ import {
   type ProviderReviewTarget,
   type ProviderStartOptions,
   type ProviderSkillReference,
+  type ProviderTurnStartResult,
   type OrchestrationSession,
   type OrchestrationProjectShell,
   type OrchestrationThread,
@@ -72,6 +73,11 @@ import {
 } from "../../provider/Errors.ts";
 import { buildInlineSkillInstructions } from "../../provider/skillPromptInjection.ts";
 import {
+  appendThreadMentionContextBlocks,
+  resolveThreadMentionPromptProjection,
+  threadMentionContextSuffix,
+} from "../../provider/threadMentionContext.ts";
+import {
   TextGeneration,
   type BranchNameGenerationInput,
   type ThreadTitleGenerationInput,
@@ -114,6 +120,9 @@ import {
   isReplaySafeClaimedProviderIntent,
   type ProviderIntentEvent,
 } from "../providerIntentClassification.ts";
+import { deriveTurnStartSession } from "../turnStartSession.ts";
+import { TurnCheckpointCoordinator } from "../Services/TurnCheckpointCoordinator.ts";
+import { resolveProviderSessionThread as resolveProviderSessionThreadFromProjection } from "../providerSessionThread.ts";
 
 type ProviderQueueDrainEvent = Extract<
   ProviderRuntimeEvent,
@@ -139,7 +148,9 @@ type ProviderAttemptOutcome =
   | { readonly _tag: "safe_retry"; readonly detail: string }
   | { readonly _tag: "uncertain"; readonly detail: string };
 
-function classifyProviderAttemptOutcome(exit: Exit.Exit<void, unknown>): ProviderAttemptOutcome {
+export function classifyProviderAttemptOutcome(
+  exit: Exit.Exit<void, unknown>,
+): ProviderAttemptOutcome {
   if (Exit.isSuccess(exit)) return { _tag: "accepted" };
   const detail = Cause.pretty(exit.cause);
   const failure = Cause.findErrorOption(exit.cause);
@@ -160,6 +171,11 @@ function classifyProviderAttemptOutcome(exit: Exit.Exit<void, unknown>): Provide
     default:
       return { _tag: "uncertain", detail };
   }
+}
+
+export function isSafeLegacyProviderBlocker(lastError: string | null): boolean {
+  const normalized = lastError?.toLowerCase() ?? "";
+  return normalized.includes("stdin closed before the frame was written");
 }
 
 function toNonEmptyProviderInput(value: string | undefined): string | undefined {
@@ -279,6 +295,8 @@ const HANDLED_TURN_START_KEY_TTL = Duration.minutes(30);
 const PROVIDER_COMMAND_CLAIM_LEASE_MS = 30_000;
 const PROVIDER_COMMAND_SAFE_RETRY_LIMIT = 3;
 const PROVIDER_COMMAND_SAFE_RETRY_DELAY = Duration.millis(50);
+const PROVIDER_INPUT_SAFETY_MARGIN_CHARS = 1_000;
+const THREAD_MENTION_CONTEXT_SUFFIX_PREFIX_CHARS = 2;
 const DEFAULT_RUNTIME_MODE: RuntimeMode = "full-access";
 const SIDECHAT_BOUNDARY_INSTRUCTION =
   "You are in a sidechat. Treat all prior conversation as reference-only context. Do not continue any prior task automatically. Do not mutate files, git, or the workspace and do not run workspace-changing commands unless the latest user message explicitly asks you to do so after this boundary. Use this sidechat for focused explanation, safety checks, summaries, and alternatives.";
@@ -305,6 +323,16 @@ function availableProviderContextChars(input: {
   return Math.max(
     0,
     PROVIDER_SEND_TURN_MAX_INPUT_CHARS - wrapProviderContext({ ...input, contextText: "" }).length,
+  );
+}
+
+function availableThreadMentionContextChars(messageText: string): number {
+  return Math.max(
+    0,
+    PROVIDER_SEND_TURN_MAX_INPUT_CHARS -
+      messageText.length -
+      PROVIDER_INPUT_SAFETY_MARGIN_CHARS -
+      THREAD_MENTION_CONTEXT_SUFFIX_PREFIX_CHARS,
   );
 }
 
@@ -404,6 +432,7 @@ function buildGeneratedWorktreeBranchName(raw: string): string {
 const make = Effect.gen(function* () {
   const orchestrationEngine = yield* OrchestrationEngineService;
   const deliveryRepository = yield* OrchestrationEventDeliveryRepository;
+  const turnCheckpointCoordinator = yield* TurnCheckpointCoordinator;
   const queuedTurnPromotions = yield* QueuedTurnPromotionRepository;
   const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
   const providerService = yield* ProviderService;
@@ -474,7 +503,10 @@ const make = Effect.gen(function* () {
   });
 
   const resolveProjectedThreadWorkspaceCwd = Effect.fnUntraced(function* (
-    thread: Pick<OrchestrationThread, "projectId" | "envMode" | "worktreePath">,
+    thread: Pick<
+      OrchestrationThread,
+      "projectId" | "envMode" | "worktreePath" | "workingDirectory"
+    >,
   ): Effect.fn.Return<string | undefined> {
     const project = yield* resolveThreadWorkspaceProject(thread);
     if (!project) {
@@ -486,7 +518,24 @@ const make = Effect.gen(function* () {
     });
   });
   const editResendTurnStartKeys = new Set<string>();
+  const quarantinedThreads = new Set<string>();
   const drainingQueuedTurns = new Set<string>();
+  // Provider sessions with a drained queued turn whose promotion is in flight.
+  // The reservation survives provider startup and binds to the exact turn that
+  // must settle before another queue can drain, preventing late terminal events
+  // from promoting overlapping work.
+  // Keyed by the session-owning thread id (child subagent threads share the
+  // parent session, so per-child keys would allow overlapping promotions on
+  // one session); the queued thread + message pair identifies the promoted
+  // command, while object identity protects a replacement reservation for a
+  // retry of that same command.
+  type PendingQueuedDispatch = {
+    readonly queuedThreadId: string;
+    readonly messageId: string;
+    releaseOnTurnId?: TurnId;
+    pendingTerminalTurnIds?: Set<TurnId>;
+  };
+  const pendingQueuedDispatchBySessionThread = new Map<string, PendingQueuedDispatch>();
   const queuedTurnPromotionOwner = `provider-queued-turn:${crypto.randomUUID()}`;
   const sidechatContextBootstrapThreadIds = new Set<string>();
   // Fresh sessions that cannot inherit native conversation state need one
@@ -565,12 +614,14 @@ const make = Effect.gen(function* () {
       ? thread.session.providerName
       : undefined;
     let selectionProviderOptions = providerOptions;
+    let selectionInstanceAvailable = modelSelection === undefined;
     if (modelSelection) {
       const settings = yield* serverSettings.getSettings;
       const instance = resolveProviderInstance(settings, {
         instanceId: resolveModelSelectionInstanceId(modelSelection),
       });
       if (instance) {
+        selectionInstanceAvailable = true;
         selectionProvider ??= instance.driver;
         // Client-supplied options never carry redacted per-instance
         // environment/secrets, so the server-side instance options must win
@@ -583,11 +634,13 @@ const make = Effect.gen(function* () {
         }
       }
     }
-    const threadTextGenerationInput = resolveTextGenerationInputForSelection(
-      modelSelection,
-      selectionProviderOptions,
-      selectionProvider,
-    );
+    const threadTextGenerationInput = selectionInstanceAvailable
+      ? resolveTextGenerationInputForSelection(
+          modelSelection,
+          selectionProviderOptions,
+          selectionProvider,
+        )
+      : undefined;
 
     if (threadTextGenerationInput || !input.useConfiguredFallback) {
       return threadTextGenerationInput;
@@ -598,6 +651,9 @@ const make = Effect.gen(function* () {
     const fallbackInstance = resolveProviderInstance(settings, {
       instanceId: resolveModelSelectionInstanceId(settings.textGenerationModelSelection),
     });
+    if (!fallbackInstance) {
+      return undefined;
+    }
     const fallbackProviderOptions = fallbackInstance
       ? providerStartOptionsFromInstance(fallbackInstance)
       : undefined;
@@ -613,6 +669,8 @@ const make = Effect.gen(function* () {
     readonly kind:
       | "provider.turn.start.failed"
       | "provider.turn.interrupt.failed"
+      | "provider.task.stop.failed"
+      | "provider.task.background.failed"
       | "provider.approval.respond.failed"
       | "provider.user-input.respond.failed"
       | "provider.session.stop.failed";
@@ -767,31 +825,15 @@ const make = Effect.gen(function* () {
     });
   });
 
-  // Recovers the parent thread when older/local-only subagent rows are missing parentThreadId metadata.
-  const inferParentThreadFromSyntheticSubagentId = Effect.fnUntraced(function* (
-    threadId: ThreadId,
-  ) {
-    const rawThreadId = threadId as string;
-    if (!rawThreadId.startsWith("subagent:")) {
-      return null;
-    }
+  const resolveProviderSessionThread = (threadId: ThreadId) =>
+    resolveProviderSessionThreadFromProjection(projectionSnapshotQuery, threadId);
 
-    return Option.getOrNull(
-      yield* projectionSnapshotQuery.findSyntheticSubagentParentThread(threadId),
+  const withProviderSessionLease = <A, E, R>(threadId: ThreadId, effect: Effect.Effect<A, E, R>) =>
+    resolveProviderSessionThread(threadId).pipe(
+      Effect.flatMap((providerThread) =>
+        turnCheckpointCoordinator.withThreadLease(providerThread?.id ?? threadId, effect),
+      ),
     );
-  });
-
-  const resolveProviderSessionThread = Effect.fnUntraced(function* (threadId: ThreadId) {
-    const thread = yield* resolveThread(threadId);
-    if (!thread) {
-      return null;
-    }
-    if (!thread.parentThreadId) {
-      return (yield* inferParentThreadFromSyntheticSubagentId(thread.id)) ?? thread;
-    }
-    const parentThread = yield* resolveThread(thread.parentThreadId);
-    return parentThread ?? thread;
-  });
 
   const resolveSubagentProviderThreadId = (
     threadId: ThreadId,
@@ -815,17 +857,27 @@ const make = Effect.gen(function* () {
       createdAt: event.payload.createdAt,
     });
 
+  const hasQueuedTurnStart = (threadId: ThreadId, messageId: string) =>
+    queuedTurnPromotions.hasPendingMessage({ threadId, messageId });
+
   // Live provider state, not the projection: the decider routes turn starts
   // from a projected session snapshot that can lag the runtime in both
   // directions (queueing after the turn already settled, or dispatching while
   // a turn is still live). Adapters clear `activeTurnId` synchronously with
   // emitting `turn.completed`/`turn.aborted`, so this check is authoritative.
-  const hasLiveProviderTurn = Effect.fnUntraced(function* (threadId: ThreadId) {
+  // Child subagent threads share their parent's provider session, so the
+  // lookup must resolve to the session-owning thread — a raw child-id lookup
+  // would always miss and drain queued child messages into a live turn.
+  const resolveLiveProviderTurnId = Effect.fnUntraced(function* (threadId: ThreadId) {
+    const providerThread = yield* resolveProviderSessionThread(threadId);
+    const sessionThreadId = providerThread?.id ?? threadId;
     const session = yield* providerService
       .listSessions()
-      .pipe(Effect.map((sessions) => sessions.find((entry) => entry.threadId === threadId)));
-    return session?.status === "running" && session.activeTurnId !== undefined;
+      .pipe(Effect.map((sessions) => sessions.find((entry) => entry.threadId === sessionThreadId)));
+    return session?.status === "running" ? session.activeTurnId : undefined;
   });
+  const hasLiveProviderTurn = (threadId: ThreadId) =>
+    resolveLiveProviderTurnId(threadId).pipe(Effect.map((turnId) => turnId !== undefined));
 
   const editResendTurnStartKey = (threadId: ThreadId, messageId: string) =>
     `${threadId}:${messageId}`;
@@ -840,15 +892,38 @@ const make = Effect.gen(function* () {
       }
     });
 
+  const clearThreadRuntimeCaches = (threadId: ThreadId) =>
+    Effect.sync(() => {
+      threadProviderOptions.delete(threadId);
+      threadSessionModelSelections.delete(threadId);
+      const editResendPrefix = `${threadId}:`;
+      for (const key of editResendTurnStartKeys) {
+        if (key.startsWith(editResendPrefix)) {
+          editResendTurnStartKeys.delete(key);
+        }
+      }
+      quarantinedThreads.delete(threadId);
+      // NOTE: `drainingQueuedTurns` is intentionally NOT cleared here. It is a
+      // turn-scoped in-flight guard that each drain self-clears when it settles;
+      // deleting it here would let a concurrent second drain start for the same
+      // thread while the first is still running.
+      suppressContextBootstrapOnNextStartThreadIds.delete(threadId);
+      clearPendingContextBootstraps(threadId);
+    });
+
   const clearStaleProviderResumeState = Effect.fnUntraced(function* (input: {
     readonly threadId: ThreadId;
     readonly cause: ProviderServiceError;
+    readonly preserveActiveRuntime?: boolean;
   }) {
     if (providerService.clearSessionResumeCursor) {
       yield* providerService
-        .clearSessionResumeCursor({ threadId: input.threadId })
+        .clearSessionResumeCursor({
+          threadId: input.threadId,
+          ...(input.preserveActiveRuntime === true ? { preserveActiveRuntime: true } : {}),
+        })
         .pipe(Effect.catch(() => Effect.void));
-    } else {
+    } else if (input.preserveActiveRuntime !== true) {
       yield* providerService
         .stopSession({ threadId: input.threadId })
         .pipe(Effect.catch(() => Effect.void));
@@ -867,7 +942,7 @@ const make = Effect.gen(function* () {
     const provider = projectedThread
       ? Schema.is(ProviderKind)(projectedThread.session?.providerName)
         ? projectedThread.session?.providerName
-        : projectedThread.modelSelection.provider
+        : inferLegacyProviderKindFromModelSelection(projectedThread.modelSelection)
       : undefined;
     const rebuildsContext =
       provider !== undefined &&
@@ -1012,9 +1087,13 @@ const make = Effect.gen(function* () {
     const requestedProviderInstanceChanged =
       requestedModelSelection !== undefined &&
       desiredProviderInstanceId !== currentProviderInstanceId;
+    const requestedSelectionAdoptedByProjection =
+      requestedModelSelection !== undefined &&
+      resolveModelSelectionInstanceId(thread.modelSelection) === desiredProviderInstanceId;
     const isBoundProviderSession = hasBoundProviderSession(thread.session);
     if (
       isBoundProviderSession &&
+      !requestedSelectionAdoptedByProjection &&
       requestedModelSelection !== undefined &&
       desiredProvider !== threadProvider
     ) {
@@ -1024,7 +1103,11 @@ const make = Effect.gen(function* () {
         issue: `Thread '${threadId}' is bound to provider '${threadProvider}' and cannot switch to '${desiredProvider}'.`,
       });
     }
-    if (isBoundProviderSession && requestedProviderInstanceChanged) {
+    if (
+      isBoundProviderSession &&
+      !requestedSelectionAdoptedByProjection &&
+      requestedProviderInstanceChanged
+    ) {
       return yield* new ProviderAdapterRequestError({
         provider: threadProvider,
         method: "thread.turn.start",
@@ -1145,8 +1228,9 @@ const make = Effect.gen(function* () {
       const shouldRestartForModelChange = modelChanged && sessionModelSwitch === "restart-session";
       const previousModelSelection = threadSessionModelSelections.get(threadId);
       // Claude restarts resume via `--resume`, which replays the whole conversation
-      // as uncached input tokens. Only spawn-fixed options (effort/settings) may
-      // force that; model and context-window changes switch in-session via setModel.
+      // as uncached input tokens. Only spawn-fixed options (currently `max` effort)
+      // may force that; model and context-window changes switch in-session via
+      // setModel, and effort/fastMode/ultracode/thinking apply via flag settings.
       // When the dispatch cache has no entry (the session was started by a turn
       // without a selection), compare against the projected thread selection the
       // session was actually spawned from so spawn-fixed changes still restart.
@@ -1320,6 +1404,86 @@ const make = Effect.gen(function* () {
     if (!thread) {
       return;
     }
+    const threadMentionProjection = yield* resolveThreadMentionPromptProjection({
+      mentions: input.mentions,
+      snapshotQuery: projectionSnapshotQuery,
+      maxTotalContextChars: availableThreadMentionContextChars(input.messageText),
+    });
+    const messageText = appendThreadMentionContextBlocks({
+      text: input.messageText,
+      contextBlocks: threadMentionProjection.contextBlocks,
+    });
+    const mentionContextSuffix = threadMentionContextSuffix(threadMentionProjection.contextBlocks);
+    const providerMentions = threadMentionProjection.providerMentions;
+    // Subagent threads have no provider session of their own: their messages
+    // steer the running child task through the parent session (mirrors the
+    // interrupt seam), never the session-bootstrap path below. Parent metadata
+    // may be absent on older/local-only rows, so synthetic ids use the same
+    // projection-backed parent inference as interrupt routing.
+    const providerThread = yield* resolveProviderSessionThread(input.threadId);
+    const subagentProviderThreadId = providerThread
+      ? resolveSubagentProviderThreadId(thread.id, providerThread.id)
+      : undefined;
+    if (providerThread && subagentProviderThreadId) {
+      // Parity with the steerTurn path below: inline portable skill
+      // instructions, normalize skill/agent mentions, and forward the
+      // structured context so the adapter can project attachments into the
+      // text-only subagent steering channel.
+      const steerProvider = (providerThread.session?.providerName ??
+        inferLegacyProviderKindFromModelSelection(providerThread.modelSelection)) as ProviderKind;
+      const steerSkillInlineText =
+        input.skills !== undefined && input.skills.length > 0
+          ? yield* Effect.tryPromise(() =>
+              buildInlineSkillInstructions({
+                provider: steerProvider,
+                skills: input.skills ?? [],
+                maxChars: Math.max(
+                  0,
+                  PROVIDER_SEND_TURN_MAX_INPUT_CHARS -
+                    messageText.length -
+                    PROVIDER_INPUT_SAFETY_MARGIN_CHARS,
+                ),
+              }),
+            ).pipe(
+              Effect.catch((error) =>
+                Effect.logWarning("failed to inline portable skill instructions", {
+                  threadId: input.threadId,
+                  error,
+                }).pipe(Effect.as("")),
+              ),
+            )
+          : "";
+      const steerMessageWithSkills = steerSkillInlineText
+        ? `${messageText}\n\n${steerSkillInlineText}`
+        : messageText;
+      const normalizedSteerInput = toNonEmptyProviderInput(
+        normalizeSkillMentionTextForProvider({
+          provider: steerProvider,
+          messageText: steerMessageWithSkills,
+          ...(input.skills !== undefined ? { skills: input.skills } : {}),
+        }),
+      );
+      const normalizedSteerAttachments = yield* resolveProviderDispatchAttachments({
+        attachments: input.attachments,
+        attachmentsDir: serverConfig.attachmentsDir,
+        repository: managedAttachments,
+        threadId: input.threadId,
+        messageId: input.messageId,
+        provider: steerProvider,
+        operation: "thread.turn.start",
+      });
+      yield* providerService.steerSubagent({
+        threadId: providerThread.id,
+        providerThreadId: subagentProviderThreadId,
+        ...(normalizedSteerInput ? { input: normalizedSteerInput } : {}),
+        ...(normalizedSteerAttachments.length > 0
+          ? { attachments: normalizedSteerAttachments }
+          : {}),
+        ...(input.skills !== undefined ? { skills: input.skills } : {}),
+        ...(providerMentions !== undefined ? { mentions: providerMentions } : {}),
+      });
+      return;
+    }
     const activeSessionBeforeEnsure = yield* providerService
       .listSessions()
       .pipe(
@@ -1333,15 +1497,21 @@ const make = Effect.gen(function* () {
     if (input.modelSelection !== undefined) {
       threadSessionModelSelections.set(input.threadId, input.modelSelection);
     }
+    // Bootstrap prompts wrap the user message in `<latest_user_message>` tags;
+    // mentioned-thread context is appended after the assembled provider input
+    // instead so it never reads as part of the user's own words. The budget
+    // text below still counts the suffix, keeping the total under the provider
+    // input limit regardless of where the suffix sits.
     const boundaryMessageText = thread.sidechatSourceThreadId
       ? `<sidechat_boundary>\n${SIDECHAT_BOUNDARY_INSTRUCTION}\n</sidechat_boundary>\n\n<latest_user_message>\n${input.messageText}\n</latest_user_message>`
       : input.messageText;
+    const bootstrapBudgetMessageText = `${boundaryMessageText}${mentionContextSuffix}`;
     const shouldBootstrapHandoff =
       thread.handoff?.bootstrapStatus === "pending" &&
       !hasNativeAssistantMessagesBefore(thread, input.messageId);
     const handoffBootstrapAvailableChars = availableProviderContextChars({
       tag: "handoff_context",
-      messageText: boundaryMessageText,
+      messageText: bootstrapBudgetMessageText,
       wrapLatestUserMessage: true,
     });
     const handoffBootstrapText =
@@ -1376,7 +1546,7 @@ const make = Effect.gen(function* () {
       !hasPendingPriorTranscriptBootstrap;
     const sidechatBootstrapAvailableChars = availableProviderContextChars({
       tag: "sidechat_context",
-      messageText: boundaryMessageText,
+      messageText: bootstrapBudgetMessageText,
       wrapLatestUserMessage: false,
     });
     const sidechatBootstrapText =
@@ -1408,7 +1578,7 @@ const make = Effect.gen(function* () {
       listPriorTranscriptMessages(thread, input.messageId).length > 0;
     const priorTranscriptBootstrapAvailableChars = availableProviderContextChars({
       tag: "thread_context",
-      messageText: boundaryMessageText,
+      messageText: bootstrapBudgetMessageText,
       wrapLatestUserMessage: true,
     });
     if (
@@ -1455,6 +1625,7 @@ const make = Effect.gen(function* () {
               wrapLatestUserMessage: true,
             })
           : boundaryMessageText;
+    const providerInputWithMentionContext = `${providerInput}${mentionContextSuffix}`;
     // Portable skills fallback: providers that cannot load the referenced skill
     // file natively get the skill instructions inlined into the prompt.
     const skillInlineText =
@@ -1465,7 +1636,9 @@ const make = Effect.gen(function* () {
               skills: input.skills ?? [],
               maxChars: Math.max(
                 0,
-                PROVIDER_SEND_TURN_MAX_INPUT_CHARS - providerInput.length - 1_000,
+                PROVIDER_SEND_TURN_MAX_INPUT_CHARS -
+                  providerInputWithMentionContext.length -
+                  PROVIDER_INPUT_SAFETY_MARGIN_CHARS,
               ),
             }),
           ).pipe(
@@ -1478,8 +1651,8 @@ const make = Effect.gen(function* () {
           )
         : "";
     const providerInputWithSkills = skillInlineText
-      ? `${providerInput}\n\n${skillInlineText}`
-      : providerInput;
+      ? `${providerInputWithMentionContext}\n\n${skillInlineText}`
+      : providerInputWithMentionContext;
     const normalizedInput = toNonEmptyProviderInput(
       normalizeSkillMentionTextForProvider({
         provider: selectedProvider as ProviderKind,
@@ -1524,7 +1697,7 @@ const make = Effect.gen(function* () {
       threadId: input.threadId,
       ...(normalizedAttachments.length > 0 ? { attachments: normalizedAttachments } : {}),
       ...(input.skills !== undefined ? { skills: input.skills } : {}),
-      ...(input.mentions !== undefined ? { mentions: input.mentions } : {}),
+      ...(providerMentions !== undefined ? { mentions: providerMentions } : {}),
       ...(modelForTurn !== undefined ? { modelSelection: modelForTurn } : {}),
       ...(input.interactionMode !== undefined ? { interactionMode: input.interactionMode } : {}),
     };
@@ -1584,17 +1757,18 @@ const make = Effect.gen(function* () {
       input.threadId,
     );
     let pendingContextBootstrapAttempt: PendingContextBootstrapAttempt | undefined;
+    let startedTurn: ProviderTurnStartResult | undefined;
 
     if (input.reviewTarget !== undefined) {
       yield* capturePreTurnBaselines;
-      yield* providerService
+      startedTurn = yield* providerService
         .startReview({
           threadId: input.threadId,
           target: input.reviewTarget,
         })
         .pipe(Effect.onError(() => cancelPendingStudioBaseline));
     } else if (input.dispatchMode === "steer") {
-      yield* providerService.steerTurn({
+      startedTurn = yield* providerService.steerTurn({
         ...providerTurnInput,
         ...(normalizedInput ? { input: normalizedInput } : {}),
       });
@@ -1611,6 +1785,63 @@ const make = Effect.gen(function* () {
       if (pendingContextBootstrapAttempt) {
         pendingContextBootstrapAttempts.set(input.threadId, pendingContextBootstrapAttempt);
       }
+      const ensureSessionForStaleRetry = ensureSessionForThread(input.threadId, input.createdAt, {
+        ...(input.modelSelection !== undefined ? { modelSelection: input.modelSelection } : {}),
+        ...(input.providerOptions !== undefined ? { providerOptions: input.providerOptions } : {}),
+        ...(input.runtimeMode !== undefined ? { runtimeMode: input.runtimeMode } : {}),
+      });
+      const replayWithTranscriptBootstrap = (
+        cause: ProviderServiceError,
+        preserveActiveRuntime = false,
+      ) =>
+        Effect.gen(function* () {
+          // Claude cannot continue from a missing native session; clear the
+          // dead cursor and replay once with Synara transcript context.
+          yield* clearStaleProviderResumeState({
+            threadId: input.threadId,
+            cause,
+            ...(preserveActiveRuntime ? { preserveActiveRuntime: true } : {}),
+          });
+          yield* ensureSessionForStaleRetry;
+
+          const retryBootstrapText =
+            priorTranscriptBootstrapAvailableChars > 0
+              ? buildPriorTranscriptBootstrapText(
+                  thread,
+                  input.messageId,
+                  priorTranscriptBootstrapAvailableChars,
+                )
+              : null;
+          const retryProviderInput = retryBootstrapText
+            ? wrapProviderContext({
+                tag: "thread_context",
+                contextText: retryBootstrapText,
+                messageText: boundaryMessageText,
+                wrapLatestUserMessage: true,
+              })
+            : boundaryMessageText;
+          const retryProviderInputWithMentionContext = `${retryProviderInput}${mentionContextSuffix}`;
+          const retryProviderInputWithSkills = skillInlineText
+            ? `${retryProviderInputWithMentionContext}\n\n${skillInlineText}`
+            : retryProviderInputWithMentionContext;
+          const retryNormalizedInput = toNonEmptyProviderInput(
+            normalizeSkillMentionTextForProvider({
+              provider: selectedProvider as ProviderKind,
+              messageText: retryProviderInputWithSkills,
+              ...(input.skills !== undefined ? { skills: input.skills } : {}),
+            }),
+          );
+
+          yield* Effect.logWarning(
+            "provider command reactor retrying claude turn after stale resume",
+            {
+              threadId: input.threadId,
+              messageId: input.messageId,
+              bootstrappedPriorTranscript: retryBootstrapText !== null,
+            },
+          );
+          return yield* sendQueuedProviderTurn(retryNormalizedInput);
+        });
       const sentTurn = yield* sendQueuedProviderTurn(normalizedInput).pipe(
         Effect.catch((error) =>
           Effect.gen(function* () {
@@ -1618,58 +1849,47 @@ const make = Effect.gen(function* () {
               return yield* Effect.fail(error);
             }
 
-            // Claude cannot continue from a missing native session; clear the
-            // dead cursor and replay once with Synara transcript context.
-            yield* clearStaleProviderResumeState({
-              threadId: input.threadId,
-              cause: error,
-            });
-            yield* ensureSessionForThread(input.threadId, input.createdAt, {
-              ...(input.modelSelection !== undefined
-                ? { modelSelection: input.modelSelection }
-                : {}),
-              ...(input.providerOptions !== undefined
-                ? { providerOptions: input.providerOptions }
-                : {}),
-              ...(input.runtimeMode !== undefined ? { runtimeMode: input.runtimeMode } : {}),
-            });
-
-            const retryBootstrapText =
-              priorTranscriptBootstrapAvailableChars > 0
-                ? buildPriorTranscriptBootstrapText(
-                    thread,
-                    input.messageId,
-                    priorTranscriptBootstrapAvailableChars,
-                  )
-                : null;
-            const retryProviderInput = retryBootstrapText
-              ? wrapProviderContext({
-                  tag: "thread_context",
-                  contextText: retryBootstrapText,
-                  messageText: boundaryMessageText,
-                  wrapLatestUserMessage: true,
-                })
-              : boundaryMessageText;
-            const retryProviderInputWithSkills = skillInlineText
-              ? `${retryProviderInput}\n\n${skillInlineText}`
-              : retryProviderInput;
-            const retryNormalizedInput = toNonEmptyProviderInput(
-              normalizeSkillMentionTextForProvider({
-                provider: selectedProvider as ProviderKind,
-                messageText: retryProviderInputWithSkills,
-                ...(input.skills !== undefined ? { skills: input.skills } : {}),
-              }),
-            );
-
+            // Stale-resume errors can be transient CLI/session-file races, so
+            // retry the native resume id once before paying the transcript
+            // bootstrap. This must preserve the provider binding: startSession
+            // recovers the cursor from it when the fresh runtime is spawned.
+            if (!providerService.stopRuntimeSession) {
+              return yield* replayWithTranscriptBootstrap(error);
+            }
+            // Background tasks share the runtime subprocess with the parent
+            // turn; stopping it for a native-resume retry would silently kill
+            // them. Recover on the live runtime via transcript bootstrap.
+            const liveBackgroundTasks = providerService.hasLiveRuntimeTasks
+              ? yield* providerService.hasLiveRuntimeTasks({ threadId: input.threadId })
+              : false;
+            if (liveBackgroundTasks) {
+              yield* Effect.logWarning(
+                "provider command reactor skipping native resume retry: live background tasks",
+                {
+                  threadId: input.threadId,
+                  messageId: input.messageId,
+                },
+              );
+              return yield* replayWithTranscriptBootstrap(error, true);
+            }
+            yield* providerService
+              .stopRuntimeSession({ threadId: input.threadId })
+              .pipe(Effect.catch(() => Effect.void));
+            yield* ensureSessionForStaleRetry;
             yield* Effect.logWarning(
-              "provider command reactor retrying claude turn after stale resume",
+              "provider command reactor retrying claude turn with native resume",
               {
                 threadId: input.threadId,
                 messageId: input.messageId,
-                bootstrappedPriorTranscript: retryBootstrapText !== null,
               },
             );
-            return yield* sendQueuedProviderTurn(retryNormalizedInput);
+            return yield* sendQueuedProviderTurn(normalizedInput).pipe(
+              Effect.catch((retryError) =>
+                isStaleClaudeResumeError(retryError)
+                  ? replayWithTranscriptBootstrap(retryError)
+                  : Effect.fail(retryError),
+              ),
+            );
           }),
         ),
         Effect.onError(() =>
@@ -1687,6 +1907,7 @@ const make = Effect.gen(function* () {
           }),
         ),
       );
+      startedTurn = sentTurn;
       if (pendingContextBootstrapAttempt) {
         pendingContextBootstrapAttempt.turnId = sentTurn.turnId;
         const terminalEvent = pendingContextBootstrapAttempt.terminalEvent;
@@ -1729,6 +1950,7 @@ const make = Effect.gen(function* () {
       rollbackContextBootstrapThreadIds.delete(input.threadId);
       sidechatContextBootstrapThreadIds.delete(input.threadId);
     }
+    return startedTurn;
   });
 
   const renameTemporaryWorktreeBranch = Effect.fnUntraced(function* (input: {
@@ -1968,153 +2190,236 @@ const make = Effect.gen(function* () {
     });
   });
 
-  const processTurnStartRequested = Effect.fnUntraced(function* (
+  const processTurnStartRequestedWithoutLease = Effect.fnUntraced(function* (
     event: Extract<ProviderIntentEvent, { type: "thread.turn-start-requested" }>,
   ) {
-    const key = event.commandId !== null ? `command:${event.commandId}` : `event:${event.eventId}`;
-    if (yield* hasHandledTurnStartRecently(key)) {
-      return;
-    }
+    const sessionThreadId =
+      (yield* resolveProviderSessionThread(event.payload.threadId))?.id ?? event.payload.threadId;
+    const matchesEvent = (entry: PendingQueuedDispatch | undefined) =>
+      entry?.queuedThreadId === (event.payload.threadId as string) &&
+      entry.messageId === event.payload.messageId;
+    const reservationAtStart = pendingQueuedDispatchBySessionThread.get(sessionThreadId);
+    const isPendingQueuedDispatch = matchesEvent(reservationAtStart);
+    const ownsReservation = (entry: PendingQueuedDispatch | undefined) =>
+      isPendingQueuedDispatch && entry === reservationAtStart;
+    const clearPendingQueuedDispatch = Effect.sync(() => {
+      if (ownsReservation(pendingQueuedDispatchBySessionThread.get(sessionThreadId))) {
+        pendingQueuedDispatchBySessionThread.delete(sessionThreadId);
+      }
+    });
+    const bindPendingQueuedDispatchToTurn = Effect.fnUntraced(function* (turnId: TurnId) {
+      const reservation = pendingQueuedDispatchBySessionThread.get(sessionThreadId);
+      if (reservation === undefined || !ownsReservation(reservation)) {
+        return;
+      }
+      reservation.releaseOnTurnId = turnId;
+      const completedBeforeBinding = reservation.pendingTerminalTurnIds?.has(turnId);
+      delete reservation.pendingTerminalTurnIds;
+      if (completedBeforeBinding) {
+        pendingQueuedDispatchBySessionThread.delete(sessionThreadId);
+        yield* drainQueuedTurnsForSession(event.payload.threadId);
+      }
+    });
+    try {
+      const key = turnStartKeyForEvent(event);
+      if (yield* hasHandledTurnStartRecently(key)) {
+        return;
+      }
 
-    const thread = yield* resolveThread(event.payload.threadId);
-    if (!thread) {
-      return;
-    }
+      const thread = yield* resolveThread(event.payload.threadId);
+      if (!thread) {
+        return;
+      }
 
-    const message = thread.messages.find((entry) => entry.id === event.payload.messageId);
-    if (!message || message.role !== "user") {
-      yield* appendProviderFailureActivity({
-        threadId: event.payload.threadId,
-        kind: "provider.turn.start.failed",
-        summary: "Provider turn start failed",
-        detail: `User message '${event.payload.messageId}' was not found for turn start request.`,
-        turnId: null,
-        createdAt: event.payload.createdAt,
-      });
-      return;
-    }
-
-    // The decider routes turn starts from the projected session, which can lag
-    // the runtime: a message dispatched right as another turn begins (e.g. the
-    // gap between a steer interrupt and the steered turn's start) would race a
-    // live provider turn. Codex steers ride the live turn natively; everything
-    // else re-queues and is promoted when the live turn settles.
-    const providerName =
-      thread.session?.providerName ??
-      inferLegacyProviderKindFromModelSelection(thread.modelSelection);
-    const isCodexSteer = event.payload.dispatchMode === "steer" && providerName === "codex";
-    if (!isCodexSteer && (yield* hasLiveProviderTurn(event.payload.threadId))) {
-      yield* enqueueQueuedTurnStart(event);
-      if (event.payload.dispatchMode === "steer") {
-        // Preserve steer semantics: jump the queue (enqueue unshifts steers)
-        // and ask the live turn to stop so the steer dispatches next.
-        yield* interruptProviderTurn({
+      const message = thread.messages.find((entry) => entry.id === event.payload.messageId);
+      if (!message || message.role !== "user") {
+        yield* appendProviderFailureActivity({
           threadId: event.payload.threadId,
+          kind: "provider.turn.start.failed",
+          summary: "Provider turn start failed",
+          detail: `User message '${event.payload.messageId}' was not found for turn start request.`,
+          turnId: null,
+          createdAt: event.payload.createdAt,
+        });
+        return;
+      }
+
+      // The decider routes turn starts from the projected session, which can lag
+      // the runtime: a message dispatched right as another turn begins (e.g. the
+      // gap between a steer interrupt and the steered turn's start) would race a
+      // live provider turn. Codex steers ride the live turn natively; everything
+      // else re-queues and is promoted when the live turn settles.
+      const providerName =
+        thread.session?.providerName ??
+        inferLegacyProviderKindFromModelSelection(thread.modelSelection);
+      const liveTurnId = yield* resolveLiveProviderTurnId(event.payload.threadId);
+      const hasLiveTurn = liveTurnId !== undefined;
+      // Steering is only meaningful against a live turn. The projection can
+      // lag the runtime in the other direction too (turn already settled but
+      // still projected as running), so recheck live state and dispatch a
+      // settled codex "steer" as a normal queued turn — the native steer path
+      // would skip the turn-start checkpoint.
+      const isCodexSteer =
+        event.payload.dispatchMode === "steer" && providerName === "codex" && hasLiveTurn;
+      if (!isCodexSteer && hasLiveTurn) {
+        yield* enqueueQueuedTurnStart(event);
+        // The promotion raced another live turn and was re-queued. Release
+        // only when that exact blocking turn settles, not on any late
+        // terminal event for the shared provider session.
+        yield* bindPendingQueuedDispatchToTurn(liveTurnId);
+        if (event.payload.dispatchMode === "steer") {
+          // Preserve steer semantics: jump the queue (enqueue unshifts steers)
+          // and ask the live turn to stop so the steer dispatches next.
+          yield* interruptProviderTurn({
+            threadId: event.payload.threadId,
+            createdAt: event.payload.createdAt,
+          });
+        }
+        return;
+      }
+
+      // Surface the upcoming work immediately: provider session init can take
+      // seconds (e.g. Cursor), and without an early status the thread reads as
+      // idle until the runtime's first event. Mirrors the message-edit-resend
+      // path. Never touches a live session — a steer turn on a running Codex
+      // session must keep its running state and activeTurnId. Keeps the existing
+      // session's runtimeMode: ensureSessionForThread detects mode changes by
+      // comparing against it, and adopting the requested mode here would mask
+      // the restart.
+      const turnStartSession = deriveTurnStartSession({
+        threadId: event.payload.threadId,
+        currentSession: thread.session,
+        providerName,
+        providerInstanceId: resolveModelSelectionInstanceId(
+          event.payload.modelSelection ?? thread.modelSelection,
+        ),
+        requestedRuntimeMode: event.payload.runtimeMode ?? DEFAULT_RUNTIME_MODE,
+        requestedAt: event.payload.createdAt,
+      });
+      if (turnStartSession !== null) {
+        yield* setThreadSession({
+          threadId: event.payload.threadId,
+          session: turnStartSession,
           createdAt: event.payload.createdAt,
         });
       }
-      return;
+
+      const resolvedAttachments = yield* resolveProviderDispatchAttachments({
+        attachments: message.attachments,
+        attachmentsDir: serverConfig.attachmentsDir,
+        repository: managedAttachments,
+        threadId: event.payload.threadId,
+        messageId: message.id,
+        provider: providerName as ProviderKind,
+        operation: "thread.turn.start",
+      });
+
+      const firstTurnRenameInput = {
+        threadId: event.payload.threadId,
+        messageId: message.id,
+        messageText: message.text,
+        ...(message.attachments !== undefined ? { attachments: resolvedAttachments } : {}),
+        ...(event.payload.modelSelection !== undefined
+          ? { modelSelection: event.payload.modelSelection }
+          : {}),
+        ...(event.payload.providerOptions !== undefined
+          ? { providerOptions: event.payload.providerOptions }
+          : {}),
+      };
+      yield* maybeGenerateAndRenameWorktreeBranchForFirstTurn({
+        ...firstTurnRenameInput,
+        branch: thread.branch,
+        worktreePath: thread.worktreePath,
+      }).pipe(Effect.forkScoped);
+      yield* maybeGenerateAndRenameThreadTitleForFirstTurn(firstTurnRenameInput).pipe(
+        Effect.forkScoped,
+      );
+      // Only a codex steer against a genuinely live turn keeps steer
+      // semantics; anything else that reaches direct dispatch runs as a
+      // normal queued turn (with its turn-start checkpoint).
+      const immediateDispatchMode =
+        event.payload.dispatchMode === "steer" && !isCodexSteer
+          ? "queue"
+          : event.payload.dispatchMode;
+      const editResendKey = editResendTurnStartKey(event.payload.threadId, event.payload.messageId);
+
+      const startedTurn = yield* dispatchTurnForThread({
+        ...firstTurnRenameInput,
+        ...(message.skills !== undefined ? { skills: message.skills } : {}),
+        ...(message.mentions !== undefined ? { mentions: message.mentions } : {}),
+        ...(event.payload.modelSelection !== undefined
+          ? { modelSelection: event.payload.modelSelection }
+          : {}),
+        ...(event.payload.providerOptions !== undefined
+          ? { providerOptions: event.payload.providerOptions }
+          : {}),
+        ...(event.payload.runtimeMode !== undefined
+          ? { runtimeMode: event.payload.runtimeMode }
+          : {}),
+        ...(event.payload.reviewTarget !== undefined
+          ? { reviewTarget: event.payload.reviewTarget }
+          : {}),
+        interactionMode: event.payload.interactionMode,
+        dispatchMode: immediateDispatchMode,
+        createdAt: event.payload.createdAt,
+      }).pipe(
+        Effect.catchCause((cause) =>
+          Effect.gen(function* () {
+            const detail = Cause.pretty(cause);
+            yield* appendProviderFailureActivity({
+              threadId: event.payload.threadId,
+              kind: "provider.turn.start.failed",
+              summary: "Provider turn start failed",
+              detail,
+              turnId: null,
+              createdAt: event.payload.createdAt,
+            });
+            yield* setThreadSessionError({
+              threadId: event.payload.threadId,
+              runtimeMode: event.payload.runtimeMode,
+              ...(event.payload.modelSelection !== undefined
+                ? { modelSelection: event.payload.modelSelection }
+                : {}),
+              detail,
+              createdAt: event.payload.createdAt,
+            });
+            // A direct start has no provider turn and therefore cannot emit a
+            // terminal runtime event. Recover every queue sharing this
+            // provider session now; otherwise follow-ups queued before the
+            // failure remain stranded indefinitely (including child threads
+            // multiplexed onto their parent's provider session).
+            if (isPendingQueuedDispatch) {
+              yield* clearPendingQueuedDispatch;
+            }
+            yield* drainQueuedTurnsForSession(event.payload.threadId);
+            return yield* Effect.failCause(cause);
+          }),
+        ),
+        Effect.ensuring(Effect.sync(() => editResendTurnStartKeys.delete(editResendKey))),
+      );
+      if (startedTurn && isPendingQueuedDispatch) {
+        yield* bindPendingQueuedDispatchToTurn(startedTurn.turnId);
+      }
+    } finally {
+      const reservation = pendingQueuedDispatchBySessionThread.get(sessionThreadId);
+      if (
+        isPendingQueuedDispatch &&
+        reservation !== undefined &&
+        ownsReservation(reservation) &&
+        reservation.releaseOnTurnId === undefined &&
+        !(yield* hasQueuedTurnStart(event.payload.threadId, event.payload.messageId)) &&
+        !(yield* hasLiveProviderTurn(event.payload.threadId))
+      ) {
+        yield* clearPendingQueuedDispatch;
+        yield* drainQueuedTurnsForSession(event.payload.threadId);
+      }
     }
-
-    // Surface the upcoming work immediately: provider session init can take
-    // seconds (e.g. Cursor), and without an early status the thread reads as
-    // idle until the runtime's first event. Mirrors the message-edit-resend
-    // path. Never touches a live session — a steer turn on a running Codex
-    // session must keep its running state and activeTurnId. Keeps the existing
-    // session's runtimeMode: ensureSessionForThread detects mode changes by
-    // comparing against it, and adopting the requested mode here would mask
-    // the restart.
-    yield* projectThreadStartingIfIdle({
-      thread,
-      threadId: event.payload.threadId,
-      ...(event.payload.modelSelection !== undefined
-        ? { modelSelection: event.payload.modelSelection }
-        : {}),
-      ...(event.payload.runtimeMode !== undefined
-        ? { runtimeMode: event.payload.runtimeMode }
-        : {}),
-      createdAt: event.payload.createdAt,
-    });
-
-    const resolvedAttachments = yield* resolveProviderDispatchAttachments({
-      attachments: message.attachments,
-      attachmentsDir: serverConfig.attachmentsDir,
-      repository: managedAttachments,
-      threadId: event.payload.threadId,
-      messageId: message.id,
-      provider: providerName as ProviderKind,
-      operation: "thread.turn.start",
-    });
-    const firstTurnRenameInput = {
-      threadId: event.payload.threadId,
-      messageId: message.id,
-      messageText: message.text,
-      ...(message.attachments !== undefined ? { attachments: resolvedAttachments } : {}),
-      ...(event.payload.modelSelection !== undefined
-        ? { modelSelection: event.payload.modelSelection }
-        : {}),
-      ...(event.payload.providerOptions !== undefined
-        ? { providerOptions: event.payload.providerOptions }
-        : {}),
-    };
-    yield* maybeGenerateAndRenameWorktreeBranchForFirstTurn({
-      ...firstTurnRenameInput,
-      branch: thread.branch,
-      worktreePath: thread.worktreePath,
-    }).pipe(Effect.forkScoped);
-    yield* maybeGenerateAndRenameThreadTitleForFirstTurn(firstTurnRenameInput).pipe(
-      Effect.forkScoped,
-    );
-    const immediateDispatchProviderName = yield* resolveProviderForModelSelection(
-      event.payload.modelSelection ?? thread.modelSelection,
-    );
-    const immediateDispatchMode =
-      event.payload.dispatchMode === "steer" && immediateDispatchProviderName !== "codex"
-        ? "queue"
-        : event.payload.dispatchMode;
-    const editResendKey = editResendTurnStartKey(event.payload.threadId, event.payload.messageId);
-
-    yield* dispatchTurnForThread({
-      ...firstTurnRenameInput,
-      ...(message.skills !== undefined ? { skills: message.skills } : {}),
-      ...(message.mentions !== undefined ? { mentions: message.mentions } : {}),
-      ...(event.payload.runtimeMode !== undefined
-        ? { runtimeMode: event.payload.runtimeMode }
-        : {}),
-      ...(event.payload.reviewTarget !== undefined
-        ? { reviewTarget: event.payload.reviewTarget }
-        : {}),
-      interactionMode: event.payload.interactionMode,
-      dispatchMode: immediateDispatchMode,
-      createdAt: event.payload.createdAt,
-    }).pipe(
-      Effect.catchCause((cause) =>
-        Effect.gen(function* () {
-          const detail = Cause.pretty(cause);
-          yield* appendProviderFailureActivity({
-            threadId: event.payload.threadId,
-            kind: "provider.turn.start.failed",
-            summary: "Provider turn start failed",
-            detail,
-            turnId: null,
-            createdAt: event.payload.createdAt,
-          });
-          yield* setThreadSessionError({
-            threadId: event.payload.threadId,
-            runtimeMode: event.payload.runtimeMode,
-            ...(event.payload.modelSelection !== undefined
-              ? { modelSelection: event.payload.modelSelection }
-              : {}),
-            detail,
-            createdAt: event.payload.createdAt,
-          });
-          yield* drainQueuedTurnsForThread(event.payload.threadId);
-          return yield* Effect.failCause(cause);
-        }),
-      ),
-      Effect.ensuring(Effect.sync(() => editResendTurnStartKeys.delete(editResendKey))),
-    );
   });
+
+  const processTurnStartRequested = (
+    event: Extract<ProviderIntentEvent, { type: "thread.turn-start-requested" }>,
+  ) =>
+    withProviderSessionLease(event.payload.threadId, processTurnStartRequestedWithoutLease(event));
 
   const processTurnQueued = Effect.fnUntraced(function* (
     event: Extract<ProviderIntentEvent, { type: "thread.turn-queued" }>,
@@ -2137,7 +2442,11 @@ const make = Effect.gen(function* () {
 
   // Promote the next queued message only after the active provider turn settles.
   const drainQueuedTurnsForThread = Effect.fnUntraced(function* (threadId: ThreadId) {
-    if (drainingQueuedTurns.has(threadId)) {
+    const sessionThreadId = (yield* resolveProviderSessionThread(threadId))?.id ?? threadId;
+    if (
+      drainingQueuedTurns.has(threadId) ||
+      pendingQueuedDispatchBySessionThread.has(sessionThreadId)
+    ) {
       return;
     }
     drainingQueuedTurns.add(threadId);
@@ -2166,6 +2475,10 @@ const make = Effect.gen(function* () {
           );
         }
         const nextQueuedTurn = sourceEvent.payload;
+        pendingQueuedDispatchBySessionThread.set(sessionThreadId, {
+          queuedThreadId: threadId,
+          messageId: nextQueuedTurn.messageId,
+        });
         yield* orchestrationEngine.dispatch({
           type: "thread.turn.dispatch-queued",
           commandId: CommandId.makeUnsafe(
@@ -2186,6 +2499,9 @@ const make = Effect.gen(function* () {
             ? { assistantDeliveryMode: nextQueuedTurn.assistantDeliveryMode }
             : {}),
           dispatchMode: nextQueuedTurn.dispatchMode,
+          ...(nextQueuedTurn.dispatchOrigin !== undefined
+            ? { dispatchOrigin: nextQueuedTurn.dispatchOrigin }
+            : {}),
           runtimeMode: nextQueuedTurn.runtimeMode,
           interactionMode: nextQueuedTurn.interactionMode,
           ...(nextQueuedTurn.sourceProposedPlan !== undefined
@@ -2207,13 +2523,16 @@ const make = Effect.gen(function* () {
         }
       }).pipe(
         Effect.onError(() =>
-          queuedTurnPromotions
-            .releaseClaim({
-              queuedEventSequence: promotion.queuedEventSequence,
-              claimOwner: queuedTurnPromotionOwner,
-              updatedAt: new Date().toISOString(),
-            })
-            .pipe(Effect.ignore),
+          Effect.all([
+            Effect.sync(() => pendingQueuedDispatchBySessionThread.delete(sessionThreadId)),
+            queuedTurnPromotions
+              .releaseClaim({
+                queuedEventSequence: promotion.queuedEventSequence,
+                claimOwner: queuedTurnPromotionOwner,
+                updatedAt: new Date().toISOString(),
+              })
+              .pipe(Effect.ignore),
+          ]).pipe(Effect.asVoid),
         ),
       );
     } finally {
@@ -2221,18 +2540,77 @@ const make = Effect.gen(function* () {
     }
   });
 
+  const drainQueuedTurnsForSession = Effect.fnUntraced(function* (threadId: ThreadId) {
+    const sessionThreadId = (yield* resolveProviderSessionThread(threadId))?.id ?? threadId;
+    const queuedThreadIds = new Set<ThreadId>([threadId]);
+    for (const queuedThreadId of yield* queuedTurnPromotions.listPendingThreadIds) {
+      const queuedThread = ThreadId.makeUnsafe(queuedThreadId);
+      const providerThread = yield* resolveProviderSessionThread(queuedThread);
+      const queuedSessionThreadId = providerThread?.id ?? queuedThread;
+      if (queuedSessionThreadId === sessionThreadId) {
+        queuedThreadIds.add(queuedThread);
+      }
+    }
+    for (const queuedThreadId of queuedThreadIds) {
+      yield* drainQueuedTurnsForThread(queuedThreadId);
+    }
+  });
+
   const processQueueDrainEvent = Effect.fnUntraced(function* (event: ProviderQueueDrainEvent) {
     observePendingContextBootstrapTerminalEvent(event);
-    yield* drainQueuedTurnsForThread(event.threadId);
+    const sessionThreadId =
+      (yield* resolveProviderSessionThread(event.threadId))?.id ?? event.threadId;
+    const reservation = pendingQueuedDispatchBySessionThread.get(sessionThreadId);
+    if (reservation) {
+      if (event.turnId === undefined) {
+        // Some adapters can only report that a stopped turn aborted, not the
+        // provider turn id. Their live session state is authoritative and is
+        // cleared before the terminal event is emitted. Keep the reservation
+        // while a turn is genuinely live; otherwise release it so queued work
+        // cannot remain stranded behind an id-less terminal event.
+        if (yield* hasLiveProviderTurn(event.threadId)) {
+          return;
+        }
+        pendingQueuedDispatchBySessionThread.delete(sessionThreadId);
+      } else if (reservation.releaseOnTurnId === undefined) {
+        const terminalTurnIds = reservation.pendingTerminalTurnIds ?? new Set<TurnId>();
+        terminalTurnIds.add(event.turnId);
+        reservation.pendingTerminalTurnIds = terminalTurnIds;
+        return;
+      } else if (reservation.releaseOnTurnId !== event.turnId) {
+        return;
+      } else {
+        pendingQueuedDispatchBySessionThread.delete(sessionThreadId);
+      }
+    }
+    // Child subagent threads queue under their own id but share the parent's
+    // provider session, and terminal runtime events carry the session-owning
+    // thread id — drain every queue bound to this session.
+    yield* drainQueuedTurnsForSession(event.threadId);
   });
 
   const recoverQueuedTurnPromotions = Effect.gen(function* () {
-    yield* Effect.forEach(yield* queuedTurnPromotions.listPendingThreadIds, (threadId) =>
-      hasLiveProviderTurn(ThreadId.makeUnsafe(threadId)).pipe(
-        Effect.flatMap((isRunning) =>
-          isRunning ? Effect.void : drainQueuedTurnsForThread(ThreadId.makeUnsafe(threadId)),
-        ),
-      ),
+    yield* Effect.forEach(yield* queuedTurnPromotions.listPendingThreadIds, (rawThreadId) =>
+      Effect.gen(function* () {
+        const threadId = ThreadId.makeUnsafe(rawThreadId);
+        // Resolve the projected thread first. `resolveThread` filters
+        // `deleted_at IS NULL`, so a soft-deleted (or fully missing) thread
+        // returns undefined; either way there is nothing to drain into, and the
+        // pending promotions must be cancelled rather than promoted (otherwise a
+        // deletion that raced startup would leave orphan turns to dispatch).
+        const thread = yield* resolveThread(threadId);
+        if (!thread || thread.deletedAt !== null) {
+          yield* queuedTurnPromotions.cancelThread({
+            threadId: rawThreadId,
+            updatedAt: new Date().toISOString(),
+          });
+          return;
+        }
+        if (yield* hasLiveProviderTurn(threadId)) {
+          return;
+        }
+        yield* drainQueuedTurnsForThread(threadId);
+      }),
     );
   });
 
@@ -2261,11 +2639,32 @@ const make = Effect.gen(function* () {
     // exact generation-scoped provider turn and rejects a stale mismatch.
     const providerThreadId = resolveSubagentProviderThreadId(thread.id, providerThread.id);
     const turnId = input.turnId ?? thread.session?.activeTurnId ?? undefined;
-    yield* providerService.interruptTurn({
-      threadId: providerThread.id,
-      ...(turnId ? { turnId } : {}),
-      ...(providerThreadId ? { providerThreadId } : {}),
-    });
+    const exit = yield* Effect.exit(
+      providerService.interruptTurn({
+        threadId: providerThread.id,
+        ...(turnId ? { turnId } : {}),
+        ...(providerThreadId ? { providerThreadId } : {}),
+      }),
+    );
+    if (Exit.isSuccess(exit)) {
+      return;
+    }
+    // Terminal rejections (validation and friends) would otherwise vanish
+    // silently and leave the stop button looking dead; surface them on the
+    // thread. Retryable/uncertain failures keep propagating so the durable
+    // delivery machinery can quarantine and retry them.
+    const outcome = classifyProviderAttemptOutcome(exit);
+    if (outcome._tag === "rejected") {
+      return yield* appendProviderFailureActivity({
+        threadId: input.threadId,
+        kind: "provider.turn.interrupt.failed",
+        summary: "Provider turn interrupt failed",
+        detail: outcome.detail,
+        turnId: input.turnId ?? null,
+        createdAt: input.createdAt,
+      });
+    }
+    return yield* Effect.failCause(exit.cause);
   });
 
   const processTurnInterruptRequested = Effect.fnUntraced(function* (
@@ -2276,6 +2675,76 @@ const make = Effect.gen(function* () {
       turnId: event.payload.turnId,
       createdAt: event.payload.createdAt,
     });
+  });
+
+  const processTaskStopRequested = Effect.fnUntraced(function* (
+    event: Extract<ProviderIntentEvent, { type: "thread.task-stop-requested" }>,
+  ) {
+    const providerThread = yield* resolveProviderSessionThread(event.payload.threadId);
+    const hasSession = providerThread?.session && providerThread.session.status !== "stopped";
+    if (!providerThread || !hasSession) {
+      return yield* appendProviderFailureActivity({
+        threadId: event.payload.threadId,
+        kind: "provider.task.stop.failed",
+        summary: "Provider task stop failed",
+        detail: "No active provider session is bound to this thread.",
+        turnId: null,
+        createdAt: event.payload.createdAt,
+      });
+    }
+
+    yield* providerService
+      .stopTask({
+        threadId: providerThread.id,
+        taskId: event.payload.taskId,
+      })
+      .pipe(
+        Effect.catchCause((cause) =>
+          appendProviderFailureActivity({
+            threadId: event.payload.threadId,
+            kind: "provider.task.stop.failed",
+            summary: "Provider task stop failed",
+            detail: Cause.pretty(cause),
+            turnId: null,
+            createdAt: event.payload.createdAt,
+          }),
+        ),
+      );
+  });
+
+  const processTaskBackgroundRequested = Effect.fnUntraced(function* (
+    event: Extract<ProviderIntentEvent, { type: "thread.task-background-requested" }>,
+  ) {
+    const providerThread = yield* resolveProviderSessionThread(event.payload.threadId);
+    const hasSession = providerThread?.session && providerThread.session.status !== "stopped";
+    if (!providerThread || !hasSession) {
+      return yield* appendProviderFailureActivity({
+        threadId: event.payload.threadId,
+        kind: "provider.task.background.failed",
+        summary: "Provider task background failed",
+        detail: "No active provider session is bound to this thread.",
+        turnId: null,
+        createdAt: event.payload.createdAt,
+      });
+    }
+
+    yield* providerService
+      .backgroundTask({
+        threadId: providerThread.id,
+        toolUseId: event.payload.toolUseId,
+      })
+      .pipe(
+        Effect.catchCause((cause) =>
+          appendProviderFailureActivity({
+            threadId: event.payload.threadId,
+            kind: "provider.task.background.failed",
+            summary: "Provider task background failed",
+            detail: Cause.pretty(cause),
+            turnId: null,
+            createdAt: event.payload.createdAt,
+          }),
+        ),
+      );
   });
 
   const appendInteractionResponseFailure = (
@@ -2369,6 +2838,7 @@ const make = Effect.gen(function* () {
         decision: event.payload.decision,
       })
       .pipe(
+        Effect.asVoid,
         Effect.catchCause((cause) => {
           const unknownPendingRequest = isUnknownPendingApprovalRequestError(cause);
           return appendInteractionResponseFailure(event, {
@@ -2402,6 +2872,7 @@ const make = Effect.gen(function* () {
         answers: event.payload.answers,
       })
       .pipe(
+        Effect.asVoid,
         Effect.catchCause((cause) => {
           const unknownPendingRequest = isUnknownPendingUserInputRequestError(cause);
           return appendInteractionResponseFailure(event, {
@@ -2415,10 +2886,23 @@ const make = Effect.gen(function* () {
       );
   });
 
-  const processConversationRollbackRequested = Effect.fnUntraced(function* (
+  const processConversationRollbackRequestedWithoutLease = Effect.fnUntraced(function* (
     event: Extract<ProviderIntentEvent, { type: "thread.conversation-rollback-requested" }>,
   ) {
     const thread = yield* resolveThread(event.payload.threadId);
+    const removedTurnIds = thread
+      ? collectTailTurnIds<TurnId>({
+          messages: thread.messages,
+          messageId: event.payload.messageId,
+        })
+      : [];
+    if (!thread || removedTurnIds.length !== event.payload.numTurns) {
+      return yield* Effect.fail(
+        new Error(
+          `Conversation rollback target '${event.payload.messageId}' is no longer valid for ${event.payload.numTurns} turn(s).`,
+        ),
+      );
+    }
     if (event.payload.numTurns > 0) {
       const providerThread = yield* resolveProviderSessionThread(event.payload.threadId);
       if (
@@ -2445,15 +2929,18 @@ const make = Effect.gen(function* () {
       threadId: event.payload.threadId,
       messageId: event.payload.messageId,
       numTurns: event.payload.numTurns,
-      removedTurnIds: thread
-        ? collectTailTurnIds<TurnId>({
-            messages: thread.messages,
-            messageId: event.payload.messageId,
-          })
-        : [],
+      removedTurnIds,
       createdAt: event.payload.createdAt,
     });
   });
+
+  const processConversationRollbackRequested = (
+    event: Extract<ProviderIntentEvent, { type: "thread.conversation-rollback-requested" }>,
+  ) =>
+    withProviderSessionLease(
+      event.payload.threadId,
+      processConversationRollbackRequestedWithoutLease(event),
+    );
 
   const processMessageEditResendPayload = Effect.fnUntraced(function* (
     payload: Extract<
@@ -2585,7 +3072,7 @@ const make = Effect.gen(function* () {
     const provider = thread
       ? Schema.is(ProviderKind)(thread.session?.providerName)
         ? thread.session?.providerName
-        : thread.modelSelection.provider
+        : inferLegacyProviderKindFromModelSelection(thread.modelSelection)
       : undefined;
     const rebuildsContext =
       provider !== undefined &&
@@ -2602,7 +3089,7 @@ const make = Effect.gen(function* () {
     yield* providerService.stopSession({ threadId: input.threadId });
   });
 
-  const processMessageEditResendRequested = Effect.fnUntraced(function* (
+  const processMessageEditResendRequestedWithoutLease = Effect.fnUntraced(function* (
     event: Extract<ProviderIntentEvent, { type: "thread.message-edit-resend-requested" }>,
   ) {
     const thread = yield* resolveThread(event.payload.threadId);
@@ -2651,25 +3138,58 @@ const make = Effect.gen(function* () {
     });
   });
 
-  const processSessionStopRequested = Effect.fnUntraced(function* (
-    event: Extract<ProviderIntentEvent, { type: "thread.session-stop-requested" }>,
-  ) {
-    const thread = yield* resolveThread(event.payload.threadId);
-    const providerThread = yield* resolveProviderSessionThread(event.payload.threadId);
+  const processMessageEditResendRequested = (
+    event: Extract<ProviderIntentEvent, { type: "thread.message-edit-resend-requested" }>,
+  ) =>
+    withProviderSessionLease(
+      event.payload.threadId,
+      processMessageEditResendRequestedWithoutLease(event),
+    );
+
+  const processThreadSessionStop = Effect.fnUntraced(function* (input: {
+    readonly threadId: ThreadId;
+    readonly createdAt: string;
+  }) {
+    const thread = yield* resolveThread(input.threadId);
+    const providerThread = yield* resolveProviderSessionThread(input.threadId);
     if (!thread) {
       return;
     }
 
-    yield* queuedTurnPromotions.cancelThread({
-      threadId: thread.id,
-      updatedAt: event.payload.createdAt,
-    });
-    yield* clearEditResendTurnStartKeysForThread(thread.id);
-    drainingQueuedTurns.delete(thread.id);
+    const stoppedSessionThreadId = providerThread?.id ?? thread.id;
+    const stopsProviderSession = providerThread === null || providerThread.id === thread.id;
+    const clearedQueuedThreadIds = new Set<ThreadId>([thread.id]);
+    if (stopsProviderSession) {
+      for (const queuedThreadId of yield* queuedTurnPromotions.listPendingThreadIds) {
+        const queuedThread = ThreadId.makeUnsafe(queuedThreadId);
+        const queuedProviderThread = yield* resolveProviderSessionThread(queuedThread);
+        if ((queuedProviderThread?.id ?? queuedThread) === stoppedSessionThreadId) {
+          clearedQueuedThreadIds.add(queuedThread);
+        }
+      }
+    }
+    for (const queuedThreadId of clearedQueuedThreadIds) {
+      yield* queuedTurnPromotions.cancelThread({
+        threadId: queuedThreadId,
+        updatedAt: input.createdAt,
+      });
+      yield* clearEditResendTurnStartKeysForThread(queuedThreadId);
+      drainingQueuedTurns.delete(queuedThreadId);
+    }
+    // Reservations are keyed by session-owning thread but may belong to a
+    // stopping child's queued message. A provider-session stop clears every
+    // reservation for that session; a child-only interrupt clears its own.
+    for (const [sessionThreadId, reservation] of pendingQueuedDispatchBySessionThread) {
+      if (
+        (stopsProviderSession && sessionThreadId === stoppedSessionThreadId) ||
+        clearedQueuedThreadIds.has(ThreadId.makeUnsafe(reservation.queuedThreadId))
+      ) {
+        pendingQueuedDispatchBySessionThread.delete(sessionThreadId);
+      }
+    }
     clearPendingContextBootstraps(thread.id);
     suppressContextBootstrapOnNextStartThreadIds.add(thread.id);
 
-    const now = event.payload.createdAt;
     const providerThreadId =
       providerThread !== null
         ? resolveSubagentProviderThreadId(thread.id, providerThread.id)
@@ -2704,9 +3224,9 @@ const make = Effect.gen(function* () {
           // Preserve the active turn until the provider emits the terminal child event.
           activeTurnId: thread.session.activeTurnId,
           lastError: null,
-          updatedAt: now,
+          updatedAt: input.createdAt,
         },
-        createdAt: now,
+        createdAt: input.createdAt,
       });
       return;
     }
@@ -2726,11 +3246,19 @@ const make = Effect.gen(function* () {
         runtimeMode: thread.session?.runtimeMode ?? DEFAULT_RUNTIME_MODE,
         activeTurnId: null,
         lastError: thread.session?.lastError ?? null,
-        updatedAt: now,
+        updatedAt: input.createdAt,
       },
-      createdAt: now,
+      createdAt: input.createdAt,
     });
   });
+
+  const processSessionStopRequested = (
+    event: Extract<ProviderIntentEvent, { type: "thread.session-stop-requested" }>,
+  ) =>
+    processThreadSessionStop({
+      threadId: event.payload.threadId,
+      createdAt: event.payload.createdAt,
+    });
 
   const processDomainEvent = (event: ProviderIntentEvent) =>
     Effect.gen(function* () {
@@ -2748,6 +3276,26 @@ const make = Effect.gen(function* () {
         }
         case "thread.created":
           threadSessionModelSelections.set(event.payload.threadId, event.payload.modelSelection);
+          return;
+        case "thread.deleted":
+          // Cancel any queued/promoting turns for the deleted thread BEFORE
+          // clearing runtime caches so a concurrent drain cannot resurrect them
+          // (see cancelThread). Best-effort: the event stays unclaimed either way.
+          yield* queuedTurnPromotions.cancelThread({
+            threadId: event.payload.threadId,
+            updatedAt: event.payload.deletedAt,
+          });
+          yield* clearThreadRuntimeCaches(event.payload.threadId);
+          return;
+        case "thread.archived":
+          // Archive cleanup shares this durable, sequence-ordered provider
+          // source with later turn-start intents. An immediate unarchive/send
+          // therefore cannot race an older archive stop against the new turn.
+          yield* processThreadSessionStop({
+            threadId: event.payload.threadId,
+            // Legacy thread.archived events may omit archivedAt; fall back like the projector.
+            createdAt: event.payload.archivedAt ?? event.payload.updatedAt ?? event.occurredAt,
+          });
           return;
         case "thread.meta-updated": {
           const thread = yield* resolveThread(event.payload.threadId);
@@ -2811,6 +3359,12 @@ const make = Effect.gen(function* () {
           return;
         case "thread.turn-interrupt-requested":
           yield* processTurnInterruptRequested(event);
+          return;
+        case "thread.task-stop-requested":
+          yield* processTaskStopRequested(event);
+          return;
+        case "thread.task-background-requested":
+          yield* processTaskBackgroundRequested(event);
           return;
         case "thread.approval-response-requested":
           yield* processApprovalResponseRequested(event);
@@ -2885,8 +3439,6 @@ const make = Effect.gen(function* () {
 
     const processOwner = `provider-command-reactor:${crypto.randomUUID()}`;
     let cursor = consumerState.value.lastAckedSequence;
-    const quarantinedThreads = new Set<string>();
-
     const refreshCursor = Effect.gen(function* () {
       const state = yield* deliveryRepository.getConsumerState(PROVIDER_COMMAND_REACTOR_CONSUMER);
       if (Option.isSome(state)) cursor = state.value.lastAckedSequence;
@@ -2967,6 +3519,45 @@ const make = Effect.gen(function* () {
         eventSequence: event.sequence,
         threadId: event.payload.threadId,
       });
+      // A skipped turn start is a user-visible dead end: the projector has
+      // already shown the thread as "starting", so silence here reads as an
+      // infinite "Thinking". Surface the block and settle the session.
+      if (
+        event.type === "thread.turn-start-requested" ||
+        event.type === "thread.message-edit-resend-requested"
+      ) {
+        yield* Effect.gen(function* () {
+          const blocker = yield* deliveryRepository.firstBlockingDeliveryForThread({
+            consumerName: PROVIDER_COMMAND_REACTOR_CONSUMER,
+            threadId: event.payload.threadId,
+          });
+          const blockerDetail =
+            Option.isSome(blocker) && blocker.value.lastError !== null
+              ? blocker.value.lastError
+              : "an earlier provider command failed";
+          const createdAt = new Date().toISOString();
+          yield* appendProviderFailureActivity({
+            threadId: event.payload.threadId,
+            kind: "provider.turn.start.failed",
+            summary: "Thread is blocked by an earlier provider failure",
+            detail: `The message was not sent to the provider. Blocking failure: ${blockerDetail}`,
+            turnId: null,
+            createdAt,
+          });
+          yield* setThreadSessionError({
+            threadId: event.payload.threadId,
+            detail: `Thread is blocked by an earlier provider failure: ${blockerDetail}`,
+            createdAt,
+          });
+        }).pipe(
+          Effect.catchCause((cause) =>
+            Effect.logWarning("failed to surface quarantined-thread skip", {
+              threadId: event.payload.threadId,
+              cause: Cause.pretty(cause),
+            }),
+          ),
+        );
+      }
       yield* requireCursorAdvance(event);
       return true;
     });
@@ -3242,7 +3833,94 @@ const make = Effect.gen(function* () {
             };
           }),
         ),
+      ) as ReturnType<ProviderCommandReactorShape["reconcileDelivery"]>;
+
+    const countSkippedPrompts = (input: {
+      readonly threadId: ThreadId;
+      readonly afterSequence: number;
+    }) => {
+      if (cursor <= input.afterSequence) return Effect.succeed(0);
+      return orchestrationEngine.readEventsThrough(input.afterSequence, cursor).pipe(
+        Stream.runFold(
+          () => 0,
+          (count: number, event) =>
+            isProviderIntentEvent(event) &&
+            event.payload.threadId === input.threadId &&
+            (event.type === "thread.turn-start-requested" ||
+              event.type === "thread.message-edit-resend-requested")
+              ? count + 1
+              : count,
+        ),
       );
+    };
+
+    // Self-heal only legacy quarantines whose recorded details prove the
+    // command frame was never written. Exit-unproven process failures remain
+    // quarantined because the old provider may still be running.
+    // Skipped prompts are not replayed at startup; instead, surface a durable
+    // activity asking the user to resend them.
+    const startupRecoveryNotifiedThreads = new Set<ThreadId>();
+    yield* Effect.gen(function* () {
+      const pageSize = 100;
+      let afterEventSequence: number | undefined;
+      while (true) {
+        const startupBlockers = yield* deliveryRepository.listBlockingDeliveries({
+          consumerName: PROVIDER_COMMAND_REACTOR_CONSUMER,
+          ...(afterEventSequence === undefined ? {} : { afterEventSequence }),
+          limit: pageSize,
+        });
+        for (const blocker of startupBlockers) {
+          if (!isSafeLegacyProviderBlocker(blocker.lastError)) continue;
+          const reconciled = yield* deliveryRepository.reconcile({
+            reconciliationId: crypto.randomUUID(),
+            consumerName: PROVIDER_COMMAND_REACTOR_CONSUMER,
+            eventSequence: blocker.eventSequence,
+            threadId: blocker.threadId,
+            expectedState: blocker.state,
+            outcome: "abandon",
+            reconciledBy: "system:provider-command-reactor",
+            note: "Recorded failure proves the provider never executed this command; settled at startup.",
+            reconciledAt: new Date().toISOString(),
+          });
+          if (Option.isNone(reconciled)) continue;
+
+          quarantinedThreads.delete(blocker.threadId);
+          if (!startupRecoveryNotifiedThreads.has(blocker.threadId)) {
+            const skippedPromptCount = yield* countSkippedPrompts({
+              threadId: blocker.threadId,
+              afterSequence: blocker.eventSequence,
+            });
+            if (skippedPromptCount > 0) {
+              const noun = skippedPromptCount === 1 ? "message was" : "messages were";
+              const createdAt = new Date().toISOString();
+              yield* appendProviderFailureActivity({
+                threadId: blocker.threadId,
+                kind: "provider.turn.start.failed",
+                summary: "Previous messages were not sent",
+                detail: `Synara recovered an earlier provider failure, but ${skippedPromptCount} ${noun} skipped while the thread was blocked. Resend ${skippedPromptCount === 1 ? "it" : "them"} to continue.`,
+                turnId: null,
+                createdAt,
+              });
+              startupRecoveryNotifiedThreads.add(blocker.threadId);
+            }
+          }
+          yield* Effect.logInfo("provider delivery blocker auto-healed at startup", {
+            eventSequence: blocker.eventSequence,
+            threadId: blocker.threadId,
+            lastError: blocker.lastError,
+          });
+        }
+        if (startupBlockers.length < pageSize) break;
+        afterEventSequence = startupBlockers[startupBlockers.length - 1]?.eventSequence;
+        if (afterEventSequence === undefined) break;
+      }
+    }).pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning("provider delivery blocker auto-heal failed", {
+          cause: Cause.pretty(cause),
+        }),
+      ),
+    );
 
     const retryableDeliveries = yield* deliveryRepository.listRetryableDeliveries(
       PROVIDER_COMMAND_REACTOR_CONSUMER,
@@ -3269,7 +3947,7 @@ const make = Effect.gen(function* () {
     );
   });
 
-  const start: ProviderCommandReactorShape["start"] = seedThreadModelSelections.pipe(
+  const start = seedThreadModelSelections.pipe(
     Effect.andThen(
       Effect.all([
         startProviderIntentSource.pipe(Effect.andThen(recoverQueuedTurnPromotions)),
@@ -3282,7 +3960,7 @@ const make = Effect.gen(function* () {
       ]).pipe(Effect.asVoid),
     ),
     Effect.orDie,
-  );
+  ) as ProviderCommandReactorShape["start"];
 
   const drain: ProviderCommandReactorShape["drain"] = Effect.gen(function* () {
     const targetSequence = yield* orchestrationEngine.getEventHighWaterSequence;

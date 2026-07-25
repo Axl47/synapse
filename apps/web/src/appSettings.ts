@@ -30,6 +30,11 @@ import {
   resolveSelectableModel,
 } from "@synara/shared/model";
 import {
+  APP_SNAP_SHORTCUT_KEYS,
+  APP_SNAP_SHORTCUT_MODIFIERS,
+  DEFAULT_APP_SNAP_SHORTCUT,
+} from "@synara/shared/appSnapShortcut";
+import {
   codexAccountInstanceId,
   inferLegacyProviderKindFromModelSelection,
 } from "@synara/shared/providerInstances";
@@ -100,6 +105,15 @@ export const DEFAULT_SIDEBAR_THREAD_SORT_ORDER: SidebarThreadSortOrder = "update
 export const UiDensity = Schema.Literals(UI_DENSITY_MODES);
 export type UiDensity = typeof UiDensity.Type;
 export { DEFAULT_UI_DENSITY };
+
+const AppSnapShortcut = Schema.Union([
+  Schema.Struct({ kind: Schema.Literal("both-option-keys") }),
+  Schema.Struct({
+    kind: Schema.Literal("key-chord"),
+    modifier: Schema.Literals(APP_SNAP_SHORTCUT_MODIFIERS),
+    key: Schema.Literals(APP_SNAP_SHORTCUT_KEYS),
+  }),
+]);
 
 export function getDefaultNativeFontSmoothing(platform = globalThis.navigator?.platform ?? "") {
   return /mac|iphone|ipad|ipod/i.test(platform);
@@ -220,11 +234,10 @@ export const AppSettingsSchema = Schema.Struct({
   diffWordWrap: Schema.Boolean.pipe(withDefaults(() => false)),
   // Local-only UI preferences for hiding sidebar surfaces a user doesn't want.
   // `showChatsSection` controls the standalone "Chats" list in the sidebar footer
-  // (rootless chats not tied to a project). `showStudioSection` and
-  // `showWorkspaceSection` control optional tabs in the section switcher.
+  // (rootless chats not tied to a project). `showStudioSection` controls the
+  // optional Studio tab in the section switcher.
   showChatsSection: Schema.Boolean.pipe(withDefaults(() => true)),
   showStudioSection: Schema.Boolean.pipe(withDefaults(() => true)),
-  showWorkspaceSection: Schema.Boolean.pipe(withDefaults(() => false)),
   // Local-only UI preferences: which optional sections of the chat Environment panel are
   // shown. The git block (Changes/Worktree/branch/Commit and Push) is always visible; these
   // toggle the sections beneath it via the panel header's gear menu.
@@ -249,6 +262,7 @@ export const AppSettingsSchema = Schema.Struct({
   // AppSnap is opt-in because enabling its Settings toggle requests macOS
   // Input Monitoring and Screen Recording permissions.
   enableAppSnap: Schema.Boolean.pipe(withDefaults(() => false)),
+  appSnapShortcut: AppSnapShortcut.pipe(withDefaults(() => DEFAULT_APP_SNAP_SHORTCUT)),
   // Local desktop preference: play the shutter cue when an AppSnap lands in a composer.
   appSnapPlaySound: Schema.Boolean.pipe(withDefaults(() => true)),
   // Deprecated rename bridge. Normalization migrates this value and then omits the key.
@@ -294,6 +308,26 @@ export const AppSettingsSchema = Schema.Struct({
   ).pipe(withDefaults(() => [])),
 });
 export type AppSettings = typeof AppSettingsSchema.Type;
+
+/** The settings values and mutation used by a mounted settings panel.
+ * The route owns the subscription so extracted workflow panels do not create
+ * duplicate local-storage/server-settings subscriptions. */
+export type AppSettingsBinding = {
+  readonly settings: AppSettings;
+  readonly defaults: AppSettings;
+  readonly updateSettings: (patch: Partial<AppSettings>) => void;
+};
+
+export function isGitTextGenerationSettingsDirty(
+  settings: AppSettings,
+  defaults: AppSettings,
+): boolean {
+  return (
+    (settings.textGenerationProvider ?? "codex") !== (defaults.textGenerationProvider ?? "codex") ||
+    (settings.textGenerationModel ?? DEFAULT_GIT_TEXT_GENERATION_MODEL) !==
+      (defaults.textGenerationModel ?? DEFAULT_GIT_TEXT_GENERATION_MODEL)
+  );
+}
 
 type Mutable<T> = { -readonly [Key in keyof T]: T[Key] };
 type MutableServerSettingsPatch = Mutable<ServerSettingsPatch>;
@@ -2218,23 +2252,15 @@ export function useAppSettings() {
   const normalizedStoredSettingsRef = useRef(false);
   const pendingServerSettingsMigrationPatchRef = useRef<ServerSettingsPatch | null>(null);
 
-  const defaults = useMemo(
-    () =>
-      normalizeAppSettings({
-        ...DEFAULT_APP_SETTINGS,
-        ...serverSettingsToAppSettings(DEFAULT_SERVER_SETTINGS_VIEW),
-      }),
-    [],
-  );
+  const defaults = normalizeAppSettings({
+    ...DEFAULT_APP_SETTINGS,
+    ...serverSettingsToAppSettings(DEFAULT_SERVER_SETTINGS_VIEW),
+  });
 
-  const settings = useMemo(
-    () =>
-      normalizeAppSettings({
-        ...localSettings,
-        ...(serverSettingsQuery.data ? serverSettingsToAppSettings(serverSettingsQuery.data) : {}),
-      }),
-    [localSettings, serverSettingsQuery.data],
-  );
+  const settings = normalizeAppSettings({
+    ...localSettings,
+    ...(serverSettingsQuery.data ? serverSettingsToAppSettings(serverSettingsQuery.data) : {}),
+  });
 
   useEffect(() => {
     if (normalizedStoredSettingsRef.current) {
@@ -2344,7 +2370,7 @@ export function useAppSettings() {
     [queryClient, setSettings],
   );
 
-  const resetSettings = useCallback(() => {
+  const resetSettings = () => {
     setSettings(DEFAULT_APP_SETTINGS);
     void queryClient.invalidateQueries({ queryKey: providerDiscoveryQueryKeys.all });
     const serverPatch = appSettingsPatchToServerSettingsPatch(defaults);
@@ -2356,10 +2382,11 @@ export function useAppSettings() {
       .catch(() => {
         void queryClient.invalidateQueries({ queryKey: serverQueryKeys.settings() });
       });
-  }, [defaults, queryClient, setSettings]);
+  };
 
   return {
     settings,
+    serverSettings: serverSettingsQuery.data,
     updateSettings,
     resetSettings,
     defaults,

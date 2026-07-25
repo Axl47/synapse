@@ -11,6 +11,7 @@ import type {
   AutomationCreateInput,
   AutomationDefinition,
   AutomationMode,
+  AutomationNotificationPolicy,
   AutomationSchedule,
   AutomationUpdateInput,
   AutomationWorktreeMode,
@@ -85,6 +86,7 @@ export type AutomationFormState = {
   readonly worktreeMode: AutomationWorktreeMode;
   readonly modelSelection: ModelSelection;
   readonly mode: AutomationMode;
+  readonly notificationPolicy: AutomationNotificationPolicy;
   readonly targetThreadId: string;
   readonly maxIterations: string;
   readonly stopOnError: boolean;
@@ -208,16 +210,18 @@ export function updateWeeklyScheduleTime(
   return { ...schedule, timeOfDay };
 }
 
+const DATE_TIME_FORMATTER = new Intl.DateTimeFormat(undefined, {
+  month: "short",
+  day: "numeric",
+  hour: "numeric",
+  minute: "2-digit",
+});
+
 export function formatDateTime(value: string | null): string {
   if (!value) return "Not scheduled";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
-  return `${new Intl.DateTimeFormat(undefined, {
-    month: "short",
-    day: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-  }).format(date)}`;
+  return DATE_TIME_FORMATTER.format(date);
 }
 
 function timezoneSuffix(schedule: AutomationSchedule): string {
@@ -288,6 +292,40 @@ export function formatCadence(schedule: AutomationSchedule): string {
     case "cron":
       return `Cron ${schedule.expression}`;
   }
+}
+
+function formatIntervalCadenceLong(seconds: number): string {
+  if (seconds === 3600) return "Hourly";
+  if (seconds % 3600 === 0) return `Every ${seconds / 3600} hours`;
+  if (seconds === 60) return "Every minute";
+  if (seconds % 60 === 0) return `Every ${seconds / 60} minutes`;
+  return seconds === 1 ? "Every second" : `Every ${seconds} seconds`;
+}
+
+/** Like {@link formatCadence} but with interval units spelled out ("Every 5 minutes"). */
+export function formatCadenceLong(schedule: AutomationSchedule): string {
+  return schedule.type === "interval"
+    ? formatIntervalCadenceLong(schedule.everySeconds)
+    : formatCadence(schedule);
+}
+
+/**
+ * Countdown phrase for an upcoming run: "now", "in 5 minutes", "in 9 hours", "in 3 days".
+ * A past-due `nextRunAt` (scheduler catching up) also reads "now". Null when unscheduled
+ * or unparseable so callers can drop the segment entirely.
+ */
+export function formatNextRun(nextRunAt: string | null, now: number = Date.now()): string | null {
+  if (!nextRunAt) return null;
+  const time = new Date(nextRunAt).getTime();
+  if (Number.isNaN(time)) return null;
+  const seconds = Math.round((time - now) / 1000);
+  if (seconds < 60) return "now";
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return minutes === 1 ? "in 1 minute" : `in ${minutes} minutes`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return hours === 1 ? "in 1 hour" : `in ${hours} hours`;
+  const days = Math.round(hours / 24);
+  return days === 1 ? "in 1 day" : `in ${days} days`;
 }
 
 export function weekdayLabel(value: number): string {
@@ -386,6 +424,7 @@ export function formFromDefinition(
     worktreeMode: definition?.worktreeMode ?? "auto",
     modelSelection: definition?.modelSelection ?? fallbackModelSelection,
     mode: definition?.mode ?? "standalone",
+    notificationPolicy: definition?.notificationPolicy ?? "all",
     targetThreadId: definition?.targetThreadId ?? "",
     maxIterations: definition?.maxIterations != null ? String(definition.maxIterations) : "",
     stopOnError: definition?.stopOnError ?? true,
@@ -564,6 +603,7 @@ export function createInputFromForm(
     worktreeMode: form.worktreeMode,
     ...(providerOptions ? { providerOptions } : {}),
     mode: form.mode,
+    notificationPolicy: form.notificationPolicy,
     targetThreadId: form.mode === "heartbeat" ? (form.targetThreadId as ThreadId) : null,
     maxIterations,
     ...(form.mode === "heartbeat"

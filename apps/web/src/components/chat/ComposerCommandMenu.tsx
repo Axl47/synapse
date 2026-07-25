@@ -8,7 +8,7 @@ import {
   type ProviderPluginDescriptor,
   type ProviderSkillDescriptor,
 } from "@synara/contracts";
-import { memo, useEffect, useMemo, useRef, type ReactNode } from "react";
+import { memo, useEffect, useRef, type ReactNode } from "react";
 import { type ComposerTriggerKind } from "../../composer-logic";
 import { type ComposerSlashCommand } from "../../composerSlashCommands";
 import {
@@ -44,6 +44,7 @@ import {
   CommandSeparator,
 } from "../ui/command";
 import { FileEntryIcon } from "./FileEntryIcon";
+import { ProviderIcon } from "../ProviderIcon";
 import {
   COMPOSER_COMMAND_MENU_ITEM_ACTIVE_CLASS_NAME,
   COMPOSER_COMMAND_MENU_ITEM_CLASS_NAME,
@@ -100,6 +101,10 @@ function commandMenuTrailingMeta(item: ComposerCommandItem): string | null {
     return "Plugin";
   }
 
+  if (item.type === "thread") {
+    return null;
+  }
+
   if (item.type === "local-root") {
     return "Local";
   }
@@ -134,7 +139,12 @@ function commandMenuSecondaryText(item: ComposerCommandItem): string | null {
     return item.description;
   }
 
-  if (item.type === "plugin" || item.type === "skill" || item.type === "local-root") {
+  if (
+    item.type === "plugin" ||
+    item.type === "skill" ||
+    item.type === "local-root" ||
+    item.type === "thread"
+  ) {
     return item.description;
   }
 
@@ -205,6 +215,15 @@ export type ComposerCommandItem =
     }
   | {
       id: string;
+      type: "thread";
+      threadId: string;
+      provider: ProviderKind;
+      mention: ProviderMentionReference;
+      label: string;
+      description: string;
+    }
+  | {
+      id: string;
       type: "skill";
       skill: ProviderSkillDescriptor;
       label: string;
@@ -236,11 +255,13 @@ export function groupCommandItems(
 ): ComposerCommandGroupModel[] {
   if (triggerKind === "mention") {
     const pluginItems = items.filter((item) => item.type === "plugin");
+    const threadItems = items.filter((item) => item.type === "thread");
     const localItems = items.filter((item) => item.type === "local-root" || item.type === "path");
     const agentItems = items.filter((item) => item.type === "agent");
     const otherItems = items.filter(
       (item) =>
         item.type !== "plugin" &&
+        item.type !== "thread" &&
         item.type !== "local-root" &&
         item.type !== "path" &&
         item.type !== "agent",
@@ -249,6 +270,9 @@ export function groupCommandItems(
     const groups: ComposerCommandGroupModel[] = [];
     if (pluginItems.length > 0) {
       groups.push({ id: "plugins", label: "Plugins", items: pluginItems });
+    }
+    if (threadItems.length > 0) {
+      groups.push({ id: "chats", label: "Chats", items: threadItems });
     }
     if (localItems.length > 0) {
       groups.push({ id: "local", label: "Local", items: localItems });
@@ -292,7 +316,7 @@ export function groupCommandItems(
   return groups;
 }
 
-export const ComposerCommandMenu = memo(function ComposerCommandMenu(props: {
+export function ComposerCommandMenu(props: {
   items: ComposerCommandItem[];
   resolvedTheme: "light" | "dark";
   isLoading: boolean;
@@ -304,10 +328,10 @@ export const ComposerCommandMenu = memo(function ComposerCommandMenu(props: {
   onSelect: (item: ComposerCommandItem) => void;
 }) {
   const itemRefs = useRef<Record<string, HTMLElement | null>>({});
-  const groups = useMemo(
-    () =>
-      groupCommandItems(props.items, props.triggerKind, props.groupSlashCommandSections ?? true),
-    [props.groupSlashCommandSections, props.items, props.triggerKind],
+  const groups = groupCommandItems(
+    props.items,
+    props.triggerKind,
+    props.groupSlashCommandSections ?? true,
   );
 
   useEffect(() => {
@@ -347,9 +371,7 @@ export const ComposerCommandMenu = memo(function ComposerCommandMenu(props: {
                     item={item}
                     resolvedTheme={props.resolvedTheme}
                     isActive={props.activeItemId === item.id}
-                    itemRef={(node) => {
-                      itemRefs.current[item.id] = node;
-                    }}
+                    itemRef={(node) => storeCommandItemNode(itemRefs, item.id, node)}
                     onHighlight={props.onHighlightedItemChange}
                     onSelect={props.onSelect}
                   />
@@ -387,7 +409,7 @@ export const ComposerCommandMenu = memo(function ComposerCommandMenu(props: {
                   : "Loading commands..."
               : (props.emptyStateText ??
                 (props.triggerKind === "mention"
-                  ? "No matching plugin or file."
+                  ? "No matching plugin, chat, or file."
                   : props.triggerKind === "skill"
                     ? "No matching skill."
                     : "No matching command."))}
@@ -396,7 +418,7 @@ export const ComposerCommandMenu = memo(function ComposerCommandMenu(props: {
       </div>
     </Command>
   );
-});
+}
 
 // Single icon column shared by every menu row. Rows differ only by the glyph,
 // its color, and the name — slot geometry stays constant so files, folders,
@@ -477,6 +499,8 @@ function commandMenuItemGlyph(item: ComposerCommandItem, theme: "light" | "dark"
       return <BotIcon className={cls} />;
     case "plugin":
       return <PluginIcon className={cls} />;
+    case "thread":
+      return <ProviderIcon provider={item.provider} className={cls} />;
     case "skill":
       return <SkillCubeIcon className={cls} />;
     default:
@@ -484,7 +508,7 @@ function commandMenuItemGlyph(item: ComposerCommandItem, theme: "light" | "dark"
   }
 }
 
-const ComposerCommandItemIcon = memo(function ComposerCommandItemIcon(props: {
+function ComposerCommandItemIcon(props: {
   item: ComposerCommandItem;
   resolvedTheme: "light" | "dark";
   isActive: boolean;
@@ -499,8 +523,9 @@ const ComposerCommandItemIcon = memo(function ComposerCommandItemIcon(props: {
       {commandMenuItemGlyph(props.item, props.resolvedTheme)}
     </span>
   );
-});
+}
 
+// Manual memoization kept: this file does not compile under React Compiler (see compile-report).
 const ComposerCommandMenuItem = memo(function ComposerCommandMenuItem(props: {
   item: ComposerCommandItem;
   resolvedTheme: "light" | "dark";
@@ -555,3 +580,14 @@ const ComposerCommandMenuItem = memo(function ComposerCommandMenuItem(props: {
     </CommandItem>
   );
 });
+
+// Ref-callback body kept out of the compiled component: React Compiler cannot
+// tell a custom `itemRef` prop is a ref callback and would reject the render-
+// scoped mutation otherwise.
+function storeCommandItemNode(
+  refs: { current: Record<string, HTMLElement | null> },
+  itemId: string,
+  node: HTMLElement | null,
+): void {
+  refs.current[itemId] = node;
+}

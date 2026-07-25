@@ -2,16 +2,10 @@
 // Purpose: Renders the chat thread's compact workspace controls, including the
 // local usage popover, inline workspace handoff actions, and runtime access toggle.
 import type { ThreadId, RuntimeMode } from "@synara/contracts";
-import {
-  CheckIcon,
-  ChevronDownIcon,
-  ChevronRightIcon,
-  HandoffIcon,
-  WorktreeIcon,
-} from "~/lib/icons";
+import { CheckIcon, ChevronDownIcon, HandoffIcon, WorktreeIcon } from "~/lib/icons";
 import { HiOutlineHandRaised } from "react-icons/hi2";
 import { CentralIcon } from "~/lib/central-icons";
-import { useCallback, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useMemo, useState, type ReactNode } from "react";
 import { useAppSettings } from "~/appSettings";
 
 import { newCommandId, cn } from "../lib/utils";
@@ -31,6 +25,7 @@ import {
   resolveAssociatedWorktreeMetadataAfterWorkspacePatch,
   resolveDraftEnvModeAfterBranchChange,
   resolveEffectiveEnvMode,
+  resolveFixedLocalWorkspacePatch,
 } from "./BranchToolbar.logic";
 import {
   BranchToolbarBranchSelector,
@@ -52,6 +47,7 @@ import { ProviderUsagePanelContent } from "./ProviderUsagePanelContent";
 import { ComposerPickerMenuPopup } from "./chat/ComposerPickerMenuPopup";
 import { Button } from "./ui/button";
 import { Collapsible, CollapsiblePanel } from "./ui/collapsible";
+import { DisclosureChevron } from "./ui/DisclosureChevron";
 import {
   Menu,
   MenuGroup,
@@ -115,6 +111,9 @@ export interface BranchToolbarProps {
   variant?: BranchSelectorVariant;
   // Keeps the Local/Worktree control visible while hiding Git-only branch UI for non-repo cwd.
   showBranchSelector?: boolean;
+  // Studio-like containers bind the toolbar to one concrete local folder and
+  // must not persist project/worktree metadata from branch selector actions.
+  fixedLocalWorkspaceCwd?: string | null;
 }
 
 export interface RuntimeUsageControlsProps {
@@ -230,12 +229,14 @@ export default function BranchToolbar({
   onComposerFocusRequest,
   variant = "toolbar",
   showBranchSelector = true,
+  fixedLocalWorkspaceCwd,
 }: BranchToolbarProps) {
   const isPanel = variant === "panel";
   const setThreadWorkspaceAction = useStore((store) => store.setThreadWorkspace);
   const draftThread = useComposerDraftStore((store) => store.getDraftThread(threadId));
   const setDraftThreadContext = useComposerDraftStore((store) => store.setDraftThreadContext);
-  const threads = useStore(useRef(createAllThreadsSelector()).current);
+  const [allThreadsSelector] = useState(() => createAllThreadsSelector());
+  const threads = useStore(allThreadsSelector);
   const { settings } = useAppSettings();
 
   const serverThread = useStore(useMemo(() => createThreadSelector(threadId), [threadId]));
@@ -243,14 +244,25 @@ export default function BranchToolbar({
   const activeProject = useStore(
     useMemo(() => createProjectSelector(activeProjectId), [activeProjectId]),
   );
+  const hasServerThread = serverThread !== undefined;
   const activeThreadId = serverThread?.id ?? (draftThread ? threadId : undefined);
-  const activeThreadBranch = serverThread?.branch ?? draftThread?.branch ?? null;
-  const activeWorktreePath = serverThread?.worktreePath ?? draftThread?.worktreePath ?? null;
+  const activeThreadBranch = hasServerThread
+    ? (serverThread.branch ?? null)
+    : (draftThread?.branch ?? null);
+  const activeWorktreePath = hasServerThread
+    ? (serverThread.worktreePath ?? null)
+    : (draftThread?.worktreePath ?? null);
+  const activeWorkingDirectory = hasServerThread
+    ? (serverThread.workingDirectory ?? null)
+    : (draftThread?.workingDirectory ?? null);
   const activeProvider =
     serverThread?.session?.provider ??
     (serverThread ? inferLegacyProviderKindFromModelSelection(serverThread.modelSelection) : null);
-  const branchCwd = activeWorktreePath ?? activeProject?.cwd ?? null;
-  const hasServerThread = serverThread !== undefined;
+  const usesFixedLocalWorkspace = fixedLocalWorkspaceCwd !== undefined;
+  const branchCwd = usesFixedLocalWorkspace
+    ? fixedLocalWorkspaceCwd
+    : (activeWorktreePath ?? activeWorkingDirectory ?? activeProject?.cwd ?? null);
+  const branchProjectCwd = usesFixedLocalWorkspace ? branchCwd : (activeProject?.cwd ?? null);
   const effectiveEnvMode = resolveEffectiveEnvMode({
     activeWorktreePath,
     hasServerThread,
@@ -265,6 +277,43 @@ export default function BranchToolbar({
   const setThreadWorkspace = useCallback(
     (patch: ThreadWorkspacePatch) => {
       if (!activeThreadId) return;
+      if (usesFixedLocalWorkspace) {
+        const nextWorkspace = resolveFixedLocalWorkspacePatch({
+          currentWorkingDirectory: activeWorkingDirectory,
+          patch,
+        });
+        const nextWorkingDirectory = nextWorkspace.workingDirectory ?? null;
+        if (nextWorkingDirectory === activeWorkingDirectory) {
+          return;
+        }
+
+        const api = readNativeApi();
+        if (serverThread?.session && api) {
+          void api.orchestration
+            .dispatchCommand({
+              type: "thread.session.stop",
+              commandId: newCommandId(),
+              threadId: activeThreadId,
+              createdAt: new Date().toISOString(),
+            })
+            .catch(() => undefined);
+        }
+        if (api && hasServerThread) {
+          void api.orchestration.dispatchCommand({
+            type: "thread.meta.update",
+            commandId: newCommandId(),
+            threadId: activeThreadId,
+            ...nextWorkspace,
+          });
+        }
+        if (hasServerThread) {
+          setThreadWorkspaceAction(activeThreadId, nextWorkspace);
+          return;
+        }
+        setDraftThreadContext(threadId, nextWorkspace);
+        return;
+      }
+
       const branch = patch.branch !== undefined ? patch.branch : activeThreadBranch;
       const worktreePath =
         patch.worktreePath !== undefined ? patch.worktreePath : activeWorktreePath;
@@ -335,6 +384,7 @@ export default function BranchToolbar({
     [
       activeThreadId,
       activeThreadBranch,
+      activeWorkingDirectory,
       serverThread?.session,
       activeWorktreePath,
       hasServerThread,
@@ -345,17 +395,26 @@ export default function BranchToolbar({
       setDraftThreadContext,
       threadId,
       effectiveEnvMode,
+      usesFixedLocalWorkspace,
     ],
   );
 
   const canHandoffToWorktree = Boolean(
-    hasServerThread && envLocked && !activeWorktreePath && effectiveEnvMode === "local",
+    !usesFixedLocalWorkspace &&
+    hasServerThread &&
+    envLocked &&
+    !activeWorktreePath &&
+    effectiveEnvMode === "local",
   );
-  const canHandoffToLocal = Boolean(hasServerThread && activeWorktreePath);
+  const canHandoffToLocal = Boolean(
+    !usesFixedLocalWorkspace && hasServerThread && activeWorktreePath,
+  );
   const canSwitchToWorktree = Boolean(
-    !envLocked && !activeWorktreePath && effectiveEnvMode === "local",
+    !usesFixedLocalWorkspace && !envLocked && !activeWorktreePath && effectiveEnvMode === "local",
   );
-  const canSwitchToLocal = Boolean(!envLocked && effectiveEnvMode === "worktree");
+  const canSwitchToLocal = Boolean(
+    !usesFixedLocalWorkspace && !envLocked && effectiveEnvMode === "worktree",
+  );
   const showEnvPicker = effectiveEnvMode === "local" || canSwitchToLocal;
 
   const usageSummary = useProviderUsageSummary({
@@ -473,11 +532,9 @@ export default function BranchToolbar({
                 <MenuItem closeOnClick={false} onClick={() => setRateLimitsOpen((open) => !open)}>
                   <CentralIcon name="clock" className="size-3.5 text-muted-foreground" />
                   <span className="min-w-0 flex-1 truncate">Rate limits remaining</span>
-                  <ChevronRightIcon
-                    className={cn(
-                      "size-3.5 shrink-0 text-[var(--color-text-foreground-secondary)] transition-transform duration-150",
-                      rateLimitsOpen && "rotate-90",
-                    )}
+                  <DisclosureChevron
+                    open={rateLimitsOpen}
+                    className="text-[var(--color-text-foreground-secondary)]"
                   />
                 </MenuItem>
                 <CollapsiblePanel>
@@ -512,7 +569,7 @@ export default function BranchToolbar({
 
         {showBranchSelector ? (
           <BranchToolbarBranchSelector
-            activeProjectCwd={activeProject.cwd}
+            activeProjectCwd={branchProjectCwd ?? activeProject.cwd}
             activeThreadBranch={activeThreadBranch}
             activeWorktreePath={activeWorktreePath}
             branchCwd={branchCwd}

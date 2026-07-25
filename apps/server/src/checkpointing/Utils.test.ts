@@ -108,7 +108,6 @@ describe("resolveProjectCwdForKind", () => {
 
 describe("resolveThreadWorkspaceCwd", () => {
   const projectId = ProjectId.makeUnsafe("project-1");
-  const threadId = ThreadId.makeUnsafe("thread-1");
 
   it("resolves undefined for a chat-kind thread with no worktree", () => {
     expect(
@@ -126,6 +125,20 @@ describe("resolveThreadWorkspaceCwd", () => {
         projects: [{ id: projectId, kind: "studio", workspaceRoot: "/tmp/studio-root" }],
       }),
     ).toBe("/tmp/studio-root");
+  });
+
+  it("prefers an ordinary Studio working directory without treating it as a worktree", () => {
+    expect(
+      resolveThreadWorkspaceCwd({
+        thread: {
+          projectId,
+          envMode: "local",
+          worktreePath: null,
+          workingDirectory: "/tmp/reference-folder",
+        },
+        projects: [{ id: projectId, kind: "studio", workspaceRoot: "/tmp/studio-root" }],
+      }),
+    ).toBe("/tmp/reference-folder");
   });
 
   it("resolves the materialized worktree path for a studio-kind thread", () => {

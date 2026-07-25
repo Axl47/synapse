@@ -3,7 +3,7 @@
 // Layer: Chat composer presentation
 // Depends on: menu radio primitives, collapsible UI, and provider model grouping helpers.
 
-import { memo, useState } from "react";
+import { useState } from "react";
 
 import { StarFilledIcon, StarIcon } from "~/lib/icons";
 import { cn } from "~/lib/utils";
@@ -166,9 +166,7 @@ function CollapsibleModelGroup(
   );
 }
 
-export const ProviderModelOptionGroupList = memo(function ProviderModelOptionGroupList(
-  props: ProviderModelOptionGroupListProps,
-) {
+export function ProviderModelOptionGroupList(props: ProviderModelOptionGroupListProps) {
   const useCollapsibleGroups = shouldUseCollapsibleModelGroups(
     props.groupedOptions.length,
     props.isSearching,
@@ -227,4 +225,4 @@ export const ProviderModelOptionGroupList = memo(function ProviderModelOptionGro
       })}
     </div>
   );
-});
+}

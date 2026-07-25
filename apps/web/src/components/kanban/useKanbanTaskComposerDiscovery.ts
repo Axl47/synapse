@@ -17,11 +17,13 @@ import type {
 } from "@synara/contracts";
 import { useQuery } from "@tanstack/react-query";
 import { useDebouncedValue } from "@tanstack/react-pacer";
-import { useMemo } from "react";
 
 import type { ComposerCommandItem } from "~/components/chat/ComposerCommandMenu";
 import type { ComposerTrigger } from "~/composer-logic";
-import { useComposerCommandMenuItems } from "~/hooks/useComposerCommandMenuItems";
+import {
+  buildSearchableModelOptions,
+  useComposerCommandMenuItems,
+} from "~/hooks/useComposerCommandMenuItems";
 import { getLocalFolderBrowseRootPath, isLocalFolderMentionQuery } from "~/lib/localFolderMentions";
 import { resolveProviderDiscoveryCwd } from "~/lib/providerDiscovery";
 import {
@@ -58,7 +60,6 @@ type SearchableModelOption = {
   searchProvider: string;
   searchUpstreamProvider: string;
 };
-
 const COMPOSER_PATH_QUERY_DEBOUNCE_MS = 120;
 const EMPTY_PROJECT_ENTRIES: ProjectEntry[] = [];
 const EMPTY_PROVIDER_NATIVE_COMMANDS: ProviderNativeCommandDescriptor[] = [];
@@ -203,19 +204,16 @@ export function useKanbanTaskComposerDiscovery(input: UseKanbanTaskComposerDisco
   );
 
   const workspaceEntries = workspaceEntriesQuery.data?.entries ?? EMPTY_PROJECT_ENTRIES;
-  const providerPlugins = useMemo(
-    () =>
-      providerPluginsQuery.data?.marketplaces.flatMap((marketplace) =>
-        marketplace.plugins.map((plugin) => ({
-          plugin,
-          mention: {
-            name: plugin.name,
-            path: `plugin://${plugin.name}@${marketplace.name}`,
-          } satisfies ProviderMentionReference,
-        })),
-      ) ?? EMPTY_COMPOSER_PLUGIN_SUGGESTIONS,
-    [providerPluginsQuery.data],
-  );
+  const providerPlugins =
+    providerPluginsQuery.data?.marketplaces.flatMap((marketplace) =>
+      marketplace.plugins.map((plugin) => ({
+        plugin,
+        mention: {
+          name: plugin.name,
+          path: `plugin://${plugin.name}@${marketplace.name}`,
+        } satisfies ProviderMentionReference,
+      })),
+    ) ?? EMPTY_COMPOSER_PLUGIN_SUGGESTIONS;
   const providerNativeCommands =
     providerCommandsQuery.data?.commands ?? EMPTY_PROVIDER_NATIVE_COMMANDS;
   const providerSkills = providerSkillsQuery.data?.skills ?? EMPTY_PROVIDER_SKILLS;
@@ -288,13 +286,9 @@ export function useKanbanTaskComposerDiscovery(input: UseKanbanTaskComposerDisco
     surfaceAppSlashCommands: KANBAN_SUPPORTED_APP_SLASH_COMMANDS,
     dynamicAgents,
   });
-  const composerMenuItems = useMemo(
-    () =>
-      rawComposerMenuItems.filter(
-        (item) =>
-          item.type !== "slash-command" || KANBAN_SUPPORTED_APP_SLASH_COMMANDS.has(item.command),
-      ),
-    [rawComposerMenuItems],
+  const composerMenuItems = rawComposerMenuItems.filter(
+    (item) =>
+      item.type !== "slash-command" || KANBAN_SUPPORTED_APP_SLASH_COMMANDS.has(item.command),
   );
   const isComposerMenuLoading =
     (composerTriggerKind === "mention" &&

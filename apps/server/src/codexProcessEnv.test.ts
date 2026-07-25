@@ -2039,7 +2039,7 @@ describe("linkOrCopyCodexOverlayEntry", () => {
     const symlink = vi.fn(() => {
       throw new Error("symlinks unavailable");
     });
-    const copyFile = vi.fn();
+    const copyFile = vi.fn(() => undefined);
 
     linkOrCopyCodexOverlayEntry(
       {
@@ -2075,7 +2075,7 @@ describe("linkOrCopyCodexOverlayEntry", () => {
           targetPath: "C:\\Users\\test\\.synara\\codex-home-overlay\\sessions",
           type: "dir",
         },
-        { symlink, copyFile: vi.fn() },
+        { symlink, copyFile: vi.fn(() => undefined) },
       ),
     ).toThrow("symlinks unavailable");
   });

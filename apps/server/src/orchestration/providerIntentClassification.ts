@@ -5,12 +5,16 @@ export type ProviderIntentEvent = Extract<
   {
     type:
       | "thread.created"
+      | "thread.deleted"
+      | "thread.archived"
       | "thread.meta-updated"
       | "thread.session-set"
       | "thread.runtime-mode-set"
       | "thread.turn-queued"
       | "thread.turn-start-requested"
       | "thread.turn-interrupt-requested"
+      | "thread.task-stop-requested"
+      | "thread.task-background-requested"
       | "thread.approval-response-requested"
       | "thread.user-input-response-requested"
       | "thread.conversation-rollback-requested"
@@ -21,12 +25,16 @@ export type ProviderIntentEvent = Extract<
 
 const PROVIDER_INTENT_EVENT_TYPES = new Set<ProviderIntentEvent["type"]>([
   "thread.created",
+  "thread.deleted",
+  "thread.archived",
   "thread.meta-updated",
   "thread.session-set",
   "thread.runtime-mode-set",
   "thread.turn-queued",
   "thread.turn-start-requested",
   "thread.turn-interrupt-requested",
+  "thread.task-stop-requested",
+  "thread.task-background-requested",
   "thread.approval-response-requested",
   "thread.user-input-response-requested",
   "thread.conversation-rollback-requested",
@@ -43,10 +51,11 @@ export const isProviderIntentEvent = (event: OrchestrationEvent): event is Provi
   isProviderIntentEventType(event.type);
 
 export const isReplaySafeClaimedProviderIntent = (event: ProviderIntentEvent): boolean =>
-  event.type === "thread.created";
+  event.type === "thread.created" || event.type === "thread.archived";
 
 export const isProviderSideEffectIntent = (event: ProviderIntentEvent): boolean =>
   event.type !== "thread.created" &&
+  event.type !== "thread.deleted" &&
   event.type !== "thread.session-set" &&
   event.type !== "thread.turn-queued";
 

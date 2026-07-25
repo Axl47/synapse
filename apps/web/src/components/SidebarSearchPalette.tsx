@@ -24,7 +24,7 @@ import { isGenericChatThreadTitle } from "@synara/shared/chatThreads";
 import { BsChat } from "react-icons/bs";
 import { HiOutlineFolderOpen } from "react-icons/hi2";
 import { LuArrowDownToLine, LuArrowLeft, LuCornerLeftUp, LuFolderPlus } from "react-icons/lu";
-import { type ComponentType, useEffect, useMemo, useState, type KeyboardEvent } from "react";
+import { type ComponentType, useEffect, useState, type KeyboardEvent } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { FolderClosed } from "./FolderClosed";
 import { ProviderIcon as SharedProviderIcon } from "./ProviderIcon";
@@ -38,7 +38,6 @@ import {
   getBrowseDirectoryPath,
   getBrowseLeafPathSegment,
   getBrowseParentPath,
-  getInitialBrowseQuery,
   hasTrailingPathSeparator,
   isExplicitRelativeProjectPath,
   isFilesystemBrowseQuery,
@@ -74,7 +73,6 @@ import {
 } from "./ui/command";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
-import { Radio, RadioGroup } from "./ui/radio-group";
 import { ShortcutKbd } from "./ui/shortcut-kbd";
 import type { ThreadImportTarget } from "~/lib/threadImport";
 
@@ -92,7 +90,6 @@ interface SidebarSearchPaletteProps {
   onCreateThread: () => void;
   onAddProjectPath: (path: string, options?: { createIfMissing?: boolean }) => Promise<void>;
   homeDir: string | null;
-  initialBrowseQuery?: string | null;
   onOpenSettings: () => void;
   onOpenFeedback: () => void;
   onOpenUsageSettings: () => void;
@@ -316,16 +313,15 @@ function escapeRegExp(value: string): string {
 }
 
 function HighlightedText(props: { text: string; query: string; className?: string }) {
-  const segments = useMemo(() => {
-    const tokens = tokenizeHighlightQuery(props.query);
-    if (tokens.length === 0) {
-      return [{ key: "full", text: props.text, highlighted: false }];
-    }
-
+  const tokens = tokenizeHighlightQuery(props.query);
+  let segments: Array<{ key: string; text: string; highlighted: boolean }>;
+  if (tokens.length === 0) {
+    segments = [{ key: "full", text: props.text, highlighted: false }];
+  } else {
     const pattern = new RegExp(`(${tokens.map(escapeRegExp).join("|")})`, "gi");
     const parts = props.text.split(pattern).filter((part) => part.length > 0);
     let offset = 0;
-    return parts.map((part) => {
+    segments = parts.map((part) => {
       const segment = {
         key: `${offset}-${part.length}`,
         text: part,
@@ -334,7 +330,7 @@ function HighlightedText(props: { text: string; query: string; className?: strin
       offset += part.length;
       return segment;
     });
-  }, [props.query, props.text]);
+  }
 
   return (
     <span className={props.className}>
@@ -356,19 +352,35 @@ function HighlightedText(props: { text: string; query: string; className?: strin
 
 export function SidebarSearchPalette(props: SidebarSearchPaletteProps) {
   const { activeTheme, resolvedTheme, setCodeThemeId, setTheme, theme } = useTheme();
-  const [query, setQuery] = useState(props.initialBrowseQuery ?? "");
+  const [query, setQuery] = useState("");
   const [highlightedItemValue, setHighlightedItemValue] = useState<string | null>(null);
-  const [importTargetId, setImportTargetId] = useState<ProviderInstanceId | null>(
+  const [importTargetIdState, setImportTargetId] = useState<ProviderInstanceId | null>(
     props.importTargets[0]?.instanceId ?? null,
   );
   const [importId, setImportId] = useState("");
   const [importError, setImportError] = useState<string | null>(null);
   const [isImporting, setIsImporting] = useState(false);
-  const [addProjectError, setAddProjectError] = useState<string | null>(null);
+  // Error keyed to the query it was produced for: editing the query derives
+  // straight back to null with no state-clearing effect.
+  const [addProjectErrorState, setAddProjectErrorState] = useState<{
+    query: string;
+    message: string;
+  } | null>(null);
   const [isAddingProject, setIsAddingProject] = useState(false);
+  const addProjectError =
+    addProjectErrorState !== null && addProjectErrorState.query === query
+      ? addProjectErrorState.message
+      : null;
+  const setAddProjectError = (message: string | null) =>
+    setAddProjectErrorState(message === null ? null : { query, message });
 
   useEffect(() => {
-    if (!props.open) {
+    if (props.open) {
+      return;
+    }
+    // Timeout-0 keeps the reset writes asynchronous (the palette is already
+    // hidden), which keeps this component eligible for React Compiler.
+    const timeoutId = window.setTimeout(() => {
       setQuery("");
       setHighlightedItemValue(null);
       setImportTargetId(props.importTargets[0]?.instanceId ?? null);
@@ -377,20 +389,9 @@ export function SidebarSearchPalette(props: SidebarSearchPaletteProps) {
       setIsImporting(false);
       setAddProjectError(null);
       setIsAddingProject(false);
-    }
+    }, 0);
+    return () => window.clearTimeout(timeoutId);
   }, [props.importTargets, props.open]);
-
-  useEffect(() => {
-    if (props.importTargets.some((target) => target.instanceId === importTargetId)) {
-      return;
-    }
-    setImportTargetId(props.importTargets[0]?.instanceId ?? null);
-  }, [importTargetId, props.importTargets]);
-
-  useEffect(() => {
-    setAddProjectError(null);
-  }, [query]);
-
   const platform = typeof navigator === "undefined" ? "" : navigator.platform;
   const trimmedQuery = query.trim();
   const unsupportedWindowsPath = isUnsupportedWindowsProjectPath(trimmedQuery, platform);
@@ -415,70 +416,50 @@ export function SidebarSearchPalette(props: SidebarSearchPaletteProps) {
     });
 
   const browseEntries = browseResult?.entries ?? EMPTY_BROWSE_ENTRIES;
-  const filteredBrowseEntries = useMemo(() => {
-    const lowerFilter = leafSegment.toLowerCase();
-    const showHidden = leafSegment.startsWith(".");
-    return browseEntries.filter(
-      (entry) =>
-        entry.name.toLowerCase().startsWith(lowerFilter) &&
-        (showHidden || !entry.name.startsWith(".")),
-    );
-  }, [browseEntries, leafSegment]);
+  const lowerFilter = leafSegment.toLowerCase();
+  const showHidden = leafSegment.startsWith(".");
+  const filteredBrowseEntries = browseEntries.filter(
+    (entry) =>
+      entry.name.toLowerCase().startsWith(lowerFilter) &&
+      (showHidden || !entry.name.startsWith(".")),
+  );
 
-  const exactBrowseEntry = useMemo(() => {
-    if (leafSegment.length === 0) return null;
-    return filteredBrowseEntries.find((entry) => entry.name === leafSegment) ?? null;
-  }, [filteredBrowseEntries, leafSegment]);
+  const exactBrowseEntry =
+    leafSegment.length === 0
+      ? null
+      : (filteredBrowseEntries.find((entry) => entry.name === leafSegment) ?? null);
 
   const browseParentPath = canBrowse ? getBrowseParentPath(query) : null;
   const canBrowseUp = canBrowse && canNavigateUp(query);
 
-  const matchedActions = useMemo(
-    () => (isBrowsing ? [] : matchSidebarSearchActions(props.actions, query)),
-    [isBrowsing, props.actions, query],
+  const matchedActions = isBrowsing ? [] : matchSidebarSearchActions(props.actions, query);
+  const themeCommandItems = buildThemeCommandItems({
+    query,
+    resolvedTheme,
+    theme,
+  });
+  const currentCodeThemeItems: SidebarSearchTheme[] = getAvailableCodeThemes(resolvedTheme).map(
+    (option) => ({
+      id: `theme-code:${resolvedTheme}:${option.id}`,
+      type: "code-theme",
+      label: option.label,
+      description: `Apply to the current ${resolvedTheme} theme slot.`,
+      keywords: ["appearance", "theme", resolvedTheme, option.id],
+      codeThemeId: option.id,
+      variant: resolvedTheme,
+      isActive: activeTheme.codeThemeId === option.id,
+    }),
   );
-  const themeCommandItems = useMemo(
-    () =>
-      buildThemeCommandItems({
-        query,
-        resolvedTheme,
-        theme,
-      }),
-    [query, resolvedTheme, theme],
-  );
-  const currentCodeThemeItems = useMemo<SidebarSearchTheme[]>(
-    () =>
-      getAvailableCodeThemes(resolvedTheme).map((option) => ({
-        id: `theme-code:${resolvedTheme}:${option.id}`,
-        type: "code-theme",
-        label: option.label,
-        description: `Apply to the current ${resolvedTheme} theme slot.`,
-        keywords: ["appearance", "theme", resolvedTheme, option.id],
-        codeThemeId: option.id,
-        variant: resolvedTheme,
-        isActive: activeTheme.codeThemeId === option.id,
-      })),
-    [activeTheme.codeThemeId, resolvedTheme],
-  );
-  const matchedCurrentThemes = useMemo(
-    () =>
-      isBrowsing || query.trim().length === 0
-        ? []
-        : matchSidebarSearchThemes(currentCodeThemeItems, query),
-    [currentCodeThemeItems, isBrowsing, query],
-  );
+  const matchedCurrentThemes =
+    isBrowsing || query.trim().length === 0
+      ? []
+      : matchSidebarSearchThemes(currentCodeThemeItems, query);
   const showThemeSection =
     !isBrowsing &&
     query.trim().length > 0 &&
     (themeCommandItems.length > 0 || matchedCurrentThemes.length > 0);
-  const matchedProjects = useMemo(
-    () => (isBrowsing ? [] : matchSidebarSearchProjects(props.projects, query)),
-    [isBrowsing, props.projects, query],
-  );
-  const matchedThreads = useMemo(
-    () => (isBrowsing ? [] : matchSidebarSearchThreads(props.threads, query)),
-    [isBrowsing, props.threads, query],
-  );
+  const matchedProjects = isBrowsing ? [] : matchSidebarSearchProjects(props.projects, query);
+  const matchedThreads = isBrowsing ? [] : matchSidebarSearchThreads(props.threads, query);
   const hasSearchResults =
     matchedActions.length > 0 ||
     themeCommandItems.length > 0 ||
@@ -486,7 +467,10 @@ export function SidebarSearchPalette(props: SidebarSearchPaletteProps) {
     matchedProjects.length > 0 ||
     matchedThreads.length > 0;
   const importTarget =
-    props.importTargets.find((target) => target.instanceId === importTargetId) ?? null;
+    props.importTargets.find((target) => target.instanceId === importTargetIdState) ??
+    props.importTargets[0] ??
+    null;
+  const importTargetId = importTarget?.instanceId ?? null;
   const importProvider = importTarget?.provider ?? props.importTargets[0]?.provider ?? "codex";
   const importFieldLabel = importProvider === "codex" ? "Thread ID" : "Session ID";
   const importPlaceholder =
@@ -547,16 +531,22 @@ export function SidebarSearchPalette(props: SidebarSearchPaletteProps) {
     }
     setIsAddingProject(true);
     setAddProjectError(null);
-    try {
-      await props.onAddProjectPath(resolveBrowseSubmitPath(), {
+    // Promise chain instead of async/try-finally: React Compiler does not yet
+    // support try/finally, and it would skip optimizing this whole component.
+    void Promise.resolve(
+      props.onAddProjectPath(resolveBrowseSubmitPath(), {
         createIfMissing: willCreateMissingFolder,
+      }),
+    )
+      .then(() => {
+        props.onOpenChange(false);
+      })
+      .catch((cause: unknown) => {
+        setAddProjectError(cause instanceof Error ? cause.message : "Failed to add project.");
+      })
+      .finally(() => {
+        setIsAddingProject(false);
       });
-      props.onOpenChange(false);
-    } catch (cause) {
-      setAddProjectError(cause instanceof Error ? cause.message : "Failed to add project.");
-    } finally {
-      setIsAddingProject(false);
-    }
   };
 
   const isMac = isMacPlatform(platform);
@@ -585,21 +575,23 @@ export function SidebarSearchPalette(props: SidebarSearchPaletteProps) {
     }
   };
 
-  const submitImport = async () => {
+  const submitImport = () => {
     const normalizedImportId = importId.trim();
     if (!normalizedImportId || !importTarget || isImporting) {
       return;
     }
     setImportError(null);
     setIsImporting(true);
-    try {
-      await props.onImportThread(importTarget, normalizedImportId);
-      props.onOpenChange(false);
-    } catch (error) {
-      setImportError(error instanceof Error ? error.message : "Failed to import thread.");
-    } finally {
-      setIsImporting(false);
-    }
+    void Promise.resolve(props.onImportThread(importTarget, normalizedImportId))
+      .then(() => {
+        props.onOpenChange(false);
+      })
+      .catch((error: unknown) => {
+        setImportError(error instanceof Error ? error.message : "Failed to import thread.");
+      })
+      .finally(() => {
+        setIsImporting(false);
+      });
   };
 
   return (
@@ -631,19 +623,22 @@ export function SidebarSearchPalette(props: SidebarSearchPaletteProps) {
             <div className="space-y-4 px-4 py-4">
               <div className="space-y-2">
                 <p className="text-xs font-medium text-muted-foreground">Provider</p>
-                <RadioGroup
+                <div
                   aria-label="Provider account"
                   className="grid max-h-44 grid-cols-1 gap-2 overflow-y-auto overscroll-contain pe-1 sm:grid-cols-2"
                   data-testid="import-target-options"
-                  value={importTargetId ?? ""}
-                  onValueChange={(value) => setImportTargetId(value as ProviderInstanceId)}
                 >
                   {props.importTargets.map((target) => (
-                    <Radio
+                    <Button
                       key={target.instanceId}
                       aria-label={`${target.label}, ${PROVIDER_DISPLAY_NAMES[target.provider]}`}
-                      value={target.instanceId}
-                      className="h-auto min-h-11 w-full min-w-0 justify-start gap-2 rounded-lg border-[color:var(--color-border)] bg-transparent px-3 py-2 text-left text-foreground hover:bg-muted/60 data-checked:bg-muted data-checked:hover:bg-muted/80 sm:h-auto sm:w-full [&_[data-slot=radio-indicator]]:hidden"
+                      variant="outline"
+                      className={
+                        importTargetId === target.instanceId
+                          ? "h-auto min-h-11 w-full min-w-0 justify-start gap-2 border-border bg-muted px-3 py-2 text-left text-foreground hover:bg-muted/80"
+                          : "h-auto min-h-11 w-full min-w-0 justify-start gap-2 px-3 py-2 text-left"
+                      }
+                      onClick={() => setImportTargetId(target.instanceId)}
                     >
                       <ProviderIcon provider={target.provider} />
                       <span className="min-w-0 flex-1">
@@ -652,9 +647,9 @@ export function SidebarSearchPalette(props: SidebarSearchPaletteProps) {
                           {PROVIDER_DISPLAY_NAMES[target.provider]}
                         </span>
                       </span>
-                    </Radio>
+                    </Button>
                   ))}
-                </RadioGroup>
+                </div>
                 {props.importTargets.length === 0 ? (
                   <p className="text-xs text-muted-foreground">
                     No connected providers expose chat import in this build.
@@ -849,8 +844,8 @@ export function SidebarSearchPalette(props: SidebarSearchPaletteProps) {
                     <CommandGroup>
                       <CommandGroupLabel className="pt-0 pb-1.5 pl-3">Suggested</CommandGroupLabel>
                       {matchedActions.map((action) => {
-                        const onSelect = actionHandler(action.id, props);
-                        const Icon = ACTION_ICONS[action.id];
+                        const onSelect = action.run ?? actionHandler(action.id, props);
+                        const Icon = action.icon ?? ACTION_ICONS[action.id];
                         return (
                           <CommandItem
                             key={action.id}
@@ -865,10 +860,6 @@ export function SidebarSearchPalette(props: SidebarSearchPaletteProps) {
                                 setImportId("");
                                 setImportTargetId(props.importTargets[0]?.instanceId ?? null);
                                 props.onModeChange("import");
-                                return;
-                              }
-                              if (action.id === "add-project") {
-                                setQuery(getInitialBrowseQuery(props.homeDir));
                                 return;
                               }
                               if (!onSelect) return;
@@ -933,6 +924,10 @@ export function SidebarSearchPalette(props: SidebarSearchPaletteProps) {
                                     query={query}
                                   />
                                 </div>
+                                {/* Project only, not "project · space": this column is
+                                    96px, and a thread's Space is already implied by its
+                                    project. Space stays searchable — it just does not
+                                    get to eat the name the user is scanning for. */}
                                 <span className="w-24 shrink-0 truncate text-right text-[length:var(--app-font-size-ui-meta,10px)] text-muted-foreground/79">
                                   {thread.externalThread
                                     ? thread.externalThread.status === "active"
@@ -997,8 +992,17 @@ export function SidebarSearchPalette(props: SidebarSearchPaletteProps) {
                         >
                           <PaletteIcon icon={HiOutlineFolderOpen} />
                           <div className="min-w-0 flex-1">
-                            <div className="truncate text-[length:var(--app-font-size-ui,12px)] text-foreground">
-                              {project.name || "Untitled project"}
+                            <div className="flex items-baseline gap-3">
+                              <div className="min-w-0 flex-1 truncate text-[length:var(--app-font-size-ui,12px)] text-foreground">
+                                {project.name || "Untitled project"}
+                              </div>
+                              {/* Opening a project from here can switch Space, so the
+                                  destination is worth naming. It rides in the same right-hand
+                                  column the thread rows use for their parent, rather than
+                                  in front of the path, which is what identifies a project. */}
+                              <span className="w-24 shrink-0 truncate text-right text-[length:var(--app-font-size-ui-meta,10px)] text-muted-foreground/79">
+                                {project.spaceName}
+                              </span>
                             </div>
                             <div className="truncate text-[length:var(--app-font-size-ui-meta,10px)] text-muted-foreground/79">
                               {project.localName

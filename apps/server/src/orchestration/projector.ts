@@ -17,11 +17,19 @@ import {
   setThreadMarkerDone,
   setThreadMarkerLabel,
 } from "@synara/shared/threadMarkers";
+import {
+  inferLegacyProviderKindFromModelSelection,
+  resolveModelSelectionInstanceId,
+} from "@synara/shared/providerInstances";
 import { Effect, Schema } from "effect";
 
 import { toProjectorDecodeError, type OrchestrationProjectorDecodeError } from "./Errors.ts";
 import {
   MessageSentPayloadSchema,
+  SpaceCreatedPayload,
+  SpaceDeletedPayload,
+  SpaceMetaUpdatedPayload,
+  SpaceOrderUpdatedPayload,
   ProjectCreatedPayload,
   ProjectDeletedPayload,
   ProjectMetaUpdatedPayload,
@@ -49,6 +57,8 @@ import {
   ThreadTurnStartRequestedPayload,
 } from "./Schemas.ts";
 import { resolveStableMessageTurnId } from "./messageTurnId.ts";
+import { settleTurnStateFromSession } from "./turnLifecycle.ts";
+import { deriveTurnStartModelSelection, deriveTurnStartSession } from "./turnStartSession.ts";
 
 type ThreadPatch = Partial<Omit<OrchestrationThread, "id" | "projectId">>;
 const MAX_THREAD_MESSAGES = 2_000;
@@ -89,18 +99,8 @@ function settleLatestTurnForSessionStatus(
   if (latestTurn?.state !== "running") {
     return latestTurn;
   }
-  const settledState =
-    session.status === "error"
-      ? ("error" as const)
-      : session.status === "interrupted" || session.status === "stopped"
-        ? ("interrupted" as const)
-        : session.status === "ready"
-          ? ("completed" as const)
-          : null;
+  const settledState = settleTurnStateFromSession(session, latestTurn.state);
   if (settledState === null) {
-    return latestTurn;
-  }
-  if (session.activeTurnId !== null && settledState !== "error") {
     return latestTurn;
   }
   return {
@@ -306,6 +306,7 @@ function upsertThreadActivity(
 export function createEmptyReadModel(nowIso: string): OrchestrationReadModel {
   return {
     snapshotSequence: 0,
+    spaces: [],
     projects: [],
     threads: [],
     updatedAt: nowIso,
@@ -323,6 +324,87 @@ export function projectEvent(
   };
 
   switch (event.type) {
+    case "space.created":
+      return decodeForEvent(SpaceCreatedPayload, event.payload, event.type, "payload").pipe(
+        Effect.map((payload) => {
+          const existing = nextBase.spaces.find((entry) => entry.id === payload.spaceId);
+          const nextSpace = {
+            id: payload.spaceId,
+            name: payload.name,
+            icon: payload.icon,
+            sortOrder: payload.sortOrder,
+            createdAt: payload.createdAt,
+            updatedAt: payload.updatedAt,
+            deletedAt: null,
+          };
+          return {
+            ...nextBase,
+            spaces: existing
+              ? nextBase.spaces.map((entry) => (entry.id === payload.spaceId ? nextSpace : entry))
+              : [...nextBase.spaces, nextSpace],
+          };
+        }),
+      );
+
+    case "space.meta-updated":
+      return decodeForEvent(SpaceMetaUpdatedPayload, event.payload, event.type, "payload").pipe(
+        Effect.map((payload) => ({
+          ...nextBase,
+          spaces: nextBase.spaces.map((space) =>
+            space.id === payload.spaceId
+              ? {
+                  ...space,
+                  ...(payload.name !== undefined ? { name: payload.name } : {}),
+                  ...(payload.icon !== undefined ? { icon: payload.icon } : {}),
+                  updatedAt: payload.updatedAt,
+                }
+              : space,
+          ),
+        })),
+      );
+
+    case "space.order-updated":
+      return decodeForEvent(SpaceOrderUpdatedPayload, event.payload, event.type, "payload").pipe(
+        Effect.map((payload) => {
+          const orderBySpaceId = new Map(
+            payload.orderedSpaceIds.map((spaceId, index) => [spaceId, index] as const),
+          );
+          return {
+            ...nextBase,
+            spaces: nextBase.spaces.map((space) => {
+              const sortOrder = orderBySpaceId.get(space.id);
+              // A listed space whose position did not move is not a change; skipping it keeps
+              // this read model, the SQL projection, and the client store byte-identical.
+              return sortOrder === undefined || sortOrder === space.sortOrder
+                ? space
+                : { ...space, sortOrder, updatedAt: payload.updatedAt };
+            }),
+          };
+        }),
+      );
+
+    case "space.deleted":
+      return decodeForEvent(SpaceDeletedPayload, event.payload, event.type, "payload").pipe(
+        Effect.map((payload) => ({
+          ...nextBase,
+          spaces: nextBase.spaces.map((space) =>
+            space.id === payload.spaceId
+              ? { ...space, deletedAt: payload.deletedAt, updatedAt: payload.deletedAt }
+              : space,
+          ),
+          projects: nextBase.projects.map((project) =>
+            project.spaceId === payload.spaceId
+              ? {
+                  ...project,
+                  spaceId: null,
+                  updatedAt:
+                    project.updatedAt > payload.deletedAt ? project.updatedAt : payload.deletedAt,
+                }
+              : project,
+          ),
+        })),
+      );
+
     case "project.created":
       return decodeForEvent(ProjectCreatedPayload, event.payload, event.type, "payload").pipe(
         Effect.map((payload) => {
@@ -335,6 +417,7 @@ export function projectEvent(
             defaultModelSelection: payload.defaultModelSelection,
             scripts: payload.scripts,
             isPinned: payload.isPinned ?? false,
+            spaceId: payload.spaceId ?? null,
             createdAt: payload.createdAt,
             updatedAt: payload.updatedAt,
             deletedAt: null,
@@ -369,6 +452,7 @@ export function projectEvent(
                     : {}),
                   ...(payload.scripts !== undefined ? { scripts: payload.scripts } : {}),
                   ...(payload.isPinned !== undefined ? { isPinned: payload.isPinned } : {}),
+                  ...(payload.spaceId !== undefined ? { spaceId: payload.spaceId } : {}),
                   updatedAt: payload.updatedAt,
                 }
               : project,
@@ -400,6 +484,8 @@ export function projectEvent(
           event.type,
           "payload",
         );
+        const isStudio =
+          nextBase.projects.find((project) => project.id === payload.projectId)?.kind === "studio";
         const thread: OrchestrationThread = yield* decodeForEvent(
           OrchestrationThread,
           {
@@ -409,15 +495,23 @@ export function projectEvent(
             modelSelection: payload.modelSelection,
             runtimeMode: payload.runtimeMode,
             interactionMode: payload.interactionMode,
-            envMode: payload.envMode,
-            branch: payload.branch,
-            worktreePath: payload.worktreePath,
-            associatedWorktreePath: payload.associatedWorktreePath,
-            associatedWorktreeBranch: payload.associatedWorktreeBranch,
-            associatedWorktreeRef: payload.associatedWorktreeRef,
-            createBranchFlowCompleted: payload.createBranchFlowCompleted,
+            envMode: isStudio ? "local" : payload.envMode,
+            branch: isStudio ? null : payload.branch,
+            worktreePath: isStudio ? null : payload.worktreePath,
+            workingDirectory: isStudio
+              ? (payload.workingDirectory ?? payload.worktreePath)
+              : payload.workingDirectory,
+            associatedWorktreePath: isStudio ? null : payload.associatedWorktreePath,
+            associatedWorktreeBranch: isStudio ? null : payload.associatedWorktreeBranch,
+            associatedWorktreeRef: isStudio ? null : payload.associatedWorktreeRef,
+            createBranchFlowCompleted: isStudio ? false : payload.createBranchFlowCompleted,
             isPinned: payload.isPinned,
             parentThreadId: payload.parentThreadId,
+            creationSource: payload.creationSource ?? null,
+            sourceThreadId: payload.sourceThreadId ?? null,
+            sourceTurnId: payload.sourceTurnId ?? null,
+            gatewayOperationId: payload.gatewayOperationId ?? null,
+            gatewayOperationIndex: payload.gatewayOperationIndex ?? null,
             subagentAgentId: payload.subagentAgentId,
             subagentNickname: payload.subagentNickname,
             subagentRole: payload.subagentRole,
@@ -491,6 +585,9 @@ export function projectEvent(
         Effect.map((payload) => {
           const existingThread =
             nextBase.threads.find((thread) => thread.id === payload.threadId) ?? null;
+          const isStudio =
+            nextBase.projects.find((project) => project.id === existingThread?.projectId)?.kind ===
+            "studio";
           const nextCreateBranchFlowCompleted =
             payload.createBranchFlowCompleted !== undefined
               ? payload.createBranchFlowCompleted
@@ -506,9 +603,30 @@ export function projectEvent(
               ...(payload.modelSelection !== undefined
                 ? { modelSelection: payload.modelSelection }
                 : {}),
-              ...(payload.envMode !== undefined ? { envMode: payload.envMode } : {}),
-              ...(payload.branch !== undefined ? { branch: payload.branch } : {}),
-              ...(payload.worktreePath !== undefined ? { worktreePath: payload.worktreePath } : {}),
+              ...(isStudio
+                ? {
+                    envMode: "local" as const,
+                    branch: null,
+                    worktreePath: null,
+                    workingDirectory:
+                      payload.workingDirectory !== undefined
+                        ? payload.workingDirectory
+                        : payload.worktreePath !== undefined
+                          ? payload.worktreePath
+                          : (existingThread?.workingDirectory ??
+                            existingThread?.worktreePath ??
+                            null),
+                  }
+                : {
+                    ...(payload.envMode !== undefined ? { envMode: payload.envMode } : {}),
+                    ...(payload.branch !== undefined ? { branch: payload.branch } : {}),
+                    ...(payload.worktreePath !== undefined
+                      ? { worktreePath: payload.worktreePath }
+                      : {}),
+                    ...(payload.workingDirectory !== undefined
+                      ? { workingDirectory: payload.workingDirectory }
+                      : {}),
+                  }),
               ...(payload.associatedWorktreePath !== undefined
                 ? { associatedWorktreePath: payload.associatedWorktreePath }
                 : {}),
@@ -520,6 +638,14 @@ export function projectEvent(
                 : {}),
               ...(nextCreateBranchFlowCompleted !== undefined
                 ? { createBranchFlowCompleted: nextCreateBranchFlowCompleted }
+                : {}),
+              ...(isStudio
+                ? {
+                    associatedWorktreePath: null,
+                    associatedWorktreeBranch: null,
+                    associatedWorktreeRef: null,
+                    createBranchFlowCompleted: false,
+                  }
                 : {}),
               ...(payload.isPinned !== undefined ? { isPinned: payload.isPinned } : {}),
               ...(payload.parentThreadId !== undefined
@@ -747,15 +873,37 @@ export function projectEvent(
           if (!thread) {
             return nextBase;
           }
+          const canAdoptFirstTurnProvider =
+            thread.latestTurn === null && thread.session === null && thread.messages.length <= 1;
+          const projectedModelSelection = deriveTurnStartModelSelection({
+            currentModelSelection: thread.modelSelection,
+            requestedModelSelection: payload.modelSelection,
+            canAdoptRequestedProvider:
+              canAdoptFirstTurnProvider ||
+              (payload.modelSelection !== undefined &&
+                canProjectTurnModelSelection(thread, payload.modelSelection)),
+          });
           const modelSelectionPatch =
-            payload.modelSelection !== undefined &&
-            canProjectTurnModelSelection(thread, payload.modelSelection)
-              ? { modelSelection: payload.modelSelection }
+            projectedModelSelection !== thread.modelSelection
+              ? { modelSelection: projectedModelSelection }
               : {};
+          const turnStartSession = deriveTurnStartSession({
+            threadId: thread.id,
+            currentSession: thread.session,
+            providerName:
+              thread.session?.status === "stopped" || thread.session?.status === "error"
+                ? inferLegacyProviderKindFromModelSelection(projectedModelSelection)
+                : (thread.session?.providerName ??
+                  inferLegacyProviderKindFromModelSelection(projectedModelSelection)),
+            providerInstanceId: resolveModelSelectionInstanceId(projectedModelSelection),
+            requestedRuntimeMode: payload.runtimeMode,
+            requestedAt: payload.createdAt,
+          });
           return {
             ...nextBase,
             threads: updateThread(nextBase.threads, payload.threadId, {
               ...modelSelectionPatch,
+              ...(turnStartSession !== null ? { session: turnStartSession } : {}),
               runtimeMode: payload.runtimeMode,
               interactionMode: payload.interactionMode,
               updatedAt: payload.createdAt,
@@ -1135,7 +1283,10 @@ export function projectEvent(
             return nextBase;
           }
 
-          const activities = upsertThreadActivity(thread.activities, payload.activity);
+          const activities = upsertThreadActivity(thread.activities, {
+            ...payload.activity,
+            sequence: event.sequence,
+          });
 
           return {
             ...nextBase,

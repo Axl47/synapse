@@ -27,6 +27,7 @@ import {
   type CodexPreparedAuthSource,
 } from "../../codexProcessEnv.ts";
 import { compareCodexCliVersions, parseCodexCliVersion } from "../../provider/codexCliVersion.ts";
+import { formatMissingCodexWorkingDirectoryError } from "../../codexWorkingDirectory.ts";
 import { TextGenerationError } from "../Errors.ts";
 import {
   CodexTextGeneration,
@@ -181,6 +182,7 @@ function normalizeCodexError(
     if (
       error.message.includes(`Command not found: ${binaryPath}`) ||
       lower.includes(`spawn ${binaryPath.toLowerCase()}`) ||
+      lower.includes("notfound: childprocess.spawn") ||
       lower.includes("enoent")
     ) {
       return new TextGenerationError({
@@ -492,7 +494,7 @@ const makeCodexTextGeneration = Effect.gen(function* () {
 
   const runCodexJson = <S extends Schema.Top>({
     operation,
-    cwd: _requestedCwd,
+    cwd,
     prompt,
     outputSchemaJson,
     codexHomePath,
@@ -525,6 +527,19 @@ const makeCodexTextGeneration = Effect.gen(function* () {
               cause,
             }),
         });
+        const workingDirectoryExists = () =>
+          fileSystem.stat(cwd).pipe(
+            Effect.map((cwdInfo) => cwdInfo.type === "Directory"),
+            Effect.catch(() => Effect.succeed(false)),
+          );
+        const missingWorkingDirectoryError = () =>
+          new TextGenerationError({
+            operation,
+            detail: formatMissingCodexWorkingDirectoryError(cwd),
+          });
+        if (!(yield* workingDirectoryExists())) {
+          return yield* missingWorkingDirectoryError();
+        }
         const codexBinaryPath = resolveCodexBinaryPath(providerOptions);
         const resolvedCodexHomePath = resolveCodexHomePath(codexHomePath, providerOptions);
         const resolvedCodexAuthHomePath = resolveCodexAuthHomePath(providerOptions);
@@ -656,18 +671,24 @@ const makeCodexTextGeneration = Effect.gen(function* () {
             },
           });
 
-          const child = yield* commandSpawner
-            .spawn(command)
-            .pipe(
-              Effect.mapError((cause) =>
-                normalizeCodexError(
-                  codexBinaryPath,
-                  operation,
-                  cause,
-                  "Failed to spawn Codex CLI process",
+          const child = yield* commandSpawner.spawn(command).pipe(
+            Effect.catch((cause) =>
+              workingDirectoryExists().pipe(
+                Effect.flatMap((exists) =>
+                  Effect.fail(
+                    exists
+                      ? normalizeCodexError(
+                          codexBinaryPath,
+                          operation,
+                          cause,
+                          "Failed to spawn Codex CLI process",
+                        )
+                      : missingWorkingDirectoryError(),
+                  ),
                 ),
               ),
-            );
+            ),
+          );
           const { exitCode, stdout, stderr } = yield* collectCodexChildResult({
             binaryPath: codexBinaryPath,
             child,

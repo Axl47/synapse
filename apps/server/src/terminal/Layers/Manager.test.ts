@@ -8,7 +8,7 @@ import {
   type TerminalOpenInput,
   type TerminalRestartInput,
 } from "@synara/contracts";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   PtySpawnError,
@@ -187,6 +187,7 @@ describe("TerminalManager", () => {
   const tempDirs: string[] = [];
 
   afterEach(() => {
+    vi.useRealTimers();
     for (const dir of tempDirs.splice(0, tempDirs.length)) {
       fs.rmSync(dir, { recursive: true, force: true });
     }
@@ -965,6 +966,33 @@ describe("TerminalManager", () => {
     manager.dispose();
   });
 
+  it("keeps terminals reattached after an archive cleanup fence", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-07-23T20:00:00.000Z"));
+    const { manager, ptyAdapter } = makeManager();
+    await manager.open(openInput({ terminalId: "default" }));
+    await manager.open(openInput({ terminalId: "sidecar" }));
+    const defaultProcess = ptyAdapter.processes[0];
+    const sidecarProcess = ptyAdapter.processes[1];
+    expect(defaultProcess).toBeDefined();
+    expect(sidecarProcess).toBeDefined();
+    if (!defaultProcess || !sidecarProcess) return;
+
+    const archivedAt = "2026-07-23T20:00:05.000Z";
+    vi.setSystemTime(new Date("2026-07-23T20:00:10.000Z"));
+    await manager.open(openInput({ terminalId: "sidecar" }));
+
+    await manager.closeSessionsOpenedAtOrBefore({
+      threadId: "thread-1",
+      openedAtOrBefore: archivedAt,
+    });
+
+    expect(defaultProcess.killed).toBe(true);
+    expect(sidecarProcess.killed).toBe(false);
+    await manager.close({ threadId: "thread-1" });
+    manager.dispose();
+  });
+
   it("escalates terminal shutdown to SIGKILL when process does not exit in time", async () => {
     const { manager, ptyAdapter } = makeManager(5, { processKillGraceMs: 10 });
     await manager.open(openInput());
@@ -1234,6 +1262,51 @@ describe("TerminalManager", () => {
       expect(spawnInput.env.TERM_PROGRAM).toBeUndefined();
       expect(spawnInput.env.TERMINFO).toBeUndefined();
       expect(spawnInput.env.GHOSTTY_RESOURCES_DIR).toBeUndefined();
+
+      manager.dispose();
+    } finally {
+      restoreEnv();
+    }
+  });
+
+  it("pins COLORTERM and drops inherited color-control env", async () => {
+    const originalValues = new Map<string, string | undefined>();
+    const setEnv = (key: string, value: string) => {
+      if (!originalValues.has(key)) {
+        originalValues.set(key, process.env[key]);
+      }
+      process.env[key] = value;
+    };
+    const restoreEnv = () => {
+      for (const [key, value] of originalValues) {
+        if (value === undefined) {
+          delete process.env[key];
+        } else {
+          process.env[key] = value;
+        }
+      }
+    };
+
+    setEnv("NO_COLOR", "1");
+    setEnv("FORCE_COLOR", "0");
+    setEnv("CLICOLOR", "0");
+    setEnv("CLICOLOR_FORCE", "0");
+    setEnv("COLORFGBG", "0;15");
+    setEnv("COLORTERM", "");
+
+    try {
+      const { manager, ptyAdapter } = makeManager();
+      await manager.open(openInput());
+      const spawnInput = ptyAdapter.spawnInputs[0];
+      expect(spawnInput).toBeDefined();
+      if (!spawnInput) return;
+
+      expect(spawnInput.env.COLORTERM).toBe("truecolor");
+      expect(spawnInput.env.NO_COLOR).toBeUndefined();
+      expect(spawnInput.env.FORCE_COLOR).toBeUndefined();
+      expect(spawnInput.env.CLICOLOR).toBeUndefined();
+      expect(spawnInput.env.CLICOLOR_FORCE).toBeUndefined();
+      expect(spawnInput.env.COLORFGBG).toBeUndefined();
 
       manager.dispose();
     } finally {

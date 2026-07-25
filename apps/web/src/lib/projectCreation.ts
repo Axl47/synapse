@@ -8,9 +8,11 @@ import {
   type NativeApi,
   type OrchestrationShellSnapshot,
   type ProjectId,
+  type SpaceId,
 } from "@synara/contracts";
 import { getDefaultModel } from "@synara/shared/model";
 
+import { readActiveSpaceId } from "../spacesUiStore";
 import {
   extractDuplicateProjectCreateProjectId,
   isDuplicateProjectCreateError,
@@ -37,6 +39,8 @@ export async function createOrRecoverProjectFromPath(input: {
   workspaceRoot: string;
   createIfMissing?: boolean;
   defaultModelSelection?: ModelSelection;
+  /** Overrides the active-space default; `null` files the project in Void. */
+  spaceId?: SpaceId | null;
   loadSnapshot: () => Promise<OrchestrationShellSnapshot | null>;
   maxAttempts?: number;
   delayMs?: number;
@@ -70,6 +74,10 @@ export async function createOrRecoverProjectFromPath(input: {
         instanceId: "codex",
         model: getDefaultModel("codex"),
       },
+      // A project created while a space is active belongs to that space — filing it
+      // afterwards would bounce the sidebar back to Void to follow the new project.
+      // Callers with an explicit destination (the Create Project dialog) override it.
+      spaceId: input.spaceId !== undefined ? input.spaceId : readActiveSpaceId(),
       createdAt,
     });
 

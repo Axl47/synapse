@@ -8,6 +8,7 @@ import {
   OrchestrationEvent,
   OrchestrationEventType,
   ProjectId,
+  SpaceId,
   type ServerSettings,
   ThreadId,
 } from "@synara/contracts";
@@ -18,7 +19,7 @@ import { Effect, Layer, Option, Schema, Stream } from "effect";
 import {
   PersistenceDecodeError,
   toPersistenceDecodeError,
-  toPersistenceSqlError,
+  toPersistenceSqlOrDecodeError,
   type OrchestrationEventStoreError,
 } from "../Errors.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
@@ -41,7 +42,7 @@ const UnknownFromJsonString = Schema.fromJsonString(Schema.Unknown);
 const AppendEventRequestSchema = Schema.Struct({
   eventId: EventId,
   aggregateKind: OrchestrationAggregateKind,
-  streamId: Schema.Union([ProjectId, ThreadId]),
+  streamId: Schema.Union([SpaceId, ProjectId, ThreadId]),
   type: OrchestrationEventType,
   causationEventId: Schema.NullOr(EventId),
   correlationId: Schema.NullOr(CommandId),
@@ -73,6 +74,14 @@ const ReadFromSequenceRequestSchema = Schema.Struct({
   throughSequenceInclusive: NonNegativeInt,
   limit: Schema.Number,
 });
+const ReadThreadEventsRequestSchema = Schema.Struct({
+  threadId: Schema.String,
+  throughSequenceInclusive: NonNegativeInt,
+  beforeSequenceExclusive: NonNegativeInt,
+  limit: Schema.Number,
+  eventTypes: Schema.Array(Schema.String),
+});
+const ThreadHighWaterRequestSchema = Schema.Struct({ threadId: Schema.String });
 const HighWaterSequenceRowSchema = Schema.Struct({
   highWaterSequence: NonNegativeInt,
 });
@@ -331,13 +340,6 @@ function inferActorKind(
   return "client";
 }
 
-function toPersistenceSqlOrDecodeError(sqlOperation: string, decodeOperation: string) {
-  return (cause: unknown): OrchestrationEventStoreError =>
-    Schema.isSchemaError(cause)
-      ? toPersistenceDecodeError(decodeOperation)(cause)
-      : toPersistenceSqlError(sqlOperation)(cause);
-}
-
 const makeEventStore = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const maybeServerSettings = yield* Effect.serviceOption(ServerSettingsService);
@@ -438,6 +440,50 @@ const makeEventStore = Effect.gen(function* () {
         SELECT COALESCE(MAX(sequence), 0) AS "highWaterSequence"
         FROM orchestration_events
       `,
+  });
+
+  const readThreadHighWaterSequenceRow = SqlSchema.findOne({
+    Request: ThreadHighWaterRequestSchema,
+    Result: HighWaterSequenceRowSchema,
+    execute: ({ threadId }) =>
+      sql`
+        SELECT COALESCE(MAX(sequence), 0) AS "highWaterSequence"
+        FROM orchestration_events
+        WHERE aggregate_kind = 'thread' AND stream_id = ${threadId}
+      `,
+  });
+
+  const readThreadEventRows = SqlSchema.findAll({
+    Request: ReadThreadEventsRequestSchema,
+    Result: RawPersistedEventRowSchema,
+    execute: (request) => {
+      const typeFilter =
+        request.eventTypes.length === 0
+          ? sql``
+          : sql`AND event_type IN ${sql.in(request.eventTypes)}`;
+      return sql`
+        SELECT
+          sequence,
+          event_id AS "eventId",
+          event_type AS "type",
+          aggregate_kind AS "aggregateKind",
+          stream_id AS "aggregateId",
+          occurred_at AS "occurredAt",
+          command_id AS "commandId",
+          causation_event_id AS "causationEventId",
+          correlation_id AS "correlationId",
+          payload_json AS "payloadJson",
+          metadata_json AS "metadataJson"
+        FROM orchestration_events
+        WHERE aggregate_kind = 'thread'
+          AND stream_id = ${request.threadId}
+          AND sequence <= ${request.throughSequenceInclusive}
+          AND sequence < ${request.beforeSequenceExclusive}
+          ${typeFilter}
+        ORDER BY sequence DESC
+        LIMIT ${request.limit}
+      `;
+    },
   });
 
   const append: OrchestrationEventStoreShape["append"] = (event) => {
@@ -549,9 +595,59 @@ const makeEventStore = Effect.gen(function* () {
       Effect.map((row) => row.highWaterSequence),
     );
 
+  const getThreadHighWaterSequence: OrchestrationEventStoreShape["getThreadHighWaterSequence"] = (
+    threadId,
+  ) =>
+    readThreadHighWaterSequenceRow({ threadId }).pipe(
+      Effect.mapError(
+        toPersistenceSqlOrDecodeError(
+          "OrchestrationEventStore.getThreadHighWaterSequence:query",
+          "OrchestrationEventStore.getThreadHighWaterSequence:decodeRow",
+        ),
+      ),
+      Effect.map((row) => row.highWaterSequence),
+    );
+
+  const readThreadEvents: OrchestrationEventStoreShape["readThreadEvents"] = (input) => {
+    const limit = Math.max(0, Math.floor(input.limit));
+    if (limit === 0) return Effect.succeed([]);
+    return readThreadEventRows({
+      threadId: input.threadId,
+      throughSequenceInclusive: Math.max(0, Math.floor(input.throughSequenceInclusive)),
+      beforeSequenceExclusive: Math.max(
+        0,
+        Math.floor(input.beforeSequenceExclusive ?? Number.MAX_SAFE_INTEGER),
+      ),
+      limit,
+      eventTypes: [...(input.eventTypes ?? [])],
+    }).pipe(
+      Effect.mapError(
+        toPersistenceSqlOrDecodeError(
+          "OrchestrationEventStore.readThreadEvents:query",
+          "OrchestrationEventStore.readThreadEvents:decodeRows",
+        ),
+      ),
+      Effect.flatMap((rows) =>
+        readSettingsForModelSelectionDecode.pipe(
+          Effect.flatMap((settings) =>
+            Effect.forEach(rows, (row) =>
+              decodePersistedEventRow(
+                "OrchestrationEventStore.readThreadEvents:rowToEvent",
+                row,
+                settings,
+              ).pipe(Effect.map(sanitizeOrchestrationEventProviderOptions)),
+            ),
+          ),
+        ),
+      ),
+    );
+  };
+
   return {
     append,
     getHighWaterSequence,
+    getThreadHighWaterSequence,
+    readThreadEvents,
     readFromSequence,
     readAll: () => readFromSequence(0, Number.MAX_SAFE_INTEGER),
   } satisfies OrchestrationEventStoreShape;

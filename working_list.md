@@ -1,7 +1,18 @@
 # Working List
 
+## In Progress
+
+- [x] Resolve the active `upstream/main` merge by subsystem while preserving fork isolation, adoption, model/favorite UX, and process safeguards
+- [x] Regenerate and freeze-verify `bun.lock` with the repository-pinned Bun 1.3.12
+- [x] Verify the integrated package suites: 7,478 passed and 14 skipped across contracts, shared, desktop, web, server, and scripts
+
 ## Pending
 
+- [x] Resolve desktop and server runtime/lifecycle conflicts (staged; marker and whitespace checks passed)
+- [x] Resolve orchestration, persistence, provider, and contract conflicts (staged; syntax, marker, and whitespace checks passed)
+- [x] Resolve web UX/performance and deleted-file conflicts (staged; moved imports and markers checked)
+- [x] Resolve and regenerate `bun.lock` from the integrated upstream 0.6.1 dependency graph
+- [x] Stage every resolution and verify no unmerged paths, conflict markers, or whitespace errors remain
 - [ ] Run the heavyweight workspace checks (`bun fmt`, `bun lint`, `bun typecheck`) if explicitly authorized
 - [ ] Manual acceptance against the user's real Codex App/CLI accounts after rollout
 

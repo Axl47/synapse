@@ -48,6 +48,7 @@ import { buildProviderChildEnvironment } from "./providerChildEnvironment.ts";
 const CODEX_PROCESS_SHELL_ENV_NAMES = ["PATH", "SSH_AUTH_SOCK"] as const;
 const CODEX_SQLITE_HOME_ENV_NAME = "CODEX_SQLITE_HOME";
 const NODE_REPL_SANDBOX_ALLOWED_UNIX_SOCKETS = "NODE_REPL_SANDBOX_ALLOWED_UNIX_SOCKETS";
+const NODE_REPL_MCP_SERVER_HEADER = "[mcp_servers.node_repl]";
 const CODEX_OVERLAY_SHARED_STATE_FILES = new Set(["auth.json"]);
 const CODEX_ACCOUNT_PRIVATE_STATE_FILES = new Set(["auth.json", "models_cache.json"]);
 const SYNARA_CONFIG_SUPPRESSIONS_FILE = "synara-config-suppressions-v1.json";
@@ -299,6 +300,8 @@ export interface CodexProcessEnvInput {
   readonly platform?: NodeJS.Platform;
   readonly readEnvironment?: ShellEnvironmentReader;
   readonly overlayEntryLinker?: CodexOverlayEntryLinker;
+  /** Managed gateway/MCP config injected without exposing its bearer token. */
+  readonly appendConfigToml?: string;
   /**
    * Pins a persisted resume/fork launch to the exact source-home generation
    * validated by ProviderService. When present, launch preparation is
@@ -1922,12 +1925,318 @@ export function readCodexPreparedHomeFileSnapshot(
   }
 }
 
+export function appendCodexConfigSection(config: string, section: string): string {
+  const trimmedSection = section.trim();
+  if (!trimmedSection) {
+    return config;
+  }
+  if (config.includes(trimmedSection.split("\n")[0] ?? trimmedSection)) {
+    return config;
+  }
+  const base = config.trimEnd();
+  return base.length > 0 ? `${base}\n\n${trimmedSection}\n` : `${trimmedSection}\n`;
+}
+
+export const SYNARA_MANAGED_CODEX_CONFIG_BEGIN = "# >>> synara managed config >>>";
+export const SYNARA_MANAGED_CODEX_CONFIG_END = "# <<< synara managed config <<<";
+
+export function extractManagedCodexConfigSection(config: string): string | undefined {
+  const begin = config.indexOf(SYNARA_MANAGED_CODEX_CONFIG_BEGIN);
+  if (begin === -1) {
+    return undefined;
+  }
+  const contentStart = begin + SYNARA_MANAGED_CODEX_CONFIG_BEGIN.length;
+  const end = config.indexOf(SYNARA_MANAGED_CODEX_CONFIG_END, contentStart);
+  if (end === -1) {
+    return undefined;
+  }
+  const content = config.slice(contentStart, end).trim();
+  return content.length > 0 ? content : undefined;
+}
+
+function normalizeTomlTableHeaderName(line: string): string | undefined {
+  const match = /^\s*\[\s*(.*?)\s*\]\s*(?:#.*)?$/.exec(line);
+  if (!match) {
+    return undefined;
+  }
+  const tableName = match[1];
+  if (tableName === undefined) {
+    return undefined;
+  }
+  const parts: string[] = [];
+  let index = 0;
+  const skipWhitespace = () => {
+    while (index < tableName.length && /[\t ]/.test(tableName[index]!)) index += 1;
+  };
+  const parseBasicQuotedKey = (): string | undefined => {
+    index += 1;
+    let value = "";
+    while (index < tableName.length) {
+      const character = tableName[index++]!;
+      if (character === '"') return value;
+      if (character !== "\\") {
+        if (character.charCodeAt(0) < 0x20) return undefined;
+        value += character;
+        continue;
+      }
+      const escape = tableName[index++];
+      const simpleEscapes: Readonly<Record<string, string>> = {
+        b: "\b",
+        t: "\t",
+        n: "\n",
+        f: "\f",
+        r: "\r",
+        '"': '"',
+        "\\": "\\",
+      };
+      if (escape !== undefined && simpleEscapes[escape] !== undefined) {
+        value += simpleEscapes[escape];
+        continue;
+      }
+      if (escape !== "u" && escape !== "U") return undefined;
+      const length = escape === "u" ? 4 : 8;
+      const hexadecimal = tableName.slice(index, index + length);
+      if (!new RegExp(`^[0-9A-Fa-f]{${length}}$`).test(hexadecimal)) return undefined;
+      const codePoint = Number.parseInt(hexadecimal, 16);
+      if (codePoint > 0x10ffff || (codePoint >= 0xd800 && codePoint <= 0xdfff)) return undefined;
+      value += String.fromCodePoint(codePoint);
+      index += length;
+    }
+    return undefined;
+  };
+  const parseLiteralQuotedKey = (): string | undefined => {
+    index += 1;
+    const end = tableName.indexOf("'", index);
+    if (end === -1) return undefined;
+    const value = tableName.slice(index, end);
+    index = end + 1;
+    return value;
+  };
+
+  while (index < tableName.length) {
+    skipWhitespace();
+    let part: string | undefined;
+    if (tableName[index] === '"') {
+      part = parseBasicQuotedKey();
+    } else if (tableName[index] === "'") {
+      part = parseLiteralQuotedKey();
+    } else {
+      const start = index;
+      while (index < tableName.length && /[A-Za-z0-9_-]/.test(tableName[index]!)) index += 1;
+      part = index > start ? tableName.slice(start, index) : undefined;
+    }
+    if (part === undefined) return undefined;
+    parts.push(part);
+    skipWhitespace();
+    if (index === tableName.length) break;
+    if (tableName[index] !== ".") return undefined;
+    index += 1;
+    skipWhitespace();
+    if (index === tableName.length) return undefined;
+  }
+  return parts.length > 0 ? JSON.stringify(parts) : undefined;
+}
+
+function findTomlTableHeader(config: string, header: string) {
+  const target = normalizeTomlTableHeaderName(header);
+  if (!target) {
+    return undefined;
+  }
+  let offset = 0;
+  for (const rawLine of config.split("\n")) {
+    const line = rawLine.endsWith("\r") ? rawLine.slice(0, -1) : rawLine;
+    if (normalizeTomlTableHeaderName(line) === target) {
+      return { index: offset, end: offset + line.length };
+    }
+    offset += rawLine.length + 1;
+  }
+  return undefined;
+}
+
+function findNextTomlTableHeaderIndex(config: string, start: number): number {
+  const tail = config.slice(start);
+  let offset = 0;
+  for (const rawLine of tail.split("\n")) {
+    const line = rawLine.endsWith("\r") ? rawLine.slice(0, -1) : rawLine;
+    if (normalizeTomlTableHeaderName(line) !== undefined) {
+      return start + offset;
+    }
+    offset += rawLine.length + 1;
+  }
+  return config.length;
+}
+
+export function configHasTomlTableHeader(config: string, header: string): boolean {
+  return findTomlTableHeader(config, header) !== undefined;
+}
+
+function splitTomlTables(snippet: string): string[] {
+  const tables: string[] = [];
+  let current: string[] = [];
+  for (const line of snippet.split("\n")) {
+    if (/^\s*\[/.test(line) && current.length > 0) {
+      tables.push(current.join("\n").trim());
+      current = [];
+    }
+    current.push(line);
+  }
+  if (current.length > 0) {
+    tables.push(current.join("\n").trim());
+  }
+  return tables.filter((table) => table.length > 0);
+}
+
+function maskTomlComments(input: string): string {
+  let result = "";
+  let quote: '"' | "'" | undefined;
+  let escaped = false;
+  let inComment = false;
+
+  for (const character of input) {
+    if (inComment) {
+      if (character === "\n" || character === "\r") {
+        inComment = false;
+        result += character;
+      } else {
+        result += " ";
+      }
+      continue;
+    }
+
+    if (quote) {
+      result += character;
+      if (quote === '"' && escaped) {
+        escaped = false;
+      } else if (quote === '"' && character === "\\") {
+        escaped = true;
+      } else if (character === quote) {
+        quote = undefined;
+      }
+      continue;
+    }
+
+    if (character === '"' || character === "'") {
+      quote = character;
+      result += character;
+    } else if (character === "#") {
+      inComment = true;
+      result += " ";
+    } else {
+      result += character;
+    }
+  }
+
+  return result;
+}
+
+function findTomlArrayEnd(input: string, openBracketIndex: number): number | undefined {
+  let quote: '"' | "'" | undefined;
+  let escaped = false;
+  let depth = 0;
+
+  for (let index = openBracketIndex; index < input.length; index += 1) {
+    const character = input[index];
+    if (quote) {
+      if (quote === '"' && escaped) {
+        escaped = false;
+      } else if (quote === '"' && character === "\\") {
+        escaped = true;
+      } else if (character === quote) {
+        quote = undefined;
+      }
+      continue;
+    }
+
+    if (character === '"' || character === "'") {
+      quote = character;
+    } else if (character === "[") {
+      depth += 1;
+    } else if (character === "]") {
+      depth -= 1;
+      if (depth === 0) {
+        return index;
+      }
+    }
+  }
+
+  return undefined;
+}
+
+function mergeTomlStringArrayValues(
+  config: string,
+  tableHeader: string,
+  key: string,
+  values: readonly string[],
+): string {
+  const additions = [...new Set(values.filter(Boolean))];
+  if (additions.length === 0) {
+    return config;
+  }
+  const headerMatch = findTomlTableHeader(config, tableHeader);
+  if (!headerMatch) {
+    return config;
+  }
+  const tableStart = headerMatch.end;
+  const tableEnd = findNextTomlTableHeaderIndex(config, tableStart);
+  const tableBody = config.slice(tableStart, tableEnd);
+  const activeTableBody = maskTomlComments(tableBody);
+  const escapedKey = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const arrayPattern = new RegExp(`(^[\\t ]*${escapedKey}[\\t ]*=[\\t ]*\\[)`, "m");
+  const arrayMatch = arrayPattern.exec(activeTableBody);
+
+  if (arrayMatch) {
+    const openBracketIndex = arrayMatch.index + arrayMatch[0].lastIndexOf("[");
+    const closeBracketIndex = findTomlArrayEnd(activeTableBody, openBracketIndex);
+    if (closeBracketIndex === undefined) {
+      return config;
+    }
+    const activeArray = activeTableBody.slice(openBracketIndex + 1, closeBracketIndex);
+    const missing = additions.filter((value) => {
+      const escapedValue = value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      return !new RegExp(`(["'])${escapedValue}\\1`).test(activeArray);
+    });
+    if (missing.length === 0) {
+      return config;
+    }
+
+    const insertAt = tableStart + openBracketIndex + 1;
+    const separator = activeArray.trim().length > 0 ? ", " : "";
+    return `${config.slice(0, insertAt)}${missing.map((value) => JSON.stringify(value)).join(", ")}${separator}${config.slice(insertAt)}`;
+  }
+
+  return `${config.slice(0, tableStart)}\n${key} = [${additions.map((value) => JSON.stringify(value)).join(", ")}]${config.slice(tableStart)}`;
+}
+
+export function mergeShellEnvPolicyExclude(config: string, envVarName: string): string {
+  return mergeTomlStringArrayValues(
+    config,
+    "[shell_environment_policy]",
+    "exclude",
+    envVarName ? [envVarName] : [],
+  );
+}
+
+function appendManagedCodexConfigSection(config: string, section: string): string {
+  const tables = splitTomlTables(section.trim()).filter((table) => {
+    const header = table.split("\n")[0]?.trim();
+    return header === undefined || !configHasTomlTableHeader(config, header);
+  });
+  if (tables.length === 0) {
+    return config;
+  }
+  return appendCodexConfigSection(
+    config,
+    `${SYNARA_MANAGED_CODEX_CONFIG_BEGIN}\n${tables.join("\n\n")}\n${SYNARA_MANAGED_CODEX_CONFIG_END}`,
+  );
+}
+
 function prepareSynaraCodexHomeOverlay(input: {
   readonly env: NodeJS.ProcessEnv;
   readonly homePath?: string;
   readonly shadowHomePath?: string;
   readonly accountId?: string;
   readonly overlayEntryLinker?: CodexOverlayEntryLinker;
+  readonly appendConfigToml?: string;
   readonly continuationSourcePolicy?: SharedContinuationSourcePolicy;
   readonly continuationSourceRequirements?: SharedContinuationSourceRequirements;
 }): string | undefined {
@@ -2057,9 +2366,30 @@ function prepareSynaraCodexHomeOverlay(input: {
       ...readSynaraConfigSuppressions(suppressionMarkerPath),
     ]),
   ].slice(0, MAX_CONFIG_SUPPRESSION_SECTIONS);
+  const overlayConfigPath = path.join(overlayHomePath, "config.toml");
+  let overlayConfig = disableCodexConfigSections(sourceConfig, suppressedSections, true);
+  const existingManagedSection = existsSync(overlayConfigPath)
+    ? extractManagedCodexConfigSection(readFileSync(overlayConfigPath, "utf8"))
+    : undefined;
+  const managedSection = input.appendConfigToml ?? existingManagedSection;
+  if (managedSection) {
+    overlayConfig = appendManagedCodexConfigSection(overlayConfig, managedSection);
+    const tokenEnvVar = /bearer_token_env_var\s*=\s*"([^"]+)"/.exec(managedSection)?.[1];
+    if (tokenEnvVar) {
+      overlayConfig = mergeShellEnvPolicyExclude(overlayConfig, tokenEnvVar);
+    }
+  }
+  // Codex launches stdio MCP helpers with an environment allowlist, so the
+  // Browser helper must opt in to the socket capability set on its parent.
+  overlayConfig = mergeTomlStringArrayValues(
+    overlayConfig,
+    NODE_REPL_MCP_SERVER_HEADER,
+    "env_vars",
+    [NODE_REPL_SANDBOX_ALLOWED_UNIX_SOCKETS],
+  );
   writeCodexOverlayConfigAtomically(
-    path.join(overlayHomePath, "config.toml"),
-    disableCodexConfigSections(sourceConfig, suppressedSections, true),
+    overlayConfigPath,
+    overlayConfig,
   );
   writeSynaraConfigSuppressions(suppressionMarkerPath, suppressedSections);
   assertSharedCodexContinuationGenerationPrepared(sourceHomePath, continuationMetadata.generation);
@@ -2078,6 +2408,7 @@ type CodexHomeOverlayPreparationInput = Pick<
   | "shadowHomePath"
   | "accountId"
   | "overlayEntryLinker"
+  | "appendConfigToml"
   | "expectedSharedContinuationGeneration"
   | "allowLegacySharedContinuationMigration"
 >;
@@ -2093,6 +2424,7 @@ function prepareCodexHomeOverlayWithSourcePolicy(
     ...(input.shadowHomePath ? { shadowHomePath: input.shadowHomePath } : {}),
     ...(input.accountId ? { accountId: input.accountId } : {}),
     ...(input.overlayEntryLinker ? { overlayEntryLinker: input.overlayEntryLinker } : {}),
+    ...(input.appendConfigToml ? { appendConfigToml: input.appendConfigToml } : {}),
     continuationSourcePolicy,
     ...(input.expectedSharedContinuationGeneration ||
     input.allowLegacySharedContinuationMigration === true
@@ -2249,6 +2581,7 @@ export function buildCodexProcessLaunchContext(
     ...(input.shadowHomePath ? { shadowHomePath: input.shadowHomePath } : {}),
     ...(input.accountId ? { accountId: input.accountId } : {}),
     ...(input.overlayEntryLinker ? { overlayEntryLinker: input.overlayEntryLinker } : {}),
+    ...(input.appendConfigToml ? { appendConfigToml: input.appendConfigToml } : {}),
     ...(input.expectedSharedContinuationGeneration
       ? { expectedSharedContinuationGeneration: input.expectedSharedContinuationGeneration }
       : {}),

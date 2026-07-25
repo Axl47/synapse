@@ -25,7 +25,6 @@ const IMPORTABLE_THREAD_ACTIVITY_KINDS = new Set([
   "account.rate-limits.updated",
   "account.rate-limited",
   "context-window.updated",
-  "context-window.configured",
 ]);
 
 export interface ThreadHandoffTarget {
@@ -145,11 +144,6 @@ export function buildThreadHandoffImportedActivities(
       id: EventId.makeUnsafe(randomUUID()),
     };
   });
-}
-
-// Used by: ChatView fork command gating.
-export function hasTransferableThreadMessages(thread: Pick<Thread, "messages">): boolean {
-  return thread.messages.some(isImportableThreadMessage);
 }
 
 export function hasNativeThreadHandoffMessages(thread: Pick<Thread, "messages">): boolean {

@@ -5,6 +5,8 @@ import { Effect, Exit, FileSystem, Layer, Path, Schema, Scope, ServiceMap } from
 import { HttpRouter } from "effect/unstable/http";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
+import { agentGatewayRouteLayer } from "./agentGateway/httpRoute";
+import { AgentGatewayCredentials } from "./agentGateway/Services/AgentGatewayCredentials";
 import { AutomationRunReactor } from "./automation/Services/AutomationRunReactor";
 import { AutomationScheduler } from "./automation/Services/AutomationScheduler";
 import { AutomationService } from "./automation/Services/AutomationService";
@@ -31,14 +33,19 @@ import { ProjectionSnapshotQuery } from "./orchestration/Services/ProjectionSnap
 import { ThreadDeletionReactor } from "./orchestration/Services/ThreadDeletionReactor";
 import { reconcileRestartStuckTurns } from "./orchestration/startupTurnReconciliation";
 import { ProviderSessionReaper } from "./provider/Services/ProviderSessionReaper";
+import { ProviderRuntimeReconciler } from "./provider/Services/ProviderRuntimeReconciler";
 import { ProviderService, type ProviderServiceShape } from "./provider/Services/ProviderService";
 import { ServerLifecycleEvents } from "./serverLifecycleEvents";
 import { ServerRuntimeStartup } from "./serverRuntimeStartup";
 import { ServerSettingsService } from "./serverSettings";
 import { makeServerReadiness } from "./server/readiness";
+import { makeServerShutdownController, type ServerShutdownController } from "./serverShutdown";
 import { makeBoundedNodeHttpServer } from "./nodeHttpServer";
 import { websocketRpcRouteLayer } from "./wsRpc";
 import { recoverGitHandoffOperations } from "./gitHandoffOperations";
+import { externalMcpRouteLayer } from "./externalMcp/httpRoute";
+import { ExternalMcpGateway } from "./externalMcp/Services/ExternalMcpGateway";
+import { ExternalMcpService } from "./externalMcp/Services/ExternalMcpService";
 
 export interface ServerShape {
   readonly start: Effect.Effect<
@@ -46,6 +53,9 @@ export interface ServerShape {
     ServerLifecycleError | ServerSettingsError,
     | Scope.Scope
     | ServerConfig
+    | AgentGatewayCredentials
+    | ExternalMcpGateway
+    | ExternalMcpService
     | FileSystem.FileSystem
     | Path.Path
     | Keybindings
@@ -58,6 +68,7 @@ export interface ServerShape {
     | OrchestrationReactor
     | ProjectionSnapshotQuery
     | ProviderSessionReaper
+    | ProviderRuntimeReconciler
     | ProviderService
     | ServerRuntimeStartup
     | ServerSettingsService
@@ -97,7 +108,9 @@ export function closeServerRuntimePipeline(input: {
   );
 }
 
-export const createEffectServer = Effect.fn(function* () {
+export const createEffectServer = Effect.fn(function* (
+  shutdownController: ServerShutdownController,
+) {
   const config = yield* ServerConfig;
   const remotePolicyError = remoteAccessPolicyError(config);
   if (remotePolicyError) {
@@ -106,6 +119,7 @@ export const createEffectServer = Effect.fn(function* () {
       cause: new Error(remotePolicyError),
     });
   }
+  const agentGatewayCredentials = yield* AgentGatewayCredentials;
   const automationRunReactor = yield* AutomationRunReactor;
   const automationScheduler = yield* AutomationScheduler;
   const keybindings = yield* Keybindings;
@@ -115,6 +129,7 @@ export const createEffectServer = Effect.fn(function* () {
   const orchestrationReactor = yield* OrchestrationReactor;
   const providerService = yield* ProviderService;
   const providerSessionReaper = yield* ProviderSessionReaper;
+  const providerRuntimeReconciler = yield* ProviderRuntimeReconciler;
   const runtimeStartup = yield* ServerRuntimeStartup;
   const serverSettings = yield* ServerSettingsService;
   const threadDeletionReactor = yield* ThreadDeletionReactor;
@@ -145,7 +160,12 @@ export const createEffectServer = Effect.fn(function* () {
     Effect.mapError((cause) => new ServerLifecycleError({ operation: "httpServerListen", cause })),
   );
 
-  const routesLayer = Layer.mergeAll(makeEffectHttpRouteLayer(readiness), websocketRpcRouteLayer);
+  const routesLayer = Layer.mergeAll(
+    makeEffectHttpRouteLayer(readiness, shutdownController),
+    websocketRpcRouteLayer,
+    agentGatewayRouteLayer,
+    externalMcpRouteLayer,
+  );
   const httpApp = yield* HttpRouter.toHttpEffect(routesLayer);
   yield* httpServer
     .serve(httpApp)
@@ -153,14 +173,16 @@ export const createEffectServer = Effect.fn(function* () {
       Effect.mapError((cause) => new ServerLifecycleError({ operation: "httpServerServe", cause })),
     );
 
+  const listeningPort = resolveListeningPort(
+    (nodeServer as http.Server | null)?.address() ?? null,
+    config.port,
+  );
+  agentGatewayCredentials.setListeningPort(listeningPort);
   yield* persistServerRuntimeState({
     path: config.serverRuntimeStatePath,
     state: makePersistedServerRuntimeState({
       config,
-      port: resolveListeningPort(
-        (nodeServer as http.Server | null)?.address() ?? null,
-        config.port,
-      ),
+      port: listeningPort,
     }),
   }).pipe(
     Effect.mapError(
@@ -184,12 +206,18 @@ export const createEffectServer = Effect.fn(function* () {
   yield* Scope.provide(automationRunReactor.start(), subscriptionsScope);
   yield* Scope.provide(threadDeletionReactor.start(), subscriptionsScope);
   yield* Scope.provide(providerSessionReaper.start(), subscriptionsScope);
+  yield* Scope.provide(providerRuntimeReconciler.start(), subscriptionsScope);
   yield* readiness.markOrchestrationSubscriptionsReady;
   yield* readiness.markTerminalSubscriptionsReady;
   // Heal turns orphaned by the previous process exit (their in-memory runtimes
   // died, so they can never complete on their own) before clients can observe
   // the stale "Working" state.
   yield* reconcileRestartStuckTurns;
+  // The reconciliation above terminalizes durable turn projections without a
+  // provider terminal event. Remove their replay-ledger rows now so the next
+  // process start cannot replay state-dependent commands against the terminal
+  // projection.
+  yield* orchestrationReactor.reconcileSettledOpenTurns;
   yield* recoverGitHandoffOperations((command) => orchestrationEngine.dispatch(command)).pipe(
     Effect.mapError(
       (cause) => new ServerLifecycleError({ operation: "recoverGitHandoffOperations", cause }),
@@ -218,7 +246,13 @@ export const createEffectServer = Effect.fn(function* () {
   return nodeServer as http.Server;
 });
 
-export const ServerLive = Layer.succeed(Server, {
-  start: createEffectServer() as ServerShape["start"],
-  stopSignal: Effect.never,
-} satisfies ServerShape);
+export const ServerLive = Layer.effect(
+  Server,
+  Effect.gen(function* () {
+    const shutdownController = yield* makeServerShutdownController();
+    return {
+      start: createEffectServer(shutdownController) as ServerShape["start"],
+      stopSignal: shutdownController.stopSignal,
+    } satisfies ServerShape;
+  }),
+);

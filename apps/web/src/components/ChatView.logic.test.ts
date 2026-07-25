@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import {
   appendVoiceTranscriptToPrompt,
   buildComposerMenuSelectionKey,
+  buildTranscriptAutoFollowSignal,
   createLocalDispatchSnapshot,
   createWorktreeSetupSnapshot,
   derivePromptHistoryFromMessages,
@@ -30,9 +31,11 @@ import {
   resolveEnvironmentPanelPreferenceAfterFirstSend,
   resolveEnvironmentPanelPreferenceUpdate,
   resolveEnvironmentPanelVisible,
+  resolveGitRepoUiState,
   resolveProjectScriptTerminalTarget,
   resolveQueuedSteerGateTransition,
   resolveRuntimeModeAfterApprovalDecision,
+  resolveThreadDetailHydration,
   QUEUED_STEER_GATE_TIMEOUT_MS,
   sanitizeVoiceErrorMessage,
   buildExpiredTerminalContextToastCopy,
@@ -46,6 +49,41 @@ import {
   shouldRenderTerminalWorkspace,
   worktreeSetupHasError,
 } from "./ChatView.logic";
+
+describe("transcript auto-follow signal", () => {
+  it("stays stable when only non-message turn activity changes", () => {
+    const before = buildTranscriptAutoFollowSignal({
+      messageCount: 3,
+      tailKey: "assistant-3:assistant:streaming:content",
+    });
+    const afterWorkRow = buildTranscriptAutoFollowSignal({
+      messageCount: 3,
+      tailKey: "assistant-3:assistant:streaming:content",
+    });
+
+    expect(afterWorkRow).toBe(before);
+  });
+
+  it("changes for a real transcript append or tail lifecycle change", () => {
+    const streaming = buildTranscriptAutoFollowSignal({
+      messageCount: 3,
+      tailKey: "assistant-3:assistant:streaming:content",
+    });
+
+    expect(
+      buildTranscriptAutoFollowSignal({
+        messageCount: 4,
+        tailKey: "user-4:user:settled:content",
+      }),
+    ).not.toBe(streaming);
+    expect(
+      buildTranscriptAutoFollowSignal({
+        messageCount: 3,
+        tailKey: "assistant-3:assistant:settled:content",
+      }),
+    ).not.toBe(streaming);
+  });
+});
 
 describe("file undo completion", () => {
   const pending = {
@@ -850,6 +888,38 @@ describe("environment panel visibility", () => {
   });
 });
 
+describe("git repository UI state", () => {
+  it("waits for positive repository detection in Studio", () => {
+    expect(
+      resolveGitRepoUiState({
+        isStudioContainer: true,
+        queriedIsRepo: undefined,
+      }),
+    ).toBe(false);
+    expect(
+      resolveGitRepoUiState({
+        isStudioContainer: true,
+        queriedIsRepo: true,
+      }),
+    ).toBe(true);
+    expect(
+      resolveGitRepoUiState({
+        isStudioContainer: true,
+        queriedIsRepo: false,
+      }),
+    ).toBe(false);
+  });
+
+  it("keeps normal project Git UI stable while discovery is pending", () => {
+    expect(
+      resolveGitRepoUiState({
+        isStudioContainer: false,
+        queriedIsRepo: undefined,
+      }),
+    ).toBe(true);
+  });
+});
+
 describe("resolveCycledModelSlug", () => {
   const options = [{ slug: "a" }, { slug: "b" }, { slug: "c" }, { slug: "d" }];
 
@@ -1094,7 +1164,7 @@ describe("shouldShowComposerModelBootstrapSkeleton", () => {
         selectedProvider: "opencode",
         selectedModel: "openai/gpt-5-codex",
         persistedModelSelection: {
-          provider: "opencode",
+          instanceId: "opencode",
           model: "openai/gpt-5.4",
         },
         draftModelSelection: null,
@@ -1109,7 +1179,7 @@ describe("shouldShowComposerModelBootstrapSkeleton", () => {
         selectedProvider: "opencode",
         selectedModel: "openai/gpt-5.4",
         persistedModelSelection: {
-          provider: "opencode",
+          instanceId: "opencode",
           model: "openai/gpt-5.4",
         },
         draftModelSelection: null,
@@ -1125,7 +1195,7 @@ describe("shouldShowComposerModelBootstrapSkeleton", () => {
         selectedProvider: "cursor",
         selectedModel: "auto",
         persistedModelSelection: {
-          provider: "cursor",
+          instanceId: "cursor",
           model: "auto",
         },
         draftModelSelection: null,
@@ -1141,11 +1211,11 @@ describe("shouldShowComposerModelBootstrapSkeleton", () => {
         selectedProvider: "opencode",
         selectedModel: "opencode/minimax-m2.5-free",
         persistedModelSelection: {
-          provider: "opencode",
+          instanceId: "opencode",
           model: "openai/gpt-5.4",
         },
         draftModelSelection: {
-          provider: "opencode",
+          instanceId: "opencode",
           model: "opencode/minimax-m2.5-free",
         },
         providerModelsLoading: true,
@@ -1159,7 +1229,7 @@ describe("shouldShowComposerModelBootstrapSkeleton", () => {
         selectedProvider: "codex",
         selectedModel: "gpt-5.4",
         persistedModelSelection: {
-          provider: "opencode",
+          instanceId: "opencode",
           model: "openai/gpt-5.4",
         },
         draftModelSelection: null,
@@ -1796,7 +1866,11 @@ describe("resolveRuntimeModeAfterApprovalDecision", () => {
 });
 
 describe("resolveQueuedSteerGateTransition", () => {
-  const armedGate = { sawInterruptGap: false, gapStartedAt: null };
+  const armedGate = {
+    sawInterruptGap: false,
+    gapStartedAt: null,
+    armedActiveTurnId: "turn-original",
+  };
   const now = 1_000_000;
 
   it("holds without expiry while the original turn is still running", () => {
@@ -1804,13 +1878,40 @@ describe("resolveQueuedSteerGateTransition", () => {
       gate: armedGate,
       phase: "running",
       sessionErrored: false,
+      activeTurnId: "turn-original",
       now,
     });
     expect(transition).toEqual({
       kind: "hold",
-      gate: { sawInterruptGap: false, gapStartedAt: null },
+      gate: armedGate,
       expiresInMs: null,
     });
+  });
+
+  it("adopts the live turn id when the gate was armed before the projection caught up", () => {
+    const transition = resolveQueuedSteerGateTransition({
+      gate: { sawInterruptGap: false, gapStartedAt: null, armedActiveTurnId: null },
+      phase: "running",
+      sessionErrored: false,
+      activeTurnId: "turn-original",
+      now,
+    });
+    expect(transition).toEqual({
+      kind: "hold",
+      gate: armedGate,
+      expiresInMs: null,
+    });
+  });
+
+  it("clears when the active turn id flips without an observed idle gap", () => {
+    const transition = resolveQueuedSteerGateTransition({
+      gate: armedGate,
+      phase: "running",
+      sessionErrored: false,
+      activeTurnId: "turn-steered",
+      now,
+    });
+    expect(transition).toEqual({ kind: "clear" });
   });
 
   it("starts the gap timer when the interrupt lands and the phase leaves running", () => {
@@ -1818,34 +1919,37 @@ describe("resolveQueuedSteerGateTransition", () => {
       gate: armedGate,
       phase: "ready",
       sessionErrored: false,
+      activeTurnId: null,
       now,
     });
     expect(transition).toEqual({
       kind: "hold",
-      gate: { sawInterruptGap: true, gapStartedAt: now },
+      gate: { ...armedGate, sawInterruptGap: true, gapStartedAt: now },
       expiresInMs: QUEUED_STEER_GATE_TIMEOUT_MS,
     });
   });
 
   it("keeps counting down from the original gap start on re-evaluation", () => {
     const transition = resolveQueuedSteerGateTransition({
-      gate: { sawInterruptGap: true, gapStartedAt: now },
+      gate: { ...armedGate, sawInterruptGap: true, gapStartedAt: now },
       phase: "ready",
       sessionErrored: false,
+      activeTurnId: null,
       now: now + 5_000,
     });
     expect(transition).toEqual({
       kind: "hold",
-      gate: { sawInterruptGap: true, gapStartedAt: now },
+      gate: { ...armedGate, sawInterruptGap: true, gapStartedAt: now },
       expiresInMs: QUEUED_STEER_GATE_TIMEOUT_MS - 5_000,
     });
   });
 
   it("clears once the steered turn starts running after the gap", () => {
     const transition = resolveQueuedSteerGateTransition({
-      gate: { sawInterruptGap: true, gapStartedAt: now },
+      gate: { ...armedGate, sawInterruptGap: true, gapStartedAt: now },
       phase: "running",
       sessionErrored: false,
+      activeTurnId: "turn-steered",
       now: now + 1_000,
     });
     expect(transition).toEqual({ kind: "clear" });
@@ -1853,9 +1957,10 @@ describe("resolveQueuedSteerGateTransition", () => {
 
   it("fails open when the steered turn never starts within the timeout", () => {
     const transition = resolveQueuedSteerGateTransition({
-      gate: { sawInterruptGap: true, gapStartedAt: now },
+      gate: { ...armedGate, sawInterruptGap: true, gapStartedAt: now },
       phase: "ready",
       sessionErrored: false,
+      activeTurnId: null,
       now: now + QUEUED_STEER_GATE_TIMEOUT_MS,
     });
     expect(transition).toEqual({ kind: "clear" });
@@ -1867,16 +1972,77 @@ describe("resolveQueuedSteerGateTransition", () => {
         gate: armedGate,
         phase: "ready",
         sessionErrored: true,
+        activeTurnId: null,
         now,
       }),
     ).toEqual({ kind: "clear" });
     expect(
       resolveQueuedSteerGateTransition({
-        gate: { sawInterruptGap: true, gapStartedAt: now },
+        gate: { ...armedGate, sawInterruptGap: true, gapStartedAt: now },
         phase: "disconnected",
         sessionErrored: false,
+        activeTurnId: null,
         now,
       }),
     ).toEqual({ kind: "clear" });
+  });
+});
+
+describe("thread detail hydration", () => {
+  it("keeps local drafts on the empty landing even if a stale failure flag lingers", () => {
+    expect(
+      resolveThreadDetailHydration({
+        isServerThread: false,
+        hasTimelineEntries: false,
+        detailSyncState: null,
+      }),
+    ).toBe("ready");
+    expect(
+      resolveThreadDetailHydration({
+        isServerThread: false,
+        hasTimelineEntries: false,
+        detailSyncState: "failed",
+      }),
+    ).toBe("ready");
+  });
+
+  it("renders existing timeline entries without waiting for a snapshot", () => {
+    expect(
+      resolveThreadDetailHydration({
+        isServerThread: true,
+        hasTimelineEntries: true,
+        detailSyncState: null,
+      }),
+    ).toBe("ready");
+  });
+
+  it("treats a synced empty thread as genuinely empty", () => {
+    expect(
+      resolveThreadDetailHydration({
+        isServerThread: true,
+        hasTimelineEntries: false,
+        detailSyncState: "synced",
+      }),
+    ).toBe("ready");
+  });
+
+  it("shows loading for a server thread whose detail has not synced yet", () => {
+    expect(
+      resolveThreadDetailHydration({
+        isServerThread: true,
+        hasTimelineEntries: false,
+        detailSyncState: null,
+      }),
+    ).toBe("loading");
+  });
+
+  it("surfaces a failed state when the detail stream died without data", () => {
+    expect(
+      resolveThreadDetailHydration({
+        isServerThread: true,
+        hasTimelineEntries: false,
+        detailSyncState: "failed",
+      }),
+    ).toBe("failed");
   });
 });

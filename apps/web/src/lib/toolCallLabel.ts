@@ -5,10 +5,22 @@
 // Depends on: @synara/contracts tool lifecycle item types
 
 import type { ToolLifecycleItemType } from "@synara/contracts";
+import { basenameOfPath } from "../file-icons";
+import { extractToolArgumentField } from "./toolArgumentSummary";
 
 export function normalizeCompactToolLabel(value: string): string {
   return value
     .replace(/\s+(?:complete|completed|done|finished|success|succeeded|started|running)\s*$/i, "")
+    .trim();
+}
+
+// Canonical form for comparing tool display strings (heading vs preview vs
+// label): ignores case, whitespace runs, and trailing status words so dedup
+// decisions behave identically in the work-log builder and the timeline rows.
+export function normalizeToolTextForComparison(value: string | undefined): string {
+  return normalizeCompactToolLabel(value ?? "")
+    .toLowerCase()
+    .replace(/\s+/g, " ")
     .trim();
 }
 
@@ -48,9 +60,8 @@ export function extractWebFetchUrl(input: {
   if (!detail) {
     return null;
   }
-  const fieldMatch = /"(?:url|uri)"\s*:\s*"([^"]+)"/i.exec(detail);
   const candidate =
-    fieldMatch?.[1]?.trim() ??
+    extractToolArgumentField(detail, ["url", "uri"]) ??
     /https?:\/\/[^\s"'<>)\]}]+/i.exec(detail)?.[0]?.replace(/[.,;:!?]+$/, "");
   if (candidate && /^https?:\/\//i.test(candidate)) {
     return candidate;
@@ -95,6 +106,304 @@ export interface ReadableToolTitleInput {
   readonly command?: string | null;
   readonly payload?: Record<string, unknown> | null;
   readonly isRunning?: boolean;
+}
+
+interface SynaraMcpToolPresentation {
+  readonly running: string;
+  readonly completed: string;
+  readonly failed: string;
+}
+
+const SYNARA_MCP_TOOL_PRESENTATIONS = {
+  synara_context: {
+    running: "Synara is checking its context",
+    completed: "Synara checked its context",
+    failed: "Synara couldn't check its context",
+  },
+  synara_capabilities: {
+    running: "Synara is checking available agents",
+    completed: "Synara checked available agents",
+    failed: "Synara couldn't check available agents",
+  },
+  synara_overview: {
+    running: "Synara is gathering an overview",
+    completed: "Synara gathered an overview",
+    failed: "Synara couldn't gather an overview",
+  },
+  synara_list_allowed_projects: {
+    running: "Synara is listing allowed projects",
+    completed: "Synara listed allowed projects",
+    failed: "Synara couldn't list allowed projects",
+  },
+  synara_create_task: {
+    running: "Synara is creating a task",
+    completed: "Synara created a task",
+    failed: "Synara couldn't create a task",
+  },
+  synara_wait_for_task: {
+    running: "Synara is waiting for a task",
+    completed: "Synara finished waiting for a task",
+    failed: "Synara couldn't wait for a task",
+  },
+  synara_read_task: {
+    running: "Synara is reading a task",
+    completed: "Synara read a task",
+    failed: "Synara couldn't read a task",
+  },
+  synara_list_projects: {
+    running: "Synara is listing projects",
+    completed: "Synara listed projects",
+    failed: "Synara couldn't list projects",
+  },
+  synara_list_threads: {
+    running: "Synara is listing threads",
+    completed: "Synara listed threads",
+    failed: "Synara couldn't list threads",
+  },
+  synara_read_thread: {
+    running: "Synara is reading a thread",
+    completed: "Synara read a thread",
+    failed: "Synara couldn't read a thread",
+  },
+  synara_read_thread_activity: {
+    running: "Synara is reading thread activity",
+    completed: "Synara read thread activity",
+    failed: "Synara couldn't read thread activity",
+  },
+  synara_read_thread_events: {
+    running: "Synara is reading thread events",
+    completed: "Synara read thread events",
+    failed: "Synara couldn't read thread events",
+  },
+  synara_read_thread_runtime_events: {
+    running: "Synara is reading thread runtime events",
+    completed: "Synara read thread runtime events",
+    failed: "Synara couldn't read thread runtime events",
+  },
+  synara_diagnose_thread: {
+    running: "Synara is diagnosing a thread",
+    completed: "Synara diagnosed a thread",
+    failed: "Synara couldn't diagnose a thread",
+  },
+  synara_create_thread: {
+    running: "Synara is creating a thread",
+    completed: "Synara created a thread",
+    failed: "Synara couldn't create a thread",
+  },
+  synara_create_threads: {
+    running: "Synara is creating threads",
+    completed: "Synara created threads",
+    failed: "Synara couldn't create threads",
+  },
+  synara_wait_for_threads: {
+    running: "Synara is waiting for threads",
+    completed: "Synara finished waiting for threads",
+    failed: "Synara couldn't wait for threads",
+  },
+  synara_send_message: {
+    running: "Synara is sending a message",
+    completed: "Synara sent a message",
+    failed: "Synara couldn't send a message",
+  },
+  synara_interrupt_thread: {
+    running: "Synara is interrupting a thread",
+    completed: "Synara interrupted a thread",
+    failed: "Synara couldn't interrupt a thread",
+  },
+  synara_set_thread_title: {
+    running: "Synara is renaming a thread",
+    completed: "Synara renamed a thread",
+    failed: "Synara couldn't rename a thread",
+  },
+  synara_set_thread_archived: {
+    running: "Synara is updating a thread",
+    completed: "Synara updated a thread",
+    failed: "Synara couldn't update a thread",
+  },
+  synara_create_automation: {
+    running: "Synara is creating an automation",
+    completed: "Synara created an automation",
+    failed: "Synara couldn't create an automation",
+  },
+  synara_list_automations: {
+    running: "Synara is listing automations",
+    completed: "Synara listed automations",
+    failed: "Synara couldn't list automations",
+  },
+  synara_view_automation: {
+    running: "Synara is viewing an automation",
+    completed: "Synara viewed an automation",
+    failed: "Synara couldn't view an automation",
+  },
+  synara_update_automation: {
+    running: "Synara is updating an automation",
+    completed: "Synara updated an automation",
+    failed: "Synara couldn't update an automation",
+  },
+  synara_update_automation_memory: {
+    running: "Synara is updating automation memory",
+    completed: "Synara updated automation memory",
+    failed: "Synara couldn't update automation memory",
+  },
+  synara_report_automation_result: {
+    running: "Synara is reporting an automation result",
+    completed: "Synara reported an automation result",
+    failed: "Synara couldn't report an automation result",
+  },
+  synara_cancel_automation: {
+    running: "Synara is stopping an automation",
+    completed: "Synara stopped an automation",
+    failed: "Synara couldn't stop an automation",
+  },
+} as const satisfies Record<string, SynaraMcpToolPresentation>;
+
+function normalizeSynaraMcpIdentifier(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+}
+
+const SYNARA_MCP_TOOL_PRESENTATION_ENTRIES = Object.entries(SYNARA_MCP_TOOL_PRESENTATIONS).map(
+  ([toolName, presentation]) => ({
+    toolName,
+    presentation,
+    normalizedRunning: normalizeSynaraMcpIdentifier(presentation.running),
+    normalizedCompleted: normalizeSynaraMcpIdentifier(presentation.completed),
+    normalizedFailed: normalizeSynaraMcpIdentifier(presentation.failed),
+  }),
+);
+
+function extractSynaraMcpToolName(normalizedCandidate: string): string | null {
+  if (normalizedCandidate.startsWith("mcp_synara_synara_")) {
+    return normalizedCandidate.slice("mcp_synara_".length);
+  }
+  if (normalizedCandidate.startsWith("mcp_synara_")) {
+    return `synara_${normalizedCandidate.slice("mcp_synara_".length)}`;
+  }
+  if (normalizedCandidate.startsWith("synara_synara_")) {
+    return normalizedCandidate.slice("synara_".length);
+  }
+  if (normalizedCandidate.startsWith("synara_")) {
+    return normalizedCandidate;
+  }
+  return null;
+}
+
+function fallbackSynaraMcpToolPresentation(toolName: string): SynaraMcpToolPresentation {
+  const action =
+    toolName
+      .replace(/^synara_/, "")
+      .replace(/_+/g, " ")
+      .trim() || "an action";
+  return {
+    running: `Synara is handling ${action}`,
+    completed: `Synara handled ${action}`,
+    failed: `Synara couldn't handle ${action}`,
+  };
+}
+
+function resolveSynaraMcpToolPresentation(
+  candidates: ReadonlyArray<string | null | undefined>,
+): SynaraMcpToolPresentation | null {
+  for (const candidate of candidates) {
+    if (!candidate) {
+      continue;
+    }
+    const normalizedCandidate = normalizeSynaraMcpIdentifier(candidate);
+    for (const entry of SYNARA_MCP_TOOL_PRESENTATION_ENTRIES) {
+      if (
+        normalizedCandidate === entry.normalizedRunning ||
+        normalizedCandidate === entry.normalizedCompleted ||
+        normalizedCandidate === entry.normalizedFailed
+      ) {
+        return entry.presentation;
+      }
+    }
+    const toolName = extractSynaraMcpToolName(normalizedCandidate);
+    const knownPresentation = toolName
+      ? (SYNARA_MCP_TOOL_PRESENTATIONS[toolName as keyof typeof SYNARA_MCP_TOOL_PRESENTATIONS] as
+          | SynaraMcpToolPresentation
+          | undefined)
+      : undefined;
+    if (knownPresentation) {
+      return knownPresentation;
+    }
+    // Free-text summaries (e.g. reconciler activity lines) can begin with the
+    // word "Synara" and normalize into a fake tool identifier; only
+    // identifier-shaped candidates may take an invented fallback presentation.
+    if (/\s/.test(candidate.trim())) {
+      continue;
+    }
+    if (normalizedCandidate.startsWith("synara_is_handling_")) {
+      return fallbackSynaraMcpToolPresentation(
+        `synara_${normalizedCandidate.slice("synara_is_handling_".length)}`,
+      );
+    }
+    if (normalizedCandidate.startsWith("synara_handled_")) {
+      return fallbackSynaraMcpToolPresentation(
+        `synara_${normalizedCandidate.slice("synara_handled_".length)}`,
+      );
+    }
+    if (normalizedCandidate.startsWith("synara_couldn_t_handle_")) {
+      return fallbackSynaraMcpToolPresentation(
+        `synara_${normalizedCandidate.slice("synara_couldn_t_handle_".length)}`,
+      );
+    }
+    if (!toolName) {
+      continue;
+    }
+    return fallbackSynaraMcpToolPresentation(toolName);
+  }
+  return null;
+}
+
+export type SynaraMcpToolStatus = "running" | "completed" | "failed";
+
+export interface SynaraMcpToolTitleInput {
+  readonly toolName?: string | null | undefined;
+  readonly title?: string | null | undefined;
+  readonly fallbackLabel?: string | null | undefined;
+  readonly status?: SynaraMcpToolStatus | undefined;
+}
+
+// Every provider exposes Synara's MCP tools differently: MCP, dynamic, and even
+// file-change rows can all represent the same gateway action. Normalize by tool
+// identity instead of provider item type so transport details never reach the UI.
+export function deriveSynaraMcpToolTitle(input: SynaraMcpToolTitleInput): string | null {
+  const presentation = resolveSynaraMcpToolPresentation([
+    input.toolName,
+    input.title,
+    input.fallbackLabel,
+  ]);
+  if (!presentation) {
+    return null;
+  }
+  switch (input.status ?? "completed") {
+    case "running":
+      return presentation.running;
+    case "completed":
+      return presentation.completed;
+    case "failed":
+      return presentation.failed;
+  }
+}
+
+export function sanitizeSynaraMcpToolPreview(input: {
+  readonly preview?: string | null | undefined;
+  readonly heading: string;
+  readonly status?: SynaraMcpToolStatus | undefined;
+}): string | null {
+  const preview = input.preview?.trim();
+  if (!preview) return null;
+  const previewTitle = deriveSynaraMcpToolTitle({ title: preview, status: input.status });
+  if (
+    previewTitle &&
+    normalizeSynaraMcpIdentifier(previewTitle) === normalizeSynaraMcpIdentifier(input.heading)
+  ) {
+    return null;
+  }
+  return preview;
 }
 
 export function deriveReadableToolTitle(input: ReadableToolTitleInput): string | null {
@@ -807,16 +1116,11 @@ function splitToolAndArgs(command: string): [tool: string, args: string] {
   }
   const separator = normalized.indexOf(" ");
   if (separator === -1) {
-    return [basename(normalized).toLowerCase(), ""];
+    return [basenameOfPath(normalized).toLowerCase(), ""];
   }
-  const tool = basename(normalized.slice(0, separator)).toLowerCase();
+  const tool = basenameOfPath(normalized.slice(0, separator)).toLowerCase();
   const args = normalized.slice(separator + 1).trim();
   return [tool, args];
-}
-
-function basename(value: string): string {
-  const slash = Math.max(value.lastIndexOf("/"), value.lastIndexOf("\\"));
-  return slash >= 0 ? value.slice(slash + 1) : value;
 }
 
 function unwrapShellCommandIfPresent(rawCommand: string): string {

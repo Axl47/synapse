@@ -12,7 +12,14 @@ import {
 import { resolveSelectableModel } from "@synara/shared/model";
 import { inferLegacyProviderKindFromInstanceId } from "@synara/shared/providerInstances";
 import * as Schema from "effect/Schema";
-import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useDeferredValue,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { type ProviderPickerKind, PROVIDER_OPTIONS } from "../../session-logic";
 import { formatProviderModelOptionName } from "../../providerModelOptions";
 import { compareProvidersByOrder } from "../../providerOrdering";
@@ -47,11 +54,7 @@ import {
   type ProviderModelOption,
 } from "../../providerModelOptions";
 import { useLocalStorage } from "../../hooks/useLocalStorage";
-import {
-  FAVORITE_MODEL_STORAGE_KEYS,
-  supportsModelFavorites,
-  type FavoriteModelProvider,
-} from "../../lib/modelFavorites";
+import { FAVORITE_MODEL_STORAGE_KEYS } from "../../lib/modelFavorites";
 import { Skeleton } from "../ui/skeleton";
 import { isProviderUsable } from "../../lib/providerAvailability";
 import { MISSING_PROVIDER_INSTANCE_LABEL } from "../../lib/providerInstancePresentation";
@@ -141,12 +144,6 @@ function providerIconClassName(
 }
 
 const SEARCHABLE_MODEL_PICKER_THRESHOLD = 15;
-const FAVORITE_MODEL_STORAGE_KEYS = {
-  cursor: "synara:cursor-favourite-models:v1",
-  kilo: "synara:kilo-favourite-models:v1",
-  opencode: "synara:opencode-favourite-models:v1",
-  pi: "synara:pi-favourite-models:v1",
-} as const;
 const FavoriteModelKeys = Schema.Array(Schema.String);
 type LegacyFavoriteModelProvider = keyof typeof FAVORITE_MODEL_STORAGE_KEYS;
 type FavoriteModelProvider = ProviderKind;
@@ -158,8 +155,6 @@ function supportsLegacyModelFavorites(
     provider === "cursor" || provider === "kilo" || provider === "opencode" || provider === "pi"
   );
 }
-const FavoriteModelSlugs = Schema.Array(Schema.String);
-
 export interface ProviderModelFavorite {
   readonly provider: ProviderInstanceId;
   readonly model: string;
@@ -374,7 +369,7 @@ type ProviderModelMenuItemsProps = {
 // Renders only the popup body of the provider/model picker. Designed to be
 // dropped into any shared picker popup or submenu so the same selection logic can
 // be reused by the standalone picker and the combined composer trait picker.
-export const ProviderModelMenuItems = memo(function ProviderModelMenuItems(
+export const ProviderModelMenuItems = function ProviderModelMenuItems(
   props: ProviderModelMenuItemsProps,
 ) {
   const { onAfterSelection } = props;
@@ -1001,7 +996,7 @@ export const ProviderModelMenuItems = memo(function ProviderModelMenuItems(
       ))}
     </>
   );
-});
+};
 
 // Resolves the human-readable label for the currently selected model.
 export function resolveProviderModelLabel(input: {
@@ -1064,9 +1059,7 @@ type ProviderModelPickerProps = {
   ) => void;
 };
 
-export const ProviderModelPicker = memo(function ProviderModelPicker(
-  props: ProviderModelPickerProps,
-) {
+export const ProviderModelPicker = function ProviderModelPicker(props: ProviderModelPickerProps) {
   const { onOpenChange, onSelectionCommitted, open } = props;
   const [uncontrolledMenuOpen, setUncontrolledMenuOpen] = useState(false);
   const selectionCommitTimerRef = useRef<number | null>(null);
@@ -1094,16 +1087,13 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(
     : selectedModelLabel;
   const ProviderIcon = PROVIDER_ICON_COMPONENT_BY_PROVIDER[activeProvider];
 
-  const setMenuOpen = useCallback(
-    (nextOpen: boolean) => {
-      if (open === undefined) {
-        setUncontrolledMenuOpen(nextOpen);
-      }
-      onOpenChange?.(nextOpen);
-    },
-    [onOpenChange, open],
-  );
-  const scheduleSelectionCommitted = useCallback(() => {
+  const setMenuOpen = (nextOpen: boolean) => {
+    if (open === undefined) {
+      setUncontrolledMenuOpen(nextOpen);
+    }
+    onOpenChange?.(nextOpen);
+  };
+  const scheduleSelectionCommitted = () => {
     if (selectionCommitTimerRef.current !== null) {
       window.clearTimeout(selectionCommitTimerRef.current);
     }
@@ -1112,7 +1102,7 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(
       selectionCommitTimerRef.current = null;
       onSelectionCommitted?.();
     }, 0);
-  }, [onSelectionCommitted]);
+  };
   useEffect(
     () => () => {
       if (selectionCommitTimerRef.current !== null) {
@@ -1122,21 +1112,23 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(
     [],
   );
 
-  const handleAfterSelection = useCallback(() => {
+  const handleAfterSelection = () => {
     setMenuOpen(false);
     scheduleSelectionCommitted();
-  }, [scheduleSelectionCommitted, setMenuOpen]);
+  };
 
   const triggerButton = (
     <PickerTriggerButton
       disabled={props.disabled ?? false}
       compact={props.compact ?? false}
       hideLabel={props.hideLabel ?? false}
+      className="text-[var(--color-text-foreground)]"
       icon={
         <ProviderIcon
           aria-hidden="true"
           className={cn(
-            "size-3.5 shrink-0",
+            // opacity-100 opts out of the Button base's [&_svg]:opacity-80 dimming.
+            "size-3.5 shrink-0 opacity-100",
             providerIconClassName(activeProvider, "text-muted-foreground/70"),
             props.activeProviderIconClassName,
           )}
@@ -1179,7 +1171,7 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(
           <span className="sr-only">{triggerLabel}</span>
         </MenuTrigger>
       )}
-      <ComposerPickerMenuPopup align="start" fixedWidth={props.lockedProvider !== null}>
+      <ComposerPickerMenuPopup align="start" fixedWidth>
         <ProviderModelMenuItems
           provider={props.provider}
           model={props.model}
@@ -1212,4 +1204,4 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(
       </ComposerPickerMenuPopup>
     </Menu>
   );
-});
+};

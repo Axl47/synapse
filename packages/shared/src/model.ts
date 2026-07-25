@@ -9,8 +9,6 @@ import {
   type ClaudeModelOptions,
   type ClaudeCodeEffort,
   type CodexModelOptions,
-  type CursorModelOptions,
-  type DroidModelOptions,
   type GrokModelOptions,
   type GrokReasoningEffort,
   type ModelCapabilities,
@@ -108,6 +106,32 @@ export function formatModelDisplayName(model: string | null | undefined): string
 
 // ── Effort helpers ────────────────────────────────────────────────────
 
+export function parseCursorCliReasoningEffort(model: string): string | undefined {
+  const tokens = model.trim().toLowerCase().split("-");
+  for (let index = tokens.length - 1; index >= 0; index -= 1) {
+    const token = tokens[index];
+    if (!token) {
+      continue;
+    }
+    if (token === "xhigh") {
+      return "xhigh";
+    }
+    if (token === "high" && tokens[index - 1] === "extra") {
+      return "xhigh";
+    }
+    if (
+      token === "max" ||
+      token === "none" ||
+      token === "low" ||
+      token === "medium" ||
+      token === "high"
+    ) {
+      return token;
+    }
+  }
+  return undefined;
+}
+
 /** Check whether a capabilities object includes a given effort value. */
 export function hasEffortLevel(caps: ModelCapabilities, value: string): boolean {
   return caps.reasoningEffortLevels.some((l) => l.value === value);
@@ -162,6 +186,38 @@ type ProviderOptionSelectionsInput =
   | null
   | undefined;
 
+/** Normalize legacy provider-option objects into the canonical ordered selection array. */
+export function normalizeProviderOptionSelections(
+  input: unknown,
+): ProviderOptionSelection[] | undefined {
+  if (input === undefined || input === null) {
+    return undefined;
+  }
+  const entries = Array.isArray(input)
+    ? input.flatMap((candidate) => {
+        if (!candidate || typeof candidate !== "object") return [];
+        const { id, value } = candidate as { id?: unknown; value?: unknown };
+        return [[id, value] as const];
+      })
+    : typeof input === "object"
+      ? Object.entries(input)
+      : [];
+  return entries.flatMap(([rawId, rawValue]) => {
+    const id = typeof rawId === "string" ? rawId.trim() : "";
+    const value =
+      typeof rawValue === "number" && Number.isFinite(rawValue)
+        ? String(rawValue)
+        : rawValue;
+    if (
+      id.length === 0 ||
+      (typeof value !== "boolean" && (typeof value !== "string" || value.trim().length === 0))
+    ) {
+      return [];
+    }
+    return [{ id, value: typeof value === "string" ? value.trim() : value }];
+  });
+}
+
 function cloneProviderOptionDescriptor(
   descriptor: ProviderOptionDescriptor,
 ): ProviderOptionDescriptor {
@@ -195,26 +251,11 @@ function providerOptionSelectionValue(
   return typeof value === "string" || typeof value === "boolean" ? value : undefined;
 }
 
-export function getProviderOptionSelectionValue(
-  selections: ProviderOptionSelectionsInput,
-  id: string,
-): string | boolean | undefined {
-  return providerOptionSelectionValue(selections, id);
-}
-
-export function getProviderOptionStringSelectionValue(
-  selections: ProviderOptionSelectionsInput,
-  id: string,
-): string | undefined {
-  const value = getProviderOptionSelectionValue(selections, id);
-  return typeof value === "string" ? value : undefined;
-}
-
 export function getProviderOptionBooleanSelectionValue(
   selections: ProviderOptionSelectionsInput,
   id: string,
 ): boolean | undefined {
-  const value = getProviderOptionSelectionValue(selections, id);
+  const value = providerOptionSelectionValue(selections, id);
   return typeof value === "boolean" ? value : undefined;
 }
 
@@ -222,20 +263,18 @@ export function getModelSelectionOptionValue(
   modelSelection: ModelSelection | null | undefined,
   id: string,
 ): string | boolean | undefined {
-  return getProviderOptionSelectionValue(
-    modelSelection?.options as ProviderOptionSelectionsInput,
-    id,
-  );
+  return providerOptionSelectionValue(modelSelection?.options as ProviderOptionSelectionsInput, id);
 }
 
 export function getModelSelectionStringOptionValue(
   modelSelection: ModelSelection | null | undefined,
   id: string,
 ): string | undefined {
-  return getProviderOptionStringSelectionValue(
+  const value = providerOptionSelectionValue(
     modelSelection?.options as ProviderOptionSelectionsInput,
     id,
   );
+  return typeof value === "string" ? value : undefined;
 }
 
 export function getModelSelectionBooleanOptionValue(
@@ -365,7 +404,7 @@ export function getProviderOptionDescriptors(input: {
   return descriptors.map((descriptor) =>
     withProviderOptionCurrentValue(
       descriptor,
-      getProviderOptionSelectionValue(input.selections, descriptor.id),
+      providerOptionSelectionValue(input.selections, descriptor.id),
     ),
   );
 }
@@ -591,40 +630,14 @@ export function getEffectiveClaudeCodeEffort(
 }
 
 interface ClaudeSpawnProfile {
-  readonly effectiveEffort: ClaudeApiEffort | null;
-  readonly thinking: boolean | undefined;
-  readonly fastMode: boolean;
-  readonly ultracode: boolean;
-}
-
-interface ClaudeRequestedSpawnOptions {
-  readonly effort: string | null;
-  readonly thinking: boolean | undefined;
-  readonly fastMode: boolean;
-}
-
-function claudeRequestedSpawnOptions(selection: ModelSelection): ClaudeRequestedSpawnOptions {
-  const thinking = getModelSelectionBooleanOptionValue(selection, "thinking");
-  return {
-    effort: trimOrNull(getModelSelectionStringOptionValue(selection, "effort") ?? null),
-    thinking: typeof thinking === "boolean" ? thinking : undefined,
-    fastMode: getModelSelectionBooleanOptionValue(selection, "fastMode") === true,
-  };
-}
-
-function sameClaudeRequestedSpawnOptions(previous: ModelSelection, next: ModelSelection): boolean {
-  const prev = claudeRequestedSpawnOptions(previous);
-  const desired = claudeRequestedSpawnOptions(next);
-  return (
-    prev.effort === desired.effort &&
-    prev.thinking === desired.thinking &&
-    prev.fastMode === desired.fastMode
-  );
+  readonly maxEffort: boolean;
 }
 
 // Mirrors the spawn-time option derivation in the Claude adapter's startSession:
-// only these inputs are fixed at subprocess spawn (query `effort` + `settings`).
-// Model and context window switch in-session via `setModel`.
+// only `max` effort is fixed at subprocess spawn (the query `effort` option;
+// the flag-settings `effortLevel` key caps at xhigh). Every other effort level
+// plus fastMode/ultracode are Settings keys applied live via the SDK's
+// flag-settings control, and model/context window switch via `setModel`.
 function claudeSpawnProfile(selection: ModelSelection) {
   const caps = getModelCapabilities("claudeAgent", selection.model);
   const requestedEffort = trimOrNull(
@@ -636,11 +649,7 @@ function claudeSpawnProfile(selection: ModelSelection) {
       : null;
   const thinking = getModelSelectionBooleanOptionValue(selection, "thinking");
   return {
-    effectiveEffort: getEffectiveClaudeCodeEffort(effort),
-    thinking: typeof thinking === "boolean" && caps.supportsThinkingToggle ? thinking : undefined,
-    fastMode:
-      getModelSelectionBooleanOptionValue(selection, "fastMode") === true && caps.supportsFastMode,
-    ultracode: effort === "ultracode" && hasEffortLevel(caps, "xhigh"),
+    maxEffort: getEffectiveClaudeCodeEffort(effort) === "max",
   } satisfies ClaudeSpawnProfile;
 }
 
@@ -648,8 +657,10 @@ function claudeSpawnProfile(selection: ModelSelection) {
  * Whether switching from `previous` to `next` requires restarting the Claude
  * subprocess. Restarting resumes via `--resume`, which replays the whole
  * conversation as uncached input tokens, so it must only happen for options
- * fixed at spawn (effort/settings). Model changes use `setModel`, while the
- * auto-compact budget uses the SDK's live flag-settings control.
+ * fixed at spawn — currently only `max` effort, which has no live Settings
+ * equivalent. Model changes use `setModel`; other effort levels, fast mode,
+ * ultracode, the auto-compact budget, and the thinking toggle all use the
+ * SDK's live flag-settings control.
  */
 export function claudeSelectionRequiresRestart(
   previous: ModelSelection | undefined,
@@ -666,21 +677,12 @@ export function claudeSelectionRequiresRestart(
   if (inferLegacyProviderKindFromInstanceId(previous.instanceId) !== "claudeAgent") {
     return true;
   }
-  if (previous.model !== next.model && sameClaudeRequestedSpawnOptions(previous, next)) {
-    // A model switch is handled by setModel. Do not interpret the new model's
-    // different capabilities as a spawn-setting change when the requested
-    // options themselves are unchanged (for example, a stale Haiku `thinking`
-    // override or Opus `fastMode` flag carried into the next selection).
-    return false;
-  }
+  // Normalize against each model before deciding a model-only switch is live:
+  // a persisted `max` request may become spawn-fixed (or stop being so) as the
+  // selected model's capabilities change.
   const prev = claudeSpawnProfile(previous);
   const desired = claudeSpawnProfile(next);
-  return (
-    prev.effectiveEffort !== desired.effectiveEffort ||
-    prev.thinking !== desired.thinking ||
-    prev.fastMode !== desired.fastMode ||
-    prev.ultracode !== desired.ultracode
-  );
+  return prev.maxEffort !== desired.maxEffort;
 }
 
 export function normalizeGrokModelOptions(
@@ -713,14 +715,6 @@ export function normalizeAntigravityModelOptions(
   return { reasoningEffort };
 }
 
-export function normalizeDroidModelOptions(
-  _model: string | null | undefined,
-  modelOptions: DroidModelOptions | null | undefined,
-): DroidModelOptions | undefined {
-  const reasoningEffort = trimOrNull(modelOptions?.reasoningEffort);
-  return reasoningEffort ? { reasoningEffort } : undefined;
-}
-
 export function normalizePiModelOptions(
   modelOptions: PiModelOptions | null | undefined,
 ): PiModelOptions | undefined {
@@ -738,18 +732,6 @@ export function normalizeOpenCodeModelOptions(
   const nextOptions: OpenCodeModelOptions = {
     ...(variant ? { variant } : {}),
     ...(agent ? { agent } : {}),
-  };
-  return Object.keys(nextOptions).length > 0 ? nextOptions : undefined;
-}
-
-export function normalizeCursorModelOptions(
-  modelOptions: CursorModelOptions | null | undefined,
-): CursorModelOptions | undefined {
-  const nextOptions: CursorModelOptions = {
-    ...(modelOptions?.reasoningEffort ? { reasoningEffort: modelOptions.reasoningEffort } : {}),
-    ...(modelOptions?.fastMode !== undefined ? { fastMode: modelOptions.fastMode } : {}),
-    ...(modelOptions?.thinking !== undefined ? { thinking: modelOptions.thinking } : {}),
-    ...(modelOptions?.contextWindow ? { contextWindow: modelOptions.contextWindow } : {}),
   };
   return Object.keys(nextOptions).length > 0 ? nextOptions : undefined;
 }

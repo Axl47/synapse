@@ -39,7 +39,7 @@ import {
 import * as Semaphore from "effect/Semaphore";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
-import { NetService } from "@synara/shared/Net";
+import { NetService, type NetServiceShape } from "@synara/shared/Net";
 import { prepareWindowsSafeProcess } from "@synara/shared/windowsProcess";
 import { buildProviderChildEnvironment } from "../providerChildEnvironment.ts";
 import {
@@ -101,6 +101,7 @@ interface PooledOpenCodeServer {
   readonly key: string;
   readonly server: OpenCodeServerProcess;
   readonly scope: Scope.Closeable;
+  readonly closeOnRelease: boolean;
   refCount: number;
   idleCloseFiber: Fiber.Fiber<void, never> | null;
   exitWatchFiber: Fiber.Fiber<void, never> | null;
@@ -215,6 +216,12 @@ export interface OpenCodeRuntimeShape {
     readonly instanceId?: string;
     readonly homeDir?: string;
     readonly isolationRootDir?: string;
+    /**
+     * Makes a managed server private to one owner and closes it immediately
+     * when that owner's scope ends. Required before installing per-thread MCP
+     * credentials into process-scoped configuration.
+     */
+    readonly poolIsolationKey?: string;
   }) => Effect.Effect<OpenCodeServerConnection, OpenCodeRuntimeError, Scope.Scope>;
   readonly runOpenCodeCommand: (input: {
     readonly binaryPath: string;
@@ -325,6 +332,7 @@ function pooledOpenCodeServerKey(input: {
   readonly instanceId?: string;
   readonly homeDir?: string;
   readonly isolationRootDir?: string;
+  readonly poolIsolationKey?: string;
 }): string {
   const cliSpec = input.cliSpec ?? OPENCODE_CLI_SPEC;
   return JSON.stringify({
@@ -337,6 +345,7 @@ function pooledOpenCodeServerKey(input: {
     homeDir: input.homeDir ?? null,
     isolationRootDir: input.isolationRootDir ?? null,
     environment: environmentFingerprint(input.environment),
+    poolIsolationKey: input.poolIsolationKey ?? null,
     cliSpec: {
       defaultBinaryPath: cliSpec.defaultBinaryPath,
       displayName: cliSpec.displayName,
@@ -790,22 +799,46 @@ export function toOpenCodeFileParts(input: {
   return parts;
 }
 
-export function buildOpenCodePermissionRules(runtimeMode: RuntimeMode): PermissionRuleset {
-  if (runtimeMode === "full-access") {
-    return [{ permission: "*", pattern: "*", action: "allow" }];
+export function buildOpenCodePermissionRules(
+  runtimeMode: RuntimeMode,
+  interactionMode: "default" | "plan" = "default",
+): PermissionRuleset {
+  if (interactionMode === "plan") {
+    // OpenCode evaluates the last matching rule. Start closed, then allow only
+    // read-only planning tools. This also blocks custom/MCP tools and future
+    // mutating tools that a short denylist would accidentally leave enabled.
+    return [
+      { permission: "*", pattern: "*", action: "deny" },
+      { permission: "read", pattern: "*", action: "allow" },
+      { permission: "glob", pattern: "*", action: "allow" },
+      { permission: "grep", pattern: "*", action: "allow" },
+      { permission: "list", pattern: "*", action: "allow" },
+      { permission: "lsp", pattern: "*", action: "allow" },
+      { permission: "webfetch", pattern: "*", action: "allow" },
+      { permission: "websearch", pattern: "*", action: "allow" },
+      { permission: "codesearch", pattern: "*", action: "allow" },
+      { permission: "todoread", pattern: "*", action: "allow" },
+      { permission: "todowrite", pattern: "*", action: "allow" },
+      { permission: "question", pattern: "*", action: "allow" },
+    ];
   }
 
-  return [
-    { permission: "*", pattern: "*", action: "ask" },
-    { permission: "bash", pattern: "*", action: "ask" },
-    { permission: "edit", pattern: "*", action: "ask" },
-    { permission: "webfetch", pattern: "*", action: "ask" },
-    { permission: "websearch", pattern: "*", action: "ask" },
-    { permission: "codesearch", pattern: "*", action: "ask" },
-    { permission: "external_directory", pattern: "*", action: "ask" },
-    { permission: "doom_loop", pattern: "*", action: "ask" },
-    { permission: "question", pattern: "*", action: "allow" },
-  ];
+  const runtimeRules: PermissionRuleset =
+    runtimeMode === "full-access"
+      ? [{ permission: "*", pattern: "*", action: "allow" }]
+      : [
+          { permission: "*", pattern: "*", action: "ask" },
+          { permission: "bash", pattern: "*", action: "ask" },
+          { permission: "edit", pattern: "*", action: "ask" },
+          { permission: "webfetch", pattern: "*", action: "ask" },
+          { permission: "websearch", pattern: "*", action: "ask" },
+          { permission: "codesearch", pattern: "*", action: "ask" },
+          { permission: "external_directory", pattern: "*", action: "ask" },
+          { permission: "doom_loop", pattern: "*", action: "ask" },
+          { permission: "question", pattern: "*", action: "allow" },
+        ];
+
+  return runtimeRules;
 }
 
 export function buildOpenCodeServerProcessEnv(input: {
@@ -890,6 +923,7 @@ const collectStreamAsString = <E>(stream: Stream.Stream<Uint8Array, E>): Effect.
 
 export interface OpenCodeRuntimeLiveOptions {
   readonly teardownProcessTree?: typeof teardownProviderProcessTree;
+  readonly netService?: NetServiceShape;
 }
 
 const makeOpenCodeRuntime = (options?: OpenCodeRuntimeLiveOptions) =>
@@ -1256,6 +1290,7 @@ const makeOpenCodeRuntime = (options?: OpenCodeRuntimeLiveOptions) =>
     readonly instanceId?: string;
     readonly homeDir?: string;
     readonly isolationRootDir?: string;
+    readonly poolIsolationKey?: string;
   }) =>
     pooledServerMutex.withPermit(
       Effect.gen(function* () {
@@ -1288,6 +1323,7 @@ const makeOpenCodeRuntime = (options?: OpenCodeRuntimeLiveOptions) =>
               key,
               server: startedExit.value,
               scope: serverScope,
+              closeOnRelease: input.poolIsolationKey !== undefined,
               refCount: 1,
               idleCloseFiber: null,
               exitWatchFiber: null,
@@ -1308,7 +1344,11 @@ const makeOpenCodeRuntime = (options?: OpenCodeRuntimeLiveOptions) =>
         }
         pooledServer.refCount = Math.max(0, pooledServer.refCount - 1);
         if (pooledServer.refCount === 0) {
-          yield* schedulePooledServerIdleClose(pooledServer);
+          if (pooledServer.closeOnRelease) {
+            yield* closePooledServer(pooledServer);
+          } else {
+            yield* schedulePooledServerIdleClose(pooledServer);
+          }
         }
       }),
     );
@@ -1350,6 +1390,9 @@ const makeOpenCodeRuntime = (options?: OpenCodeRuntimeLiveOptions) =>
         ...(input.homeDir !== undefined ? { homeDir: input.homeDir } : {}),
         ...(input.isolationRootDir !== undefined
           ? { isolationRootDir: input.isolationRootDir }
+          : {}),
+        ...(input.poolIsolationKey !== undefined
+          ? { poolIsolationKey: input.poolIsolationKey }
           : {}),
       });
       yield* Scope.addFinalizer(callerScope, releasePooledServer(pooledServer));
@@ -1567,6 +1610,10 @@ export class OpenCodeRuntime extends ServiceMap.Service<OpenCodeRuntime, OpenCod
 ) {}
 
 export const makeOpenCodeRuntimeLive = (options?: OpenCodeRuntimeLiveOptions) =>
-  Layer.effect(OpenCodeRuntime, makeOpenCodeRuntime(options)).pipe(Layer.provide(NetService.layer));
+  Layer.effect(OpenCodeRuntime, makeOpenCodeRuntime(options)).pipe(
+    Layer.provide(
+      options?.netService ? Layer.succeed(NetService, options.netService) : NetService.layer,
+    ),
+  );
 
 export const OpenCodeRuntimeLive = makeOpenCodeRuntimeLive();

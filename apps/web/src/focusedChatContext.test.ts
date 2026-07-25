@@ -21,6 +21,7 @@ function makeProject(): Project {
     cwd: "/tmp/project",
     defaultModelSelection: { instanceId: "codex", model: "gpt-5.4-mini" },
     expanded: true,
+    spaceId: null,
     scripts: [],
   };
 }

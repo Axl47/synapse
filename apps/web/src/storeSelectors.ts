@@ -4,20 +4,29 @@
 
 import type { ProjectId, ThreadEnvironmentMode, ThreadId } from "@synara/contracts";
 
-import type { AppState } from "./store";
+import type { AppState } from "./storeState";
+import { resolveThreadDisplayProvider } from "./lib/threadDisplayProvider";
 import { collectByIds, getThreadFromState, getThreadsFromState } from "./threadDerivation";
-import type { Project, SidebarThreadSummary, Thread, ThreadShell } from "./types";
+import type {
+  ComposerThreadMentionSource,
+  Project,
+  SidebarThreadSummary,
+  Thread,
+  ThreadShell,
+} from "./types";
 
 const EMPTY_THREAD_SHELLS: ThreadShell[] = [];
 
 export interface ThreadWorkspaceMetadata {
   envMode: ThreadEnvironmentMode | undefined;
   worktreePath: string | null;
+  workingDirectory: string | null;
 }
 
 const EMPTY_THREAD_WORKSPACE_METADATA: ThreadWorkspaceMetadata = Object.freeze({
   envMode: undefined,
   worktreePath: null,
+  workingDirectory: null,
 });
 
 function createStableEntitySelector<T extends { id: string }>(
@@ -153,6 +162,7 @@ export function createThreadWorkspaceMetadataSelector(
 ): (state: AppState) => ThreadWorkspaceMetadata {
   let previousEnvMode: ThreadEnvironmentMode | undefined = undefined;
   let previousWorktreePath: string | null = null;
+  let previousWorkingDirectory: string | null = null;
   let previousResult = EMPTY_THREAD_WORKSPACE_METADATA;
 
   return (state) => {
@@ -164,16 +174,22 @@ export function createThreadWorkspaceMetadataSelector(
     const source = state.threadShellById?.[threadId];
     const envMode = source?.envMode;
     const worktreePath = source?.worktreePath ?? null;
-    if (previousEnvMode === envMode && previousWorktreePath === worktreePath) {
+    const workingDirectory = source?.workingDirectory ?? null;
+    if (
+      previousEnvMode === envMode &&
+      previousWorktreePath === worktreePath &&
+      previousWorkingDirectory === workingDirectory
+    ) {
       return previousResult;
     }
 
     previousEnvMode = envMode;
     previousWorktreePath = worktreePath;
+    previousWorkingDirectory = workingDirectory;
     previousResult =
-      envMode === undefined && worktreePath === null
+      envMode === undefined && worktreePath === null && workingDirectory === null
         ? EMPTY_THREAD_WORKSPACE_METADATA
-        : { envMode, worktreePath };
+        : { envMode, worktreePath, workingDirectory };
     return previousResult;
   };
 }
@@ -182,12 +198,6 @@ export function createThreadExistsSelector(
   threadId: ThreadId | null | undefined,
 ): (state: AppState) => boolean {
   return (state) => (threadId ? Boolean(state.threadShellById?.[threadId]) : false);
-}
-
-export function createSidebarThreadSummarySelector(
-  threadId: ThreadId | null | undefined,
-): (state: AppState) => SidebarThreadSummary | undefined {
-  return (state) => (threadId ? state.sidebarThreadSummaryById[threadId] : undefined);
 }
 
 export function createSidebarThreadSummariesSelector(): (
@@ -213,6 +223,64 @@ export function createSidebarThreadSummariesSelector(): (
   };
 }
 
+export function createComposerThreadMentionSourcesSelector(): (
+  state: AppState,
+) => readonly ComposerThreadMentionSource[] {
+  let previousThreadIds: AppState["threadIds"] | undefined;
+  let previousSummaryById: AppState["sidebarThreadSummaryById"] | undefined;
+  let previousSources: readonly ComposerThreadMentionSource[] = [];
+
+  return (state) => {
+    const threadIds = state.threadIds;
+    const summaryById = state.sidebarThreadSummaryById;
+    if (threadIds === previousThreadIds && summaryById === previousSummaryById) {
+      return previousSources;
+    }
+    previousThreadIds = threadIds;
+    previousSummaryById = summaryById;
+
+    const nextSources = (threadIds ?? []).flatMap((threadId) => {
+      const thread = summaryById[threadId];
+      return thread
+        ? [
+            {
+              id: thread.id,
+              projectId: thread.projectId,
+              title: thread.title,
+              provider: resolveThreadDisplayProvider(thread),
+              createdAt: thread.createdAt,
+              latestUserMessageAt: thread.latestUserMessageAt,
+              ...(thread.archivedAt !== undefined ? { archivedAt: thread.archivedAt } : {}),
+              ...(thread.lastVisitedAt !== undefined
+                ? { lastVisitedAt: thread.lastVisitedAt }
+                : {}),
+            } satisfies ComposerThreadMentionSource,
+          ]
+        : [];
+    });
+    if (
+      nextSources.length === previousSources.length &&
+      nextSources.every((source, index) => {
+        const previous = previousSources[index];
+        return (
+          source.id === previous?.id &&
+          source.projectId === previous.projectId &&
+          source.title === previous.title &&
+          source.provider === previous.provider &&
+          source.createdAt === previous.createdAt &&
+          source.archivedAt === previous.archivedAt &&
+          source.lastVisitedAt === previous.lastVisitedAt &&
+          source.latestUserMessageAt === previous.latestUserMessageAt
+        );
+      })
+    ) {
+      return previousSources;
+    }
+    previousSources = nextSources;
+    return previousSources;
+  };
+}
+
 export function createSidebarDisplayThreadsSelector(): (
   state: AppState,
 ) => readonly SidebarThreadSummary[] {
@@ -234,6 +302,29 @@ export function createSidebarDisplayThreadsSelector(): (
   };
 }
 
+// Sidebar tree source: unlike the flat display selector above, this keeps
+// child (subagent) threads so buildProjectThreadTree can nest them under
+// their parent row behind the "N subagents" expand toggle. Flat consumers
+// (pinned rows, search palette) should keep using the display selector.
+export function createSidebarTreeThreadsSelector(): (
+  state: AppState,
+) => readonly SidebarThreadSummary[] {
+  const selectSidebarSummaries = createSidebarThreadSummariesSelector();
+  let previousSummaries: readonly SidebarThreadSummary[] | undefined;
+  let previousTreeSummaries: readonly SidebarThreadSummary[] = [];
+
+  return (state) => {
+    const sidebarSummaries = selectSidebarSummaries(state);
+    if (sidebarSummaries === previousSummaries) {
+      return previousTreeSummaries;
+    }
+
+    previousSummaries = sidebarSummaries;
+    previousTreeSummaries = sidebarSummaries.filter((thread) => thread.archivedAt == null);
+    return previousTreeSummaries;
+  };
+}
+
 export function createFirstProjectSelector(): (state: AppState) => Project | undefined {
   let previousProjects: readonly Project[] | undefined;
   let previousFirstProject: Project | undefined;
@@ -246,22 +337,5 @@ export function createFirstProjectSelector(): (state: AppState) => Project | und
     previousProjects = state.projects;
     previousFirstProject = state.projects.find((project) => project.kind === "project");
     return previousFirstProject;
-  };
-}
-
-export function createProjectsByKindSelector(
-  kind: Project["kind"],
-): (state: AppState) => readonly Project[] {
-  let previousProjects: readonly Project[] | undefined;
-  let previousFiltered: readonly Project[] = [];
-
-  return (state) => {
-    if (state.projects === previousProjects) {
-      return previousFiltered;
-    }
-
-    previousProjects = state.projects;
-    previousFiltered = state.projects.filter((project) => project.kind === kind);
-    return previousFiltered;
   };
 }

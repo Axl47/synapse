@@ -190,6 +190,7 @@ export default function ProjectScriptsControl({
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const lastOpenAddActionNonceRef = useRef<number | undefined>(openAddActionNonce);
 
+  // Manual memoization kept: this file does not compile under React Compiler (see compile-report).
   const primaryScript = useMemo(() => {
     if (preferredScriptId) {
       const preferred = scripts.find((script) => script.id === preferredScriptId);

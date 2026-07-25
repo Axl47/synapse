@@ -5,17 +5,18 @@
 //
 // The dock terminal set is isolated from the bottom drawer via a synthetic scope id
 // (dockTerminalThreadId), so the two never share xterm instances. All store wiring is
-// shared with WorkspaceView through useTerminalSurfaceController; only the
+// shared with other terminal surfaces through useTerminalSurfaceController; only the
 // "ensure a terminal is open" policy is surface-specific (here: a single terminal-only page).
 
 import { type ProjectId, type ThreadId } from "@synara/contracts";
-import { useCallback, useEffect, useMemo } from "react";
+import { resolveThreadWorkspaceCwd } from "@synara/shared/threadEnvironment";
+import { useMemo, useEffect } from "react";
 
 import { useTerminalSurfaceController } from "~/hooks/useTerminalSurfaceController";
 import { dockTerminalThreadId } from "~/lib/dockTerminalScope";
 import { projectScriptRuntimeEnv } from "~/projectScripts";
 import { useStore } from "~/store";
-import { createProjectSelector, createThreadSelector } from "~/storeSelectors";
+import { createProjectSelector, createThreadWorkspaceMetadataSelector } from "~/storeSelectors";
 import ThreadTerminalDrawer from "../ThreadTerminalDrawer";
 
 export function DockTerminalPane(props: {
@@ -25,20 +26,27 @@ export function DockTerminalPane(props: {
   // so the xterm runtime sleeps its visual work without detaching its DOM.
   isActive?: boolean;
 }) {
-  const scopeId = useMemo(() => dockTerminalThreadId(props.hostThreadId), [props.hostThreadId]);
-  const thread = useStore(
-    useMemo(() => createThreadSelector(props.hostThreadId), [props.hostThreadId]),
+  const scopeId = dockTerminalThreadId(props.hostThreadId);
+  const threadWorkspace = useStore(
+    useMemo(() => createThreadWorkspaceMetadataSelector(props.hostThreadId), [props.hostThreadId]),
   );
   const project = useStore(
     useMemo(() => createProjectSelector(props.projectId), [props.projectId]),
   );
-  const worktreePath = thread?.worktreePath ?? null;
+  const worktreePath = threadWorkspace.worktreePath;
+  const workingDirectory = threadWorkspace.workingDirectory;
   const projectCwd = project?.cwd ?? null;
-  const cwd = worktreePath ?? projectCwd ?? "";
-  const runtimeEnv = useMemo(() => {
-    if (!projectCwd) return {};
-    return projectScriptRuntimeEnv({ project: { cwd: projectCwd }, worktreePath });
-  }, [projectCwd, worktreePath]);
+  const cwd =
+    resolveThreadWorkspaceCwd({
+      projectCwd,
+      envMode: threadWorkspace.envMode,
+      worktreePath,
+      workingDirectory,
+    }) ?? "";
+  const runtimeProjectCwd = workingDirectory ?? projectCwd;
+  const runtimeEnv = runtimeProjectCwd
+    ? projectScriptRuntimeEnv({ project: { cwd: runtimeProjectCwd }, worktreePath })
+    : {};
 
   const terminal = useTerminalSurfaceController(scopeId);
   const { terminalState, openTerminalThreadPage, bumpFocusRequest, newTerminalGroup } = terminal;
@@ -52,20 +60,14 @@ export function DockTerminalPane(props: {
     openTerminalThreadPage(scopeId, { terminalOnly: true });
   }, [openTerminalThreadPage, scopeId, terminalState.terminalOpen]);
 
-  const createTerminal = useCallback(() => {
+  const createTerminal = () => {
     if (!terminalState.terminalOpen) {
       openTerminalThreadPage(scopeId, { terminalOnly: true });
       bumpFocusRequest();
       return;
     }
     newTerminalGroup();
-  }, [
-    bumpFocusRequest,
-    newTerminalGroup,
-    openTerminalThreadPage,
-    scopeId,
-    terminalState.terminalOpen,
-  ]);
+  };
 
   return (
     <ThreadTerminalDrawer

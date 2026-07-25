@@ -214,7 +214,7 @@ describe("ServerSettingsService", () => {
         });
         return yield* service.updateSettings({
           textGenerationModelSelection: {
-            provider: "codex",
+            instanceId: "codex",
             model: "gpt-5.4",
           },
         });
