@@ -20,8 +20,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import type { AgentToolResult, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Api, ImageContent, Model, TextContent } from "@earendil-works/pi-ai";
-import { resetApiProviders } from "@earendil-works/pi-ai";
-import { resetOAuthProviders } from "@earendil-works/pi-ai/oauth";
+import { resetApiProviders } from "@earendil-works/pi-ai/compat";
 import {
   ApprovalRequestId,
   type ChatAttachment,
@@ -1954,7 +1953,6 @@ const makePiAdapter = (options?: PiAdapterLiveOptions) =>
       const reservation = reservePiExtensionMode(isolated);
       if (isolated) {
         resetApiProviders();
-        resetOAuthProviders();
       }
       return reservation;
     };
@@ -2831,7 +2829,6 @@ const makePiAdapter = (options?: PiAdapterLiveOptions) =>
         }
         if (isolatedAccount) {
           resetApiProviders();
-          resetOAuthProviders();
         }
         const agentGatewaySessionLease = acquireAgentGatewaySessionLease(
           agentGatewayCredentials,

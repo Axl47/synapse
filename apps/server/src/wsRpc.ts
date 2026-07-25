@@ -45,6 +45,7 @@ import { SessionCredentialService } from "./auth/Services/SessionCredentialServi
 import { CheckpointDiffQuery } from "./checkpointing/Services/CheckpointDiffQuery";
 import { resolveThreadWorkspaceCwd } from "./checkpointing/Utils";
 import { ServerConfig, type ServerConfigShape } from "./config";
+import { DesktopContext } from "./desktopContext";
 import { realpathNearestExisting } from "./realpathNearestExisting";
 import { listStudioThreadOutputs } from "./studioOutputs";
 import {
