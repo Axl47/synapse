@@ -25,6 +25,7 @@ import {
 export const ORCHESTRATION_WS_METHODS = {
   getSnapshot: "orchestration.getSnapshot",
   getShellSnapshot: "orchestration.getShellSnapshot",
+  getThreadDetailSnapshot: "orchestration.getThreadDetailSnapshot",
   dispatchCommand: "orchestration.dispatchCommand",
   importThread: "orchestration.importThread",
   adoptExternalThread: "orchestration.adoptExternalThread",
@@ -78,6 +79,7 @@ const ModelSelectionWire = Schema.Struct({
   instanceId: ProviderInstanceId,
   model: TrimmedNonEmptyString,
   options: Schema.optional(ProviderOptionSelections),
+  supportsAutoMode: Schema.optional(Schema.Boolean),
 });
 
 // Keep the persisted source shape loose so legacy drafts can reach the transform;
@@ -87,6 +89,7 @@ const ModelSelectionSource = Schema.Struct({
   instanceId: Schema.optionalKey(Schema.Json),
   model: Schema.Json,
   options: Schema.optionalKey(Schema.Json),
+  supportsAutoMode: Schema.optional(Schema.Boolean),
 });
 
 function normalizeModelSelectionOptions(input: unknown): unknown {
@@ -133,6 +136,9 @@ export const ModelSelection = ModelSelectionSource.pipe(
         if (raw.options !== undefined) {
           base.options = normalizeModelSelectionOptions(raw.options);
         }
+        if (typeof raw.supportsAutoMode === "boolean") {
+          base.supportsAutoMode = raw.supportsAutoMode;
+        }
         return Effect.succeed(base as typeof ModelSelectionWire.Encoded);
       },
       encode: (value) => {
@@ -142,6 +148,9 @@ export const ModelSelection = ModelSelectionSource.pipe(
         };
         if (value.options !== undefined) {
           base.options = value.options;
+        }
+        if (value.supportsAutoMode !== undefined) {
+          base.supportsAutoMode = value.supportsAutoMode;
         }
         return Effect.succeed(base as typeof ModelSelectionSource.Encoded);
       },
@@ -228,7 +237,7 @@ export const ProviderStartOptions = Schema.Struct({
 });
 export type ProviderStartOptions = typeof ProviderStartOptions.Type;
 
-export const RuntimeMode = Schema.Literals(["approval-required", "full-access"]);
+export const RuntimeMode = Schema.Literals(["approval-required", "auto", "full-access"]);
 export type RuntimeMode = typeof RuntimeMode.Type;
 export const DEFAULT_RUNTIME_MODE: RuntimeMode = "full-access";
 export const ProviderInteractionMode = Schema.Literals(["default", "plan"]);
@@ -237,7 +246,12 @@ export const DEFAULT_PROVIDER_INTERACTION_MODE: ProviderInteractionMode = "defau
 const SidechatSourceThreadId = Schema.optional(Schema.NullOr(ThreadId)).pipe(
   Schema.withDecodingDefault(() => null),
 );
-export const ProviderRequestKind = Schema.Literals(["command", "file-read", "file-change"]);
+export const ProviderRequestKind = Schema.Literals([
+  "command",
+  "file-read",
+  "file-change",
+  "permissions",
+]);
 export type ProviderRequestKind = typeof ProviderRequestKind.Type;
 export const AssistantDeliveryMode = Schema.Literals(["buffered", "streaming"]);
 export type AssistantDeliveryMode = typeof AssistantDeliveryMode.Type;
@@ -2443,6 +2457,16 @@ export const OrchestrationSubscribeThreadInput = Schema.Struct({
 });
 export type OrchestrationSubscribeThreadInput = typeof OrchestrationSubscribeThreadInput.Type;
 
+export const OrchestrationGetThreadDetailSnapshotInput = OrchestrationSubscribeThreadInput;
+export type OrchestrationGetThreadDetailSnapshotInput =
+  typeof OrchestrationGetThreadDetailSnapshotInput.Type;
+
+export const OrchestrationGetThreadDetailSnapshotResult = Schema.NullOr(
+  OrchestrationThreadDetailSnapshot,
+);
+export type OrchestrationGetThreadDetailSnapshotResult =
+  typeof OrchestrationGetThreadDetailSnapshotResult.Type;
+
 export const OrchestrationImportThreadInput = Schema.Struct({
   threadId: ThreadId,
   externalId: TrimmedNonEmptyString,
@@ -2537,6 +2561,10 @@ export const OrchestrationRpcSchemas = {
   getShellSnapshot: {
     input: OrchestrationGetShellSnapshotInput,
     output: OrchestrationGetShellSnapshotResult,
+  },
+  getThreadDetailSnapshot: {
+    input: OrchestrationGetThreadDetailSnapshotInput,
+    output: OrchestrationGetThreadDetailSnapshotResult,
   },
   repairState: {
     input: OrchestrationRepairStateInput,

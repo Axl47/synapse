@@ -33,6 +33,7 @@ export type ProviderOptions = ProviderModelOptions[ProviderKind];
 
 export interface ModelSelectionBuildMetadata {
   readonly instanceId?: ProviderInstanceId | null | undefined;
+  readonly supportsAutoMode?: boolean | undefined;
 }
 
 export interface ProviderModelOption {
@@ -348,7 +349,7 @@ export function buildModelSelection(
   provider: "claudeAgent",
   model: string,
   options?: ClaudeModelOptions | null | undefined,
-  metadata?: ModelSelectionBuildMetadata,
+  metadata?: ModelSelectionBuildMetadata | boolean,
 ): ClaudeModelSelection;
 export function buildModelSelection(
   provider: "cursor",
@@ -396,18 +397,28 @@ export function buildModelSelection(
   provider: ProviderKind,
   model: string,
   options?: ProviderOptions | null | undefined,
-  metadata?: ModelSelectionBuildMetadata,
+  metadata?: ModelSelectionBuildMetadata | boolean,
 ): ModelSelection;
 
 export function buildModelSelection(
   provider: ProviderKind,
   model: string,
   options?: ProviderOptions | null | undefined,
-  metadata?: ModelSelectionBuildMetadata,
+  metadata?: ModelSelectionBuildMetadata | boolean,
 ): ModelSelection {
-  const instanceId = metadata?.instanceId?.trim() || provider;
+  const instanceId =
+    (typeof metadata === "object" ? metadata.instanceId?.trim() : undefined) || provider;
+  const supportsAutoMode =
+    typeof metadata === "boolean" ? metadata : metadata?.supportsAutoMode;
   const selections = providerOptionsToSelections(options);
-  return selections ? { instanceId, model, options: selections } : { instanceId, model };
+  return {
+    instanceId,
+    model,
+    ...(selections ? { options: selections } : {}),
+    ...(provider === "claudeAgent" && typeof supportsAutoMode === "boolean"
+      ? { supportsAutoMode }
+      : {}),
+  };
 }
 
 function providerOptionsToSelections(

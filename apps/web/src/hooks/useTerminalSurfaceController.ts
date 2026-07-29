@@ -20,10 +20,8 @@ import {
 import { readNativeApi } from "~/nativeApi";
 import { collectTerminalIdsFromLayout } from "~/terminalPaneLayout";
 import { selectThreadTerminalState, useTerminalStateStore } from "~/terminalStateStore";
-import {
-  disposeAndCloseTerminalSession,
-  randomTerminalId,
-} from "~/components/terminal/terminalSession";
+import { randomTerminalId } from "~/components/terminal/terminalIds";
+import { disposeAndCloseTerminalSession } from "~/components/terminal/terminalSession";
 
 type TerminalMetadata = { cliKind: TerminalCliKind | null; label: string };
 type TerminalActivity = {

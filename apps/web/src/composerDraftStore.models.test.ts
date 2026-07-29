@@ -1,4 +1,4 @@
-import { ThreadId, type ModelSelection } from "@synara/contracts";
+import { ThreadId, type ModelSelection, type ProviderKind } from "@synara/contracts";
 import { beforeEach, describe, expect, it } from "vitest";
 import {
   deriveEffectiveComposerModelState,
@@ -648,6 +648,91 @@ describe("composerDraftStore sticky composer settings", () => {
       }),
     );
     expect(useComposerDraftStore.getState().stickyActiveProvider).toBe("codex");
+  });
+
+  it("preserves Claude Auto support through sticky updates, options, and hydration", () => {
+    const store = useComposerDraftStore.getState();
+    const threadId = ThreadId.makeUnsafe("thread-claude-auto-capability");
+    const selection: ModelSelection = {
+      instanceId: "claudeAgent",
+      model: "claude-haiku-4-5",
+      supportsAutoMode: false,
+    };
+
+    store.setModelSelectionAndSticky(threadId, selection);
+    store.setProviderModelOptions(
+      threadId,
+      "claudeAgent",
+      { effort: "high" },
+      { persistSticky: true },
+    );
+
+    const state = useComposerDraftStore.getState();
+    expect(state.draftsByThreadId[threadId]?.modelSelectionByProvider.claudeAgent).toEqual({
+      ...selection,
+      options: [{ id: "effort", value: "high" }],
+    });
+    expect(state.stickyModelSelectionByProvider.claudeAgent).toEqual({
+      ...selection,
+      options: [{ id: "effort", value: "high" }],
+    });
+
+    const persistApi = useComposerDraftStore.persist as unknown as {
+      getOptions: () => {
+        merge: (persistedState: unknown, currentState: unknown) => unknown;
+      };
+    };
+    const merged = persistApi.getOptions().merge(
+      {
+        draftsByThreadId: {
+          [threadId]: state.draftsByThreadId[threadId],
+        },
+        draftThreadsByThreadId: {},
+        projectDraftThreadIdByProjectId: {},
+        stickyModelSelectionByProvider: {
+          claudeAgent: state.stickyModelSelectionByProvider.claudeAgent,
+        },
+        stickyActiveProvider: "claudeAgent",
+      },
+      useComposerDraftStore.getState(),
+    ) as {
+      draftsByThreadId: typeof state.draftsByThreadId;
+      stickyModelSelectionByProvider: Partial<Record<ProviderKind, ModelSelection>>;
+    };
+
+    const hydratedClaudeSelection =
+      merged.draftsByThreadId[threadId]?.modelSelectionByProvider.claudeAgent;
+    expect(
+      hydratedClaudeSelection?.instanceId === "claudeAgent"
+        ? hydratedClaudeSelection.supportsAutoMode
+        : undefined,
+    ).toBe(false);
+    expect(merged.stickyModelSelectionByProvider.claudeAgent).toMatchObject({
+      supportsAutoMode: false,
+    });
+  });
+
+  it("does not copy Claude Auto support metadata to a different model", () => {
+    const store = useComposerDraftStore.getState();
+    const threadId = ThreadId.makeUnsafe("thread-claude-auto-model-switch");
+    store.setModelSelection(threadId, {
+      instanceId: "claudeAgent",
+      model: "claude-haiku-4-5",
+      supportsAutoMode: false,
+    });
+
+    store.setModelSelection(threadId, {
+      instanceId: "claudeAgent",
+      model: "claude-sonnet-5",
+    });
+
+    expect(
+      useComposerDraftStore.getState().draftsByThreadId[threadId]?.modelSelectionByProvider
+        .claudeAgent,
+    ).toEqual({
+      instanceId: "claudeAgent",
+      model: "claude-sonnet-5",
+    });
   });
 
   it("normalizes empty sticky model options by dropping selection options", () => {

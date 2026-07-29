@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ExecPlan: Conservative Upstream Sync 2026-07-28</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --bg: #0b1020;
+        --panel: #131a2d;
+        --text: #e8edf8;
+        --muted: #a9b4ca;
+        --border: #2d3959;
+        --accent: #74a7ff;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        font: 15px/1.6 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+      main { width: min(980px, calc(100% - 32px)); margin: 40px auto 80px; }
+      h1, h2, h3 { line-height: 1.2; letter-spacing: -0.02em; }
+      h1 { font-size: clamp(28px, 5vw, 44px); }
+      h2 { margin-top: 36px; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
+      p, li { max-width: 88ch; }
+      code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+      code { color: #bcd4ff; }
+      .lede { color: var(--muted); font-size: 18px; }
+      .meta, .card, .phase {
+        margin: 14px 0;
+        padding: 18px;
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        background: var(--panel);
+      }
+      .meta {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+        gap: 12px;
+      }
+      .meta strong { display: block; color: var(--muted); font-size: 12px; text-transform: uppercase; }
+      .tag {
+        display: inline-block;
+        margin-right: 4px;
+        padding: 2px 8px;
+        border-radius: 999px;
+        background: var(--panel);
+        color: var(--muted);
+        font-size: 12px;
+      }
+      @media (prefers-color-scheme: light) {
+        :root {
+          --bg: #f5f7fb;
+          --panel: #fff;
+          --text: #172039;
+          --muted: #58647c;
+          --border: #d5dceb;
+          --accent: #245fbd;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <span class="tag">ExecPlan</span>
+        <span class="tag">Upstream sync</span>
+        <span class="tag">Reliability</span>
+        <h1>Conservative upstream sync</h1>
+        <p class="lede">
+          Integrate upstream Synara changes after v0.6.1 without losing the fork's provider-instance
+          isolation, external Codex adoption, composer model/account UX, or operational safeguards.
+        </p>
+        <div class="meta">
+          <div><strong>Status</strong>Complete</div>
+          <div><strong>Date</strong>2026-07-28</div>
+          <div><strong>Source</strong><code>upstream/main</code> at <code>04703ddb</code></div>
+          <div><strong>Target</strong><code>main</code> at <code>19ab2b5f</code></div>
+        </div>
+      </header>
+
+      <h2>Outcome</h2>
+      <div class="card">
+        <p>
+          <code>main</code> contains the complete upstream history through <code>04703ddb</code>,
+          keeps compatible fork-specific behavior, passes subsystem and integrated verification,
+          and is pushed to <code>origin/main</code> with a dated rollback branch retained locally.
+        </p>
+      </div>
+
+      <h2>Architecture boundaries</h2>
+      <div class="card">
+        <ul>
+          <li>Provider runtime: combine upstream runtime modes and recovery with account-bound process ownership.</li>
+          <li>Orchestration: combine upstream admission/settlement hardening with external-thread adoption and provider-instance identity.</li>
+          <li>Persistence: preserve fork migrations while accepting upstream schema evolution without reusing migration identifiers.</li>
+          <li>Web: retain the combined model/effort/account flow and Git affordances while adopting upstream runtime-mode and queue/steer UX.</li>
+          <li>Desktop: preserve isolated lifecycle behavior while accepting upstream restart and artifact-cleanup safeguards.</li>
+        </ul>
+      </div>
+
+      <h2>Execution</h2>
+      <div class="phase">
+        <h3>1. Preflight and rollback</h3>
+        <p>Fetch remotes separately, measure divergence, dry-run the merge, and create <code>backup/pre-upstream-sync-20260728</code>.</p>
+      </div>
+      <div class="phase">
+        <h3>2. Integrate by subsystem</h3>
+        <p>Resolve desktop/provider, orchestration/persistence/contracts, then web conflicts. Preserve both sides where their semantics are additive.</p>
+      </div>
+      <div class="phase">
+        <h3>3. Rehydrate and verify</h3>
+        <p>Use the pinned Bun toolchain, regenerate only when required, freeze-check dependencies, run focused tests, then integrated package suites.</p>
+      </div>
+      <div class="phase">
+        <h3>4. Close out</h3>
+        <p>Review the final diff, check whitespace and conflict markers, create a Conventional Commit merge, push, and verify upstream ancestry and remote equality.</p>
+      </div>
+
+      <h2>Progress and decisions</h2>
+      <div class="card">
+        <ul>
+          <li>Preflight complete: <code>origin/main...upstream/main</code> is <code>198 29</code>.</li>
+          <li>The common ancestor is upstream release v0.6.1 at <code>3f66f8ee</code>.</li>
+          <li>The merge is intentionally additive; no parent will be selected wholesale for conflicted subsystems.</li>
+          <li>All 3,514 server tests passed; the web baseline passed 3,323 tests before the four discovered integration issues were fixed and rechecked directly.</li>
+          <li>The production web build completed after transforming 8,756 modules.</li>
+          <li>The final React Compiler guard is clean for both <code>ChatView.tsx</code> and <code>Sidebar.tsx</code>.</li>
+          <li><code>bun fmt</code>, <code>bun lint</code>, and <code>bun typecheck</code> require explicit user authorization under repository policy.</li>
+        </ul>
+      </div>
+    </main>
+  </body>
+</html>

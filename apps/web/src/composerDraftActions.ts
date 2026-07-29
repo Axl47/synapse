@@ -6,10 +6,12 @@ import {
   type ModelSelection,
   type ProviderInstanceId,
   type ProviderKind,
+  RuntimeMode,
   ThreadId,
 } from "@synara/contracts";
 import { getDefaultModel, normalizeModelSlug } from "@synara/shared/model";
 import * as Equal from "effect/Equal";
+import * as Schema from "effect/Schema";
 import type { StateCreator } from "zustand";
 
 import {
@@ -821,10 +823,20 @@ export const createComposerDraftStoreState =
           if (opts) {
             const model = current?.model ?? getDefaultModel(provider);
             if (!model) continue;
-            nextMap[provider] = makeModelSelection(provider, model, opts);
+            nextMap[provider] = makeModelSelection(
+              provider,
+              model,
+              opts,
+              provider === "claudeAgent" ? current?.supportsAutoMode : undefined,
+            );
           } else if (current?.options) {
             // Remove options but keep the selection
-            nextMap[provider] = buildModelSelection(provider, current.model);
+            nextMap[provider] = buildModelSelection(
+              provider,
+              current.model,
+              undefined,
+              provider === "claudeAgent" ? current.supportsAutoMode : undefined,
+            );
           }
         }
         if (Equal.equals(base.modelSelectionByProvider, nextMap)) {
@@ -882,13 +894,22 @@ export const createComposerDraftStoreState =
             nextModel,
             providerOpts,
             options?.instanceId,
+            normalizedProvider === "claudeAgent"
+              ? currentForProvider?.supportsAutoMode
+              : undefined,
           );
         } else if (currentForProvider?.options) {
           nextMap[selectionKey] = buildModelSelection(
             normalizedProvider,
             currentForProvider.model,
             null,
-            { instanceId: currentForProvider.instanceId },
+            {
+              instanceId: currentForProvider.instanceId,
+              supportsAutoMode:
+                normalizedProvider === "claudeAgent"
+                  ? currentForProvider.supportsAutoMode
+                  : undefined,
+            },
           );
         }
 
@@ -918,6 +939,7 @@ export const createComposerDraftStoreState =
                 stickyBase.model,
                 providerOpts,
                 stickyBase.instanceId,
+                normalizedProvider === "claudeAgent" ? stickyBase.supportsAutoMode : undefined,
               ),
             );
           } else if (stickyBase.options) {
@@ -925,7 +947,13 @@ export const createComposerDraftStoreState =
               normalizedProvider,
               stickyBase.model,
               null,
-              { instanceId: stickyBase.instanceId },
+              {
+                instanceId: stickyBase.instanceId,
+                supportsAutoMode:
+                  normalizedProvider === "claudeAgent"
+                    ? stickyBase.supportsAutoMode
+                    : undefined,
+              },
             );
           }
           nextStickyActiveProvider = base.activeProvider ?? selectionKey;
@@ -965,8 +993,7 @@ export const createComposerDraftStoreState =
       if (threadId.length === 0) {
         return;
       }
-      const nextRuntimeMode =
-        runtimeMode === "approval-required" || runtimeMode === "full-access" ? runtimeMode : null;
+      const nextRuntimeMode = Schema.is(RuntimeMode)(runtimeMode) ? runtimeMode : null;
       set((state) => {
         const existing = state.draftsByThreadId[threadId];
         if (!existing && nextRuntimeMode === null) {

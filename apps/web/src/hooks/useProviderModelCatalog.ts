@@ -253,6 +253,7 @@ export function useProviderModelCatalog(input: {
     providerModelsQueryOptions({
       provider: "claudeAgent",
       ...selectedInstanceQueryOption("claudeAgent"),
+      binaryPath: settings.claudeBinaryPath || null,
       enabled: claudeModelDiscoveryEnabled,
     }),
   );

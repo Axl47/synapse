@@ -35,6 +35,7 @@ interface UseKanbanTaskSubmitInput {
   readonly selectedProvider: ProviderKind;
   readonly selectedProviderInstanceId: ProviderInstanceId;
   readonly selectedModel: ModelSlug | null;
+  readonly selectedModelSupportsAutoMode: boolean | undefined;
   readonly taskPreview: string;
   readonly trimmedPrompt: string;
   readonly scratchThreadId: ThreadId;
@@ -59,6 +60,7 @@ export function useKanbanTaskSubmit(input: UseKanbanTaskSubmitInput) {
     selectedProvider,
     selectedProviderInstanceId,
     selectedModel,
+    selectedModelSupportsAutoMode,
     taskPreview,
     trimmedPrompt,
     scratchThreadId,
@@ -106,9 +108,18 @@ export function useKanbanTaskSubmit(input: UseKanbanTaskSubmitInput) {
     const modelSelection =
       draftModelSelection &&
       inferLegacyProviderKindFromModelSelection(draftModelSelection) === selectedProvider
-        ? { ...draftModelSelection, instanceId: selectedProviderInstanceId }
-        : buildModelSelection(selectedProvider, selectedModel, null, {
+        ? {
+            ...draftModelSelection,
             instanceId: selectedProviderInstanceId,
+            ...(selectedProvider === "claudeAgent" &&
+            typeof selectedModelSupportsAutoMode === "boolean"
+              ? { supportsAutoMode: selectedModelSupportsAutoMode }
+              : {}),
+          }
+        : buildModelSelection(selectedProvider, selectedModel, undefined, {
+            instanceId: selectedProviderInstanceId,
+            supportsAutoMode:
+              selectedProvider === "claudeAgent" ? selectedModelSupportsAutoMode : undefined,
           });
     const taskInput = {
       projectId: selectedProjectId,

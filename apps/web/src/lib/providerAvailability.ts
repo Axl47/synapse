@@ -48,13 +48,23 @@ export function normalizeProviderStatusForLocalConfig(input: {
     return status;
   }
 
-  if (status.available || status.authStatus !== "unknown") {
+  if (normalizeCustomBinaryPath(status.autoRuntimeModeBinaryPath) === customBinaryPath) {
     return status;
+  }
+
+  const {
+    supportsAutoRuntimeMode: _staleAutoSupport,
+    autoRuntimeModeBinaryPath: _staleAutoBinaryPath,
+    ...statusWithoutStaleAutoCapability
+  } = status;
+
+  if (status.available || status.authStatus !== "unknown") {
+    return statusWithoutStaleAutoCapability;
   }
 
   if (normalizeCustomBinaryPath(input.confirmedCustomBinaryPath) === customBinaryPath) {
     // Only the exact path used by a successful session can suppress the warning.
-    const { message: _message, ...confirmedStatus } = status;
+    const { message: _message, ...confirmedStatus } = statusWithoutStaleAutoCapability;
     return {
       ...confirmedStatus,
       available: true,
@@ -63,7 +73,7 @@ export function normalizeProviderStatusForLocalConfig(input: {
   }
 
   return {
-    ...status,
+    ...statusWithoutStaleAutoCapability,
     available: true,
     status: "warning",
     message: `${PROVIDER_DISPLAY_NAMES[input.provider]} uses a custom local binary path in this app. ${CUSTOM_BINARY_CONFIRMATION_SUFFIX}`,

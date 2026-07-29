@@ -12,6 +12,7 @@ import {
   gitBranchesQueryOptions,
   gitStatusQueryOptions,
   gitWorkingTreeDiffQueryOptions,
+  gitWorkingTreeDiffStatsQueryOptions,
 } from "~/lib/gitReactQuery";
 import {
   checkpointDiffQueryOptions,
@@ -25,7 +26,6 @@ import {
   getRenderablePatch,
   resolveDiffCopyText,
   sortFileDiffsByPath,
-  summarizePatchTotals,
   summarizeRenderablePatchStats,
 } from "../lib/diffRendering";
 import {
@@ -365,17 +365,21 @@ interface DiffPanelProps {
 export { DiffWorkerPoolProvider } from "./DiffWorkerPoolProvider";
 
 export default function DiffPanel({
-  mode = "inline",
+  mode: modeProp,
   threadId: controlledThreadId,
   panelState,
   onUpdatePanelState,
   onClosePanel,
-  liveRefreshEnabled = true,
-  queriesEnabled = true,
-  hideHeader = false,
+  liveRefreshEnabled: liveRefreshEnabledProp,
+  queriesEnabled: queriesEnabledProp,
+  hideHeader: hideHeaderProp,
   onRenderableFilesChange,
   onEditorDiffOptionsChange,
 }: DiffPanelProps) {
+  const mode = modeProp ?? "inline";
+  const liveRefreshEnabled = liveRefreshEnabledProp ?? true;
+  const queriesEnabled = queriesEnabledProp ?? true;
+  const hideHeader = hideHeaderProp ?? false;
   const navigate = useNavigate();
   const { resolvedTheme } = useTheme();
   const { settings } = useAppSettings();
@@ -629,22 +633,25 @@ export default function DiffPanel({
   const selectedPatch = selectedTurn ? selectedTurnCheckpointDiff : conversationCheckpointDiff;
   const hasResolvedPatch = typeof selectedPatch === "string";
   const hasNoNetChanges = hasResolvedPatch && selectedPatch.trim().length === 0;
-  const unstagedDiffQuery = useQuery(
-    gitWorkingTreeDiffQueryOptions({
+  // The scope picker shows a file count per scope. Counts come from the stats endpoint rather
+  // than four full patches: only the selected scope's patch is ever rendered, so fetching the
+  // other three in full moved megabytes per refresh on a large working tree for four integers.
+  const unstagedDiffStatsQuery = useQuery(
+    gitWorkingTreeDiffStatsQueryOptions({
       cwd: activeCwd ?? null,
       scope: "unstaged",
       enabled: scopeCountQueriesEnabled && !diffEnvironmentPending,
     }),
   );
-  const stagedDiffQuery = useQuery(
-    gitWorkingTreeDiffQueryOptions({
+  const stagedDiffStatsQuery = useQuery(
+    gitWorkingTreeDiffStatsQueryOptions({
       cwd: activeCwd ?? null,
       scope: "staged",
       enabled: scopeCountQueriesEnabled && !diffEnvironmentPending,
     }),
   );
-  const branchDiffQuery = useQuery(
-    gitWorkingTreeDiffQueryOptions({
+  const branchDiffStatsQuery = useQuery(
+    gitWorkingTreeDiffStatsQueryOptions({
       cwd: activeCwd ?? null,
       scope: "branch",
       enabled: scopeCountQueriesEnabled && !diffEnvironmentPending,
@@ -789,8 +796,8 @@ export default function DiffPanel({
     () => summarizeRenderablePatchStats(renderablePatch),
     [renderablePatch],
   );
-  const workingTreeDiffQuery = useQuery(
-    gitWorkingTreeDiffQueryOptions({
+  const workingTreeDiffStatsQuery = useQuery(
+    gitWorkingTreeDiffStatsQueryOptions({
       cwd: activeCwd ?? null,
       scope: "workingTree",
       enabled: scopeCountQueriesEnabled && !diffEnvironmentPending,
@@ -798,20 +805,20 @@ export default function DiffPanel({
   );
   const pickerScopeFileCounts = useMemo(() => {
     const counts: Partial<Record<RepoDiffScope, number>> = {};
-    const workingTreeCount = summarizePatchTotals(workingTreeDiffQuery.data?.patch)?.fileCount;
-    const unstagedCount = summarizePatchTotals(unstagedDiffQuery.data?.patch)?.fileCount;
-    const stagedCount = summarizePatchTotals(stagedDiffQuery.data?.patch)?.fileCount;
-    const branchCount = summarizePatchTotals(branchDiffQuery.data?.patch)?.fileCount;
+    const workingTreeCount = workingTreeDiffStatsQuery.data?.fileCount;
+    const unstagedCount = unstagedDiffStatsQuery.data?.fileCount;
+    const stagedCount = stagedDiffStatsQuery.data?.fileCount;
+    const branchCount = branchDiffStatsQuery.data?.fileCount;
     if (typeof workingTreeCount === "number") counts.workingTree = workingTreeCount;
     if (typeof unstagedCount === "number") counts.unstaged = unstagedCount;
     if (typeof stagedCount === "number") counts.staged = stagedCount;
     if (typeof branchCount === "number") counts.branch = branchCount;
     return counts;
   }, [
-    branchDiffQuery.data?.patch,
-    stagedDiffQuery.data?.patch,
-    unstagedDiffQuery.data?.patch,
-    workingTreeDiffQuery.data?.patch,
+    branchDiffStatsQuery.data?.fileCount,
+    stagedDiffStatsQuery.data?.fileCount,
+    unstagedDiffStatsQuery.data?.fileCount,
+    workingTreeDiffStatsQuery.data?.fileCount,
   ]);
   const scopeFileCounts = useMemo(
     () =>

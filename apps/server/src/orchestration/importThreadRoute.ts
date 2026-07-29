@@ -9,12 +9,7 @@ import { pathToFileURL } from "node:url";
 // Layer: Orchestration command handler
 // Exports: makeImportThreadHandler.
 
-import {
-  getSessionInfo as getClaudeSessionInfo,
-  getSessionMessages as getClaudeSessionMessages,
-  type SDKSessionInfo,
-  type SessionMessage,
-} from "@anthropic-ai/claude-agent-sdk";
+import type { SDKSessionInfo, SessionMessage } from "@anthropic-ai/claude-agent-sdk";
 import {
   CommandId,
   type ModelSelection,
@@ -42,6 +37,7 @@ import { Data, Effect, Option } from "effect";
 import { resolveThreadWorkspaceCwd } from "../checkpointing/Utils";
 import type { ServerConfigShape } from "../config";
 import { buildClaudeProcessEnv } from "../provider/claudeEnvironment";
+import { loadClaudeAgentSdk } from "../provider/claudeAgentSdk.ts";
 import type { OrchestrationEngineShape } from "./Services/OrchestrationEngine";
 import type { ProjectionSnapshotQueryShape } from "./Services/ProjectionSnapshotQuery";
 import type { ProviderAdapterRegistryShape } from "../provider/Services/ProviderAdapterRegistry";
@@ -143,10 +139,11 @@ async function queryClaudeHistoricalSession<T>(input: {
     });
   }
   const options = input.dir ? { dir: input.dir } : undefined;
+  const { getSessionInfo, getSessionMessages } = await loadClaudeAgentSdk();
   return (
     input.method === "getSessionInfo"
-      ? getClaudeSessionInfo(input.sessionId, options)
-      : getClaudeSessionMessages(input.sessionId, options)
+      ? getSessionInfo(input.sessionId, options)
+      : getSessionMessages(input.sessionId, options)
   ) as Promise<T>;
 }
 

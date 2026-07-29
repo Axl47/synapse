@@ -104,15 +104,16 @@ import Migration0085 from "./Migrations/085_AutomationSettings.ts";
 import Migration0086 from "./Migrations/086_NormalizeStudioThreadWorkspaces.ts";
 // Fork migrations were authored against an earlier upstream lineage and shipped
 // at loader IDs 70-77. Keep their source filenames for review continuity, but
-// assign canonical identities after upstream's released 70-86 range.
-import Migration0087 from "./Migrations/051_ProjectionThreadSessionProviderInstance.ts";
-import Migration0088 from "./Migrations/052_ProviderSessionRuntimeInstanceId.ts";
-import Migration0089 from "./Migrations/054_ProfileStatsDeletedTurnsProviderInstance.ts";
-import Migration0090 from "./Migrations/055_ProfileStatsDeletedTokensProviderInstance.ts";
-import Migration0091 from "./Migrations/056_ClearAutomationDefinitionProviderOptions.ts";
-import Migration0092 from "./Migrations/057_ClearAutomationRunProviderOptions.ts";
-import Migration0093 from "./Migrations/059_ScrubOrchestrationEventProviderOptions.ts";
-import Migration0094 from "./Migrations/060_ReconcileProjectionSchemaDrift.ts";
+// assign canonical identities after upstream's released 70-87 range.
+import Migration0087 from "./Migrations/087_DropUnusedOrchestrationEventIndexes.ts";
+import Migration0088 from "./Migrations/051_ProjectionThreadSessionProviderInstance.ts";
+import Migration0089 from "./Migrations/052_ProviderSessionRuntimeInstanceId.ts";
+import Migration0090 from "./Migrations/054_ProfileStatsDeletedTurnsProviderInstance.ts";
+import Migration0091 from "./Migrations/055_ProfileStatsDeletedTokensProviderInstance.ts";
+import Migration0092 from "./Migrations/056_ClearAutomationDefinitionProviderOptions.ts";
+import Migration0093 from "./Migrations/057_ClearAutomationRunProviderOptions.ts";
+import Migration0094 from "./Migrations/059_ScrubOrchestrationEventProviderOptions.ts";
+import Migration0095 from "./Migrations/060_ReconcileProjectionSchemaDrift.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -214,14 +215,15 @@ export const migrationEntries = [
   [84, "AutomationNotificationPolicy", Migration0084],
   [85, "AutomationSettings", Migration0085],
   [86, "NormalizeStudioThreadWorkspaces", Migration0086],
-  [87, "ProjectionThreadSessionProviderInstance", Migration0087],
-  [88, "ProviderSessionRuntimeInstanceId", Migration0088],
-  [89, "ProfileStatsDeletedTurnsProviderInstance", Migration0089],
-  [90, "ProfileStatsDeletedTokensProviderInstance", Migration0090],
-  [91, "ClearAutomationDefinitionProviderOptions", Migration0091],
-  [92, "ClearAutomationRunProviderOptions", Migration0092],
-  [93, "ScrubOrchestrationEventProviderOptions", Migration0093],
-  [94, "ReconcileProjectionSchemaDrift", Migration0094],
+  [87, "DropUnusedOrchestrationEventIndexes", Migration0087],
+  [88, "ProjectionThreadSessionProviderInstance", Migration0088],
+  [89, "ProviderSessionRuntimeInstanceId", Migration0089],
+  [90, "ProfileStatsDeletedTurnsProviderInstance", Migration0090],
+  [91, "ProfileStatsDeletedTokensProviderInstance", Migration0091],
+  [92, "ClearAutomationDefinitionProviderOptions", Migration0092],
+  [93, "ClearAutomationRunProviderOptions", Migration0093],
+  [94, "ScrubOrchestrationEventProviderOptions", Migration0094],
+  [95, "ReconcileProjectionSchemaDrift", Migration0095],
 ] as const;
 
 export const makeMigrationLoader = (throughId?: number) =>
@@ -319,49 +321,49 @@ export const MIGRATION_LINEAGE_ALIASES: readonly MigrationLineageAlias[] = [
   {
     historicalId: 70,
     historicalName: "ProjectionThreadSessionProviderInstance",
-    currentId: 87,
+    currentId: 88,
     historicalSlotRequiresRerun: true,
   },
   {
     historicalId: 71,
     historicalName: "ProviderSessionRuntimeInstanceId",
-    currentId: 88,
+    currentId: 89,
     historicalSlotRequiresRerun: true,
   },
   {
     historicalId: 72,
     historicalName: "ProfileStatsDeletedTurnsProviderInstance",
-    currentId: 89,
+    currentId: 90,
     historicalSlotRequiresRerun: true,
   },
   {
     historicalId: 73,
     historicalName: "ProfileStatsDeletedTokensProviderInstance",
-    currentId: 90,
+    currentId: 91,
     historicalSlotRequiresRerun: true,
   },
   {
     historicalId: 74,
     historicalName: "ClearAutomationDefinitionProviderOptions",
-    currentId: 91,
+    currentId: 92,
     historicalSlotRequiresRerun: true,
   },
   {
     historicalId: 75,
     historicalName: "ClearAutomationRunProviderOptions",
-    currentId: 92,
+    currentId: 93,
     historicalSlotRequiresRerun: true,
   },
   {
     historicalId: 76,
     historicalName: "ScrubOrchestrationEventProviderOptions",
-    currentId: 93,
+    currentId: 94,
     historicalSlotRequiresRerun: true,
   },
   {
     historicalId: 77,
     historicalName: "ReconcileProjectionSchemaDrift",
-    currentId: 94,
+    currentId: 95,
     historicalSlotRequiresRerun: true,
   },
 ];

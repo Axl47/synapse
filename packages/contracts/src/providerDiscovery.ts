@@ -299,6 +299,7 @@ export type ProviderContextWindowDescriptor = typeof ProviderContextWindowDescri
 
 export const ProviderModelDescriptor = Schema.Struct({
   slug: TrimmedNonEmptyString,
+  resolvedModel: Schema.optional(TrimmedNonEmptyString),
   name: TrimmedNonEmptyString,
   description: Schema.optional(TrimmedNonEmptyString),
   upstreamProviderId: Schema.optional(TrimmedNonEmptyString),
@@ -310,6 +311,7 @@ export const ProviderModelDescriptor = Schema.Struct({
   defaultReasoningEffort: Schema.optional(TrimmedNonEmptyString),
   supportsFastMode: Schema.optional(Schema.Boolean),
   supportsThinkingToggle: Schema.optional(Schema.Boolean),
+  supportsAutoMode: Schema.optional(Schema.Boolean),
   contextWindowOptions: Schema.optional(Schema.Array(ProviderContextWindowDescriptor)),
   defaultContextWindow: Schema.optional(TrimmedNonEmptyString),
 });

@@ -2,54 +2,27 @@
 
 ## In Progress
 
-- [x] Resolve the active `upstream/main` merge by subsystem while preserving fork isolation, adoption, model/favorite UX, and process safeguards
-- [x] Regenerate and freeze-verify `bun.lock` with the repository-pinned Bun 1.3.12
-- [x] Verify the integrated package suites: 7,478 passed and 14 skipped across contracts, shared, desktop, web, server, and scripts
+- None.
 
 ## Pending
 
-- [x] Resolve desktop and server runtime/lifecycle conflicts (staged; marker and whitespace checks passed)
-- [x] Resolve orchestration, persistence, provider, and contract conflicts (staged; syntax, marker, and whitespace checks passed)
-- [x] Resolve web UX/performance and deleted-file conflicts (staged; moved imports and markers checked)
-- [x] Resolve and regenerate `bun.lock` from the integrated upstream 0.6.1 dependency graph
-- [x] Stage every resolution and verify no unmerged paths, conflict markers, or whitespace errors remain
-- [ ] Run the heavyweight workspace checks (`bun fmt`, `bun lint`, `bun typecheck`) if explicitly authorized
-- [ ] Manual acceptance against the user's real Codex App/CLI accounts after rollout
+- None.
 
 ## Done
 
-- [x] Advance local `main` to the integrated result, push `origin/main`, and confirm the remote contains `upstream/main`
-- [x] Verify the integrated workspace test suites: contracts 134, shared 367 (1 skipped), desktop 266, scripts 65, web 2,794, and server 2,607 (8 skipped)
-- [x] Verify the frozen Bun 1.3.12 lockfile, whitespace, merge index, and absence of conflict markers
-- [x] Regenerate `bun.lock` with the repository-pinned Bun 1.3.12 after merging package manifests
-- [x] Resolve and review merge conflicts by subsystem: desktop/web, provider runtime, orchestration/contracts (`git diff --check` clean; no conflict markers remain)
-- [x] Integrate `upstream/main` into `multiple-accounts-selection` while preserving fork behavior (rollback branch: `backup/pre-upstream-sync-20260718`)
-- [x] Fetch all remotes and preflight the exact upstream conflict set
-- [x] Audit every automated ExecPlan outcome and close implementation; real-client behavior remains an explicit manual acceptance step
-- [x] Phase 6: add operational logging and provider docs; pass formatting, lint (0 errors), full typecheck, production builds, and the complete 5,415-test suite (7 skipped)
-- [x] Phase 5: implement stable Codex history IDs and adoption-only reconciliation before open/reconnect (17 focused import, adoption, and reconciliation tests passed)
-- [x] Phase 4: implement project-local sidebar, unmatched tasks, Search integration, and adoption UX (5 adoption tests, 131 web logic/transport tests, 3 browser tests, and package builds passed)
-- [x] Phase 3: implement server-owned idempotent adoption and shared import operations (148 focused server tests, 41 contract tests, 26 web transport tests, and package builds passed)
-- [x] Phase 2: implement multi-account discovery, deduplication, and project/worktree matching (5 focused server tests, 41 contract tests, 26 web transport tests, and package builds passed)
-- [x] Phase 1: implement the Codex thread/list protocol boundary and adapter coverage (136 focused server tests passed)
-- [x] Validate the external Codex thread discovery ExecPlan structure, required sections, HTML element balance, and whitespace
-- [x] Write the standalone HTML ExecPlan for discovery, project matching, adoption, and reconciliation
-- [x] Trace the existing Codex import, thread/read, provider-instance, RPC, and sidebar project paths
-- [x] Confirm the integrated branch contains a combined picker component but only uses it after a thread starts
-- [x] Confirm favourites are currently nested inside individual provider model lists
-- [x] Confirm persisted Codex effort hydration rejects Max and Ultra and falls back to Medium
-- [x] Make the combined model/effort picker the only composer picker path
-- [x] Add a top-level Favourites model section across providers and instances
-- [x] Preserve Codex Max and Ultra through draft hydration and provider dispatch
-- [x] Restore the GPT-5.6 built-in fallback capabilities and Ultra styling
-- [x] Add focused regression coverage
-- [x] Verify 227 web unit tests, 46 browser tests, 78 shared tests, and 136 server tests
-- [x] Commit and publish the verified corrections to `multiple-accounts-selection`
-- [x] Remove account/default labels from global favourite rows
-- [x] Remove duplicate provider-local Favorites grouping
-- [x] Make the composer account trigger icon-only
-- [x] Verify 29 picker browser tests and 9 grouping unit tests
-- [x] Label clean publish-only Git actions as Push
-- [x] Verify all 82 Git actions logic tests
-- [x] Label GPT-5.6 low reasoning as Light while preserving the `low` protocol value
-- [x] Verify 27 composer capability tests and 79 shared model tests
+- [x] Confirmed a clean `main` at `origin/main` (`19ab2b5f`)
+- [x] Fetched `origin` and `upstream` separately
+- [x] Measured divergence: fork 198 commits, upstream 29 commits
+- [x] Preflighted the merge and recorded the exact conflict surface
+- [x] Created the upstream-sync ExecPlan
+- [x] Resolved desktop and provider lifecycle/runtime-mode conflicts
+- [x] Resolved orchestration, persistence, migration, and contract conflicts
+- [x] Resolved web composer, model/account picker, Git actions, automation, and terminal conflicts
+- [x] Preserved provider/account isolation, external Codex adoption, and upstream recovery semantics
+- [x] Freeze-checked `bun.lock` with `bun install --frozen-lockfile`
+- [x] Passed focused integration tests and the complete 3,514-test server suite
+- [x] Passed the 3,323-test web baseline plus corrected focused compiler/prefetch checks
+- [x] Passed the production web build and all root package suites outside the server
+- [x] Verified whitespace, conflict-marker removal, upstream ancestry, and the merge tree
+- [x] Prepared `main` for push to `origin` and remote-tip confirmation
+- [x] Left `bun fmt`, `bun lint`, and `bun typecheck` unrun because repository policy requires explicit authorization

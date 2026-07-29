@@ -105,6 +105,10 @@ export function useKanbanTaskScratchDraft(input: {
     selectedProvider,
     draftModelSelection?.options,
   );
+  const selectedModelSupportsAutoMode =
+    selectedProvider === "claudeAgent"
+      ? draftModelSelection?.supportsAutoMode
+      : undefined;
 
   const previousSelectedProviderRef = useRef<{
     threadId: string;
@@ -146,10 +150,12 @@ export function useKanbanTaskScratchDraft(input: {
     provider: ProviderKind,
     model: ModelSlug,
     instanceId?: ProviderInstanceId,
+    supportsAutoMode?: boolean,
   ) => {
     const store = useComposerDraftStore.getState();
-    const nextSelection = buildModelSelection(provider, model, null, {
+    const nextSelection = buildModelSelection(provider, model, undefined, {
       instanceId: instanceId ?? provider,
+      supportsAutoMode: provider === "claudeAgent" ? supportsAutoMode : undefined,
     });
     // Mirrors the composer: update the scratch draft and persist the sticky selection.
     store.setModelSelectionAndSticky(scratchThreadId, nextSelection);
@@ -196,9 +202,10 @@ export function useKanbanTaskScratchDraft(input: {
     composerSkills,
     composerMentions,
     nonPersistedComposerImageIdSet,
-    selectedProvider,
-    selectedModel,
-    selectedProviderInstanceId,
+      selectedProvider,
+      selectedModel,
+      selectedProviderInstanceId,
+      selectedModelSupportsAutoMode,
     selectedProviderModelOptions,
     setPrompt,
     handleProviderModelChange,

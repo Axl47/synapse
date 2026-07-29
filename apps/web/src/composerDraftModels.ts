@@ -113,7 +113,6 @@ function deriveEffectiveComposerModelOptions(input: {
     | undefined;
   selectedProvider: ProviderKind;
   selectedProviderInstanceId?: ProviderInstanceId | null | undefined;
-  selectedProviderInstanceId?: ProviderInstanceId | null | undefined;
   threadModelSelection: ModelSelection | null | undefined;
   projectModelSelection: ModelSelection | null | undefined;
 }): ProviderModelOptions | null {
@@ -225,9 +224,19 @@ export function makeModelSelection(
   provider: ProviderKind,
   model: string,
   options?: ProviderModelOptions[ProviderKind],
-  instanceId?: ProviderInstanceId | null | undefined,
+  instanceIdOrSupportsAutoMode?: ProviderInstanceId | boolean | null | undefined,
+  supportsAutoMode?: boolean,
 ): ModelSelection {
-  return buildModelSelection(provider, model, options, { instanceId });
+  const instanceId =
+    typeof instanceIdOrSupportsAutoMode === "string" ? instanceIdOrSupportsAutoMode : undefined;
+  const resolvedSupportsAutoMode =
+    typeof instanceIdOrSupportsAutoMode === "boolean"
+      ? instanceIdOrSupportsAutoMode
+      : supportsAutoMode;
+  return buildModelSelection(provider, model, options, {
+    instanceId,
+    supportsAutoMode: resolvedSupportsAutoMode,
+  });
 }
 
 export function normalizeProviderModelOptions(
@@ -447,35 +456,51 @@ export function normalizeModelSelection(
   if (typeof rawModel !== "string") {
     return null;
   }
+  const rawProvider = candidate?.provider ?? legacy?.provider;
+  const migratedGeminiSelection = rawProvider === "gemini";
   const instanceId = normalizeProviderInstanceId(candidate?.instanceId);
   const provider =
-    normalizeProviderKind(candidate?.provider ?? legacy?.provider) ??
+    normalizeProviderKind(rawProvider) ??
     inferLegacyProviderKindFromInstanceId(instanceId) ??
     inferLegacyProviderKindFromModel(rawModel);
+  const antigravityLegacyMatch =
+    provider === "antigravity" ? rawModel.trim().match(/^(.*?)\s+\(([^()]+)\)$/u) : null;
+  const antigravityLegacyEffort = antigravityLegacyMatch?.[2]?.trim().toLowerCase();
+  const hasLegacyAntigravityEffort =
+    antigravityLegacyMatch?.[1] !== undefined &&
+    antigravityLegacyEffort !== undefined &&
+    ANTIGRAVITY_REASONING_EFFORT_SET.has(antigravityLegacyEffort);
+  const normalizedRawModel = migratedGeminiSelection
+    ? getDefaultModel("antigravity")
+    : hasLegacyAntigravityEffort
+      ? antigravityLegacyMatch[1]!.trim()
+      : rawModel;
   const inferredClaudeAutoCompactWindow =
     provider === "claudeAgent" && /\[1m\]$/iu.test(rawModel) ? "1m" : undefined;
-  const model = normalizeModelSlug(rawModel, provider);
+  const model = normalizeModelSlug(normalizedRawModel, provider);
   if (!model) {
     return null;
   }
-  const modelOptions = normalizeProviderModelOptions(
-    Array.isArray(candidate?.options)
-      ? {
-          [provider]: providerModelOptionsFromSelection(
-            {
-              instanceId: instanceId ?? provider,
-              model: rawModel,
-              options: candidate.options as ModelSelection["options"],
-            },
-            provider,
-          ),
-        }
-      : candidate?.options
-        ? { [provider]: candidate.options }
-        : legacy?.modelOptions,
-    provider,
-    provider === "codex" ? legacy?.legacyCodex : undefined,
-  );
+  const modelOptions = migratedGeminiSelection
+    ? null
+    : normalizeProviderModelOptions(
+        Array.isArray(candidate?.options)
+          ? {
+              [provider]: providerModelOptionsFromSelection(
+                {
+                  instanceId: instanceId ?? provider,
+                  model: rawModel,
+                  options: candidate.options as ModelSelection["options"],
+                },
+                provider,
+              ),
+            }
+          : candidate?.options
+            ? { [provider]: candidate.options }
+            : legacy?.modelOptions,
+        provider,
+        provider === "codex" ? legacy?.legacyCodex : undefined,
+      );
   const options =
     provider === "codex"
       ? modelOptions?.codex
@@ -502,7 +527,21 @@ export function normalizeModelSelection(
                     : provider === "pi"
                       ? modelOptions?.pi
                       : undefined;
-  return makeModelSelection(provider, model, options, instanceId);
+  const normalizedOptions =
+    provider === "antigravity" && hasLegacyAntigravityEffort
+      ? {
+          reasoningEffort: modelOptions?.antigravity?.reasoningEffort ?? antigravityLegacyEffort,
+        }
+      : options;
+  return makeModelSelection(
+    provider,
+    model,
+    normalizedOptions,
+    instanceId,
+    provider === "claudeAgent" && typeof candidate?.supportsAutoMode === "boolean"
+      ? candidate.supportsAutoMode
+      : undefined,
+  );
 }
 
 export function reconcileProviderScopedModelSelection(
@@ -523,6 +562,9 @@ export function reconcileProviderScopedModelSelection(
       requested.model,
       providerModelOptionsFromSelection(current, provider),
       requested.instanceId,
+      provider === "claudeAgent"
+        ? (requested.supportsAutoMode ?? current.supportsAutoMode)
+        : undefined,
     );
   }
   if (provider !== "codex" && provider !== "cursor" && provider !== "claudeAgent") {
@@ -543,7 +585,13 @@ export function reconcileProviderScopedModelSelection(
     preservedOptions =
       Object.keys(remainingOptions).length > 0 ? remainingOptions : undefined;
   }
-  return makeModelSelection(provider, requested.model, preservedOptions, requested.instanceId);
+  return makeModelSelection(
+    provider,
+    requested.model,
+    preservedOptions,
+    requested.instanceId,
+    provider === "claudeAgent" ? requested.supportsAutoMode : undefined,
+  );
 }
 
 export function stripNonStickyModelOptions(selection: ModelSelection): ModelSelection {
@@ -553,9 +601,11 @@ export function stripNonStickyModelOptions(selection: ModelSelection): ModelSele
     (option) => option.id !== "contextWindow" && option.id !== "autoCompactWindow",
   );
   if (stickyOptions.length === options.length) return selection;
-  return stickyOptions.length > 0
-    ? { ...selection, options: stickyOptions }
-    : { instanceId: selection.instanceId, model: selection.model };
+  if (stickyOptions.length > 0) {
+    return { ...selection, options: stickyOptions };
+  }
+  const { options: _options, ...selectionWithoutOptions } = selection;
+  return selectionWithoutOptions;
 }
 
 export function sanitizeStickyModelSelectionMap(
@@ -585,6 +635,7 @@ export function legacySyncModelSelectionOptions(
     modelSelection.model,
     modelOptions?.[provider],
     modelSelection.instanceId,
+    provider === "claudeAgent" ? modelSelection.supportsAutoMode : undefined,
   );
 }
 

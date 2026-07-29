@@ -102,7 +102,7 @@ export interface ReadableToolTitleInput {
   readonly title?: string | null;
   readonly fallbackLabel: string;
   readonly itemType?: ToolLifecycleItemType | undefined;
-  readonly requestKind?: "command" | "file-read" | "file-change" | undefined;
+  readonly requestKind?: "command" | "file-read" | "file-change" | "permissions" | undefined;
   readonly command?: string | null;
   readonly payload?: Record<string, unknown> | null;
   readonly isRunning?: boolean;
@@ -358,7 +358,7 @@ function resolveSynaraMcpToolPresentation(
   return null;
 }
 
-export type SynaraMcpToolStatus = "running" | "completed" | "failed";
+export type SynaraMcpToolStatus = "running" | "completed" | "failed" | "cancelled";
 
 export interface SynaraMcpToolTitleInput {
   readonly toolName?: string | null | undefined;
@@ -386,6 +386,10 @@ export function deriveSynaraMcpToolTitle(input: SynaraMcpToolTitleInput): string
       return presentation.completed;
     case "failed":
       return presentation.failed;
+    case "cancelled":
+      return presentation.running.startsWith("Synara is ")
+        ? `Synara stopped ${presentation.running.slice("Synara is ".length)}`
+        : `Cancelled ${presentation.running}`;
   }
 }
 

@@ -186,7 +186,7 @@ describe("prefetchProviderModelsForNewThread", () => {
       cwd: "/tmp/project",
     });
 
-    expect(prefetchQuery).toHaveBeenCalledTimes(2);
+    expect(prefetchQuery).toHaveBeenCalledTimes(3);
     expect(prefetchQuery.mock.calls[0]?.[0].queryKey).toEqual(
       providerDiscoveryQueryKeys.models(
         "kilo", null, "/bin/kilo", null, null, null, null,
@@ -197,6 +197,9 @@ describe("prefetchProviderModelsForNewThread", () => {
       providerDiscoveryQueryKeys.agents(
         "kilo", null, "/bin/kilo", null, null, null, "/tmp/project",
       ),
+    );
+    expect(prefetchQuery.mock.calls[2]?.[0].queryKey).toEqual(
+      providerDiscoveryQueryKeys.composerCapabilities("kilo", null),
     );
   });
 
@@ -209,12 +212,15 @@ describe("prefetchProviderModelsForNewThread", () => {
       settings: makeSettings({ cursorBinaryPath: "/bin/agent" }),
     });
 
-    expect(prefetchQuery).toHaveBeenCalledTimes(1);
+    expect(prefetchQuery).toHaveBeenCalledTimes(2);
     expect(prefetchQuery.mock.calls[0]?.[0].queryKey).toEqual(
       providerDiscoveryQueryKeys.models(
         "cursor", null, "/bin/agent", null, null, null, null,
         null, null, null, null, null,
       ),
+    );
+    expect(prefetchQuery.mock.calls[1]?.[0].queryKey).toEqual(
+      providerDiscoveryQueryKeys.composerCapabilities("cursor", null),
     );
   });
 });

@@ -5,6 +5,8 @@ const CODEX_VERSION_PATTERN = /\bv?(\d+\.\d+(?:\.\d+)?(?:-[0-9A-Za-z.-]+)?)\b/;
 // shared at the source CODEX_HOME instead of creating account-local databases.
 export const MINIMUM_CODEX_CLI_VERSION = "0.105.0";
 export const CODEX_CLI_UNPARSEABLE_VERSION_MESSAGE = `Codex CLI version check succeeded but returned an unrecognized version. Synara requires a verifiable v${MINIMUM_CODEX_CLI_VERSION} or newer installation; upgrade or reinstall Codex and restart Synara.`;
+// `approvalsReviewer: "auto_review"` and its companion messages shipped in rust-v0.124.0.
+export const MINIMUM_CODEX_AUTO_REVIEW_CLI_VERSION = "0.124.0";
 
 interface ParsedSemver {
   readonly major: number;
@@ -139,7 +141,10 @@ export function isCodexCliVersionSupported(version: string): boolean {
   return compareCodexCliVersions(version, MINIMUM_CODEX_CLI_VERSION) >= 0;
 }
 
-export function formatCodexCliUpgradeMessage(version: string | null): string {
+export function formatCodexCliUpgradeMessage(
+  version: string | null,
+  minimumVersion = MINIMUM_CODEX_CLI_VERSION,
+): string {
   const versionLabel = version ? `v${version}` : "the installed version";
-  return `Codex CLI ${versionLabel} is too old for Synara. Upgrade to v${MINIMUM_CODEX_CLI_VERSION} or newer and restart Synara.`;
+  return `Codex CLI ${versionLabel} is too old for Synara. Upgrade to v${minimumVersion} or newer and restart Synara.`;
 }

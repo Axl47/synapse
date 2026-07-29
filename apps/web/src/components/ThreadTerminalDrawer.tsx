@@ -135,7 +135,7 @@ function TerminalViewport({
   threadId,
   terminalId,
   terminalLabel,
-  terminalCliKind = null,
+  terminalCliKind: terminalCliKindProp,
   cwd,
   runtimeEnv,
   onSessionExited,
@@ -146,6 +146,7 @@ function TerminalViewport({
   autoFocus,
   isVisible,
 }: TerminalViewportProps) {
+  const terminalCliKind = terminalCliKindProp ?? null;
   const containerRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const onAddTerminalContextRef = useRef(onAddTerminalContext);
@@ -160,7 +161,6 @@ function TerminalViewport({
   const [searchAddonInstance, setSearchAddonInstance] = useState<SearchAddon | null>(null);
   const [runtimeStatus, setRuntimeStatus] = useState<TerminalRuntimeStatus>("connecting");
   const runtimeStatusMountedRef = useRef(false);
-  // Manual memoization kept: this file does not compile under React Compiler (see compile-report).
   const trimmedCwd = useMemo(() => cwd.trim(), [cwd]);
   const runtimeCwdReady = trimmedCwd.length > 0;
   const runtimeKey = useMemo(
@@ -502,7 +502,7 @@ export default function ThreadTerminalDrawer({
   runtimeEnv,
   height,
   presentationMode,
-  isVisible = true,
+  isVisible: isVisibleProp,
   terminalIds,
   terminalLabelsById,
   terminalTitleOverridesById,
@@ -535,6 +535,7 @@ export default function ThreadTerminalDrawer({
   onTogglePanel,
   isPanelOpen,
 }: ThreadTerminalDrawerProps) {
+  const isVisible = isVisibleProp ?? true;
   const isWorkspaceMode = presentationMode === "workspace";
   const previousRuntimeKeysRef = useRef<Set<string>>(new Set());
   const { drawerHeight, handleResizePointerDown, handleResizePointerMove, handleResizePointerEnd } =

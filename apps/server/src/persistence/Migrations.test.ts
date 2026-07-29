@@ -335,10 +335,10 @@ layer("reconcileMigrationLineage", (it) => {
           )
       `;
 
-      const executed = yield* runMigrations({ toMigrationInclusive: 88 });
+      const executed = yield* runMigrations({ toMigrationInclusive: 89 });
       assert.deepStrictEqual(
         executed.map(([id]) => id),
-        migrationEntries.map(([id]) => id).filter((id) => id >= 49 && id <= 88),
+        migrationEntries.map(([id]) => id).filter((id) => id >= 49 && id <= 89),
       );
 
       const projectionSessionColumns = yield* tableColumnNames(sql, "projection_thread_sessions");
@@ -461,7 +461,7 @@ layer("reconcileMigrationLineage", (it) => {
         )
       `;
 
-      yield* runMigrations({ toMigrationInclusive: 88 });
+      yield* runMigrations({ toMigrationInclusive: 89 });
 
       const [projectionSession] = yield* sql<{
         readonly providerInstanceId: string | null;
@@ -620,18 +620,19 @@ managedAttachmentsLegacyLayer("managed attachment migration after private migrat
         [84, "AutomationNotificationPolicy"],
         [85, "AutomationSettings"],
         [86, "NormalizeStudioThreadWorkspaces"],
-        [87, "ProjectionThreadSessionProviderInstance"],
-        [88, "ProviderSessionRuntimeInstanceId"],
-        [89, "ProfileStatsDeletedTurnsProviderInstance"],
-        [90, "ProfileStatsDeletedTokensProviderInstance"],
-        [91, "ClearAutomationDefinitionProviderOptions"],
-        [92, "ClearAutomationRunProviderOptions"],
-        [93, "ScrubOrchestrationEventProviderOptions"],
-        [94, "ReconcileProjectionSchemaDrift"],
+        [87, "DropUnusedOrchestrationEventIndexes"],
+        [88, "ProjectionThreadSessionProviderInstance"],
+        [89, "ProviderSessionRuntimeInstanceId"],
+        [90, "ProfileStatsDeletedTurnsProviderInstance"],
+        [91, "ProfileStatsDeletedTokensProviderInstance"],
+        [92, "ClearAutomationDefinitionProviderOptions"],
+        [93, "ClearAutomationRunProviderOptions"],
+        [94, "ScrubOrchestrationEventProviderOptions"],
+        [95, "ReconcileProjectionSchemaDrift"],
       ]);
 
       const tracker = yield* trackerRows(sql);
-      assert.deepStrictEqual(tracker.slice(-41), [
+      assert.deepStrictEqual(tracker.slice(-42), [
         { migration_id: 54, name: "DurableProviderCommandDelivery" },
         { migration_id: 55, name: "ManagedAttachments" },
         { migration_id: 56, name: "CommandReceiptFingerprints" },
@@ -665,14 +666,15 @@ managedAttachmentsLegacyLayer("managed attachment migration after private migrat
         { migration_id: 84, name: "AutomationNotificationPolicy" },
         { migration_id: 85, name: "AutomationSettings" },
         { migration_id: 86, name: "NormalizeStudioThreadWorkspaces" },
-        { migration_id: 87, name: "ProjectionThreadSessionProviderInstance" },
-        { migration_id: 88, name: "ProviderSessionRuntimeInstanceId" },
-        { migration_id: 89, name: "ProfileStatsDeletedTurnsProviderInstance" },
-        { migration_id: 90, name: "ProfileStatsDeletedTokensProviderInstance" },
-        { migration_id: 91, name: "ClearAutomationDefinitionProviderOptions" },
-        { migration_id: 92, name: "ClearAutomationRunProviderOptions" },
-        { migration_id: 93, name: "ScrubOrchestrationEventProviderOptions" },
-        { migration_id: 94, name: "ReconcileProjectionSchemaDrift" },
+        { migration_id: 87, name: "DropUnusedOrchestrationEventIndexes" },
+        { migration_id: 88, name: "ProjectionThreadSessionProviderInstance" },
+        { migration_id: 89, name: "ProviderSessionRuntimeInstanceId" },
+        { migration_id: 90, name: "ProfileStatsDeletedTurnsProviderInstance" },
+        { migration_id: 91, name: "ProfileStatsDeletedTokensProviderInstance" },
+        { migration_id: 92, name: "ClearAutomationDefinitionProviderOptions" },
+        { migration_id: 93, name: "ClearAutomationRunProviderOptions" },
+        { migration_id: 94, name: "ScrubOrchestrationEventProviderOptions" },
+        { migration_id: 95, name: "ReconcileProjectionSchemaDrift" },
       ]);
       const preserved = yield* sql<{ readonly count: number }>`
         SELECT COUNT(*) AS count FROM orchestration_consumer_state
@@ -751,14 +753,15 @@ agentGatewayRetentionLegacyLayer(
           [84, "AutomationNotificationPolicy"],
           [85, "AutomationSettings"],
           [86, "NormalizeStudioThreadWorkspaces"],
-          [87, "ProjectionThreadSessionProviderInstance"],
-          [88, "ProviderSessionRuntimeInstanceId"],
-          [89, "ProfileStatsDeletedTurnsProviderInstance"],
-          [90, "ProfileStatsDeletedTokensProviderInstance"],
-          [91, "ClearAutomationDefinitionProviderOptions"],
-          [92, "ClearAutomationRunProviderOptions"],
-          [93, "ScrubOrchestrationEventProviderOptions"],
-          [94, "ReconcileProjectionSchemaDrift"],
+          [87, "DropUnusedOrchestrationEventIndexes"],
+          [88, "ProjectionThreadSessionProviderInstance"],
+          [89, "ProviderSessionRuntimeInstanceId"],
+          [90, "ProfileStatsDeletedTurnsProviderInstance"],
+          [91, "ProfileStatsDeletedTokensProviderInstance"],
+          [92, "ClearAutomationDefinitionProviderOptions"],
+          [93, "ClearAutomationRunProviderOptions"],
+          [94, "ScrubOrchestrationEventProviderOptions"],
+          [95, "ReconcileProjectionSchemaDrift"],
         ]);
 
         const columns = yield* sql<{ readonly name: string }>`
@@ -840,19 +843,20 @@ spacesMigrationCollisionLayer("Spaces migration after the private migration 70 c
         [84, "AutomationNotificationPolicy"],
         [85, "AutomationSettings"],
         [86, "NormalizeStudioThreadWorkspaces"],
-        [87, "ProjectionThreadSessionProviderInstance"],
-        [88, "ProviderSessionRuntimeInstanceId"],
-        [89, "ProfileStatsDeletedTurnsProviderInstance"],
-        [90, "ProfileStatsDeletedTokensProviderInstance"],
-        [91, "ClearAutomationDefinitionProviderOptions"],
-        [92, "ClearAutomationRunProviderOptions"],
-        [93, "ScrubOrchestrationEventProviderOptions"],
-        [94, "ReconcileProjectionSchemaDrift"],
+        [87, "DropUnusedOrchestrationEventIndexes"],
+        [88, "ProjectionThreadSessionProviderInstance"],
+        [89, "ProviderSessionRuntimeInstanceId"],
+        [90, "ProfileStatsDeletedTurnsProviderInstance"],
+        [91, "ProfileStatsDeletedTokensProviderInstance"],
+        [92, "ClearAutomationDefinitionProviderOptions"],
+        [93, "ClearAutomationRunProviderOptions"],
+        [94, "ScrubOrchestrationEventProviderOptions"],
+        [95, "ReconcileProjectionSchemaDrift"],
       ]);
 
       const tracker = yield* trackerRows(sql);
       assert.deepStrictEqual(
-        tracker.slice(-25).map((row) => [row.migration_id, row.name]),
+        tracker.slice(-26).map((row) => [row.migration_id, row.name]),
         [
           [70, "AgentGatewayOperations"],
           [71, "ProjectionThreadsGatewayProvenance"],
@@ -871,14 +875,15 @@ spacesMigrationCollisionLayer("Spaces migration after the private migration 70 c
           [84, "AutomationNotificationPolicy"],
           [85, "AutomationSettings"],
           [86, "NormalizeStudioThreadWorkspaces"],
-          [87, "ProjectionThreadSessionProviderInstance"],
-          [88, "ProviderSessionRuntimeInstanceId"],
-          [89, "ProfileStatsDeletedTurnsProviderInstance"],
-          [90, "ProfileStatsDeletedTokensProviderInstance"],
-          [91, "ClearAutomationDefinitionProviderOptions"],
-          [92, "ClearAutomationRunProviderOptions"],
-          [93, "ScrubOrchestrationEventProviderOptions"],
-          [94, "ReconcileProjectionSchemaDrift"],
+          [87, "DropUnusedOrchestrationEventIndexes"],
+          [88, "ProjectionThreadSessionProviderInstance"],
+          [89, "ProviderSessionRuntimeInstanceId"],
+          [90, "ProfileStatsDeletedTurnsProviderInstance"],
+          [91, "ProfileStatsDeletedTokensProviderInstance"],
+          [92, "ClearAutomationDefinitionProviderOptions"],
+          [93, "ClearAutomationRunProviderOptions"],
+          [94, "ScrubOrchestrationEventProviderOptions"],
+          [95, "ReconcileProjectionSchemaDrift"],
         ],
       );
 
@@ -955,19 +960,20 @@ spacesMigrationCollisionLayer("Spaces migration after the private migration 70 c
         [84, "AutomationNotificationPolicy"],
         [85, "AutomationSettings"],
         [86, "NormalizeStudioThreadWorkspaces"],
-        [87, "ProjectionThreadSessionProviderInstance"],
-        [88, "ProviderSessionRuntimeInstanceId"],
-        [89, "ProfileStatsDeletedTurnsProviderInstance"],
-        [90, "ProfileStatsDeletedTokensProviderInstance"],
-        [91, "ClearAutomationDefinitionProviderOptions"],
-        [92, "ClearAutomationRunProviderOptions"],
-        [93, "ScrubOrchestrationEventProviderOptions"],
-        [94, "ReconcileProjectionSchemaDrift"],
+        [87, "DropUnusedOrchestrationEventIndexes"],
+        [88, "ProjectionThreadSessionProviderInstance"],
+        [89, "ProviderSessionRuntimeInstanceId"],
+        [90, "ProfileStatsDeletedTurnsProviderInstance"],
+        [91, "ProfileStatsDeletedTokensProviderInstance"],
+        [92, "ClearAutomationDefinitionProviderOptions"],
+        [93, "ClearAutomationRunProviderOptions"],
+        [94, "ScrubOrchestrationEventProviderOptions"],
+        [95, "ReconcileProjectionSchemaDrift"],
       ]);
 
       const tracker = yield* trackerRows(sql);
       assert.deepStrictEqual(
-        tracker.slice(-21).map((row) => [row.migration_id, row.name]),
+        tracker.slice(-22).map((row) => [row.migration_id, row.name]),
         [
           [74, "ExternalMcpIntegrations"],
           [75, "ExternalMcpActiveCapacity"],
@@ -982,14 +988,15 @@ spacesMigrationCollisionLayer("Spaces migration after the private migration 70 c
           [84, "AutomationNotificationPolicy"],
           [85, "AutomationSettings"],
           [86, "NormalizeStudioThreadWorkspaces"],
-          [87, "ProjectionThreadSessionProviderInstance"],
-          [88, "ProviderSessionRuntimeInstanceId"],
-          [89, "ProfileStatsDeletedTurnsProviderInstance"],
-          [90, "ProfileStatsDeletedTokensProviderInstance"],
-          [91, "ClearAutomationDefinitionProviderOptions"],
-          [92, "ClearAutomationRunProviderOptions"],
-          [93, "ScrubOrchestrationEventProviderOptions"],
-          [94, "ReconcileProjectionSchemaDrift"],
+          [87, "DropUnusedOrchestrationEventIndexes"],
+          [88, "ProjectionThreadSessionProviderInstance"],
+          [89, "ProviderSessionRuntimeInstanceId"],
+          [90, "ProfileStatsDeletedTurnsProviderInstance"],
+          [91, "ProfileStatsDeletedTokensProviderInstance"],
+          [92, "ClearAutomationDefinitionProviderOptions"],
+          [93, "ClearAutomationRunProviderOptions"],
+          [94, "ScrubOrchestrationEventProviderOptions"],
+          [95, "ReconcileProjectionSchemaDrift"],
         ],
       );
       const preservedSpaces = yield* sql<{ readonly spaceId: string }>`

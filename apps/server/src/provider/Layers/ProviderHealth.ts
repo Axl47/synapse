@@ -28,7 +28,7 @@ import {
 } from "@synara/shared/providerInstances";
 import { decodeJsonResult } from "@synara/shared/schemaJson";
 import { prepareWindowsSafeProcess } from "@synara/shared/windowsProcess";
-import { query as claudeQuery, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
+import type { SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import {
   Array,
   DateTime,
@@ -51,8 +51,10 @@ import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 import {
   CODEX_CLI_UNPARSEABLE_VERSION_MESSAGE,
+  compareCodexCliVersions,
   formatCodexCliUpgradeMessage,
   isCodexCliVersionSupported,
+  MINIMUM_CODEX_AUTO_REVIEW_CLI_VERSION,
   parseCodexCliVersion,
 } from "../codexCliVersion";
 import { buildClaudeProcessEnv } from "../claudeEnvironment";
@@ -83,6 +85,7 @@ import {
 } from "../claudeAuthStatus";
 import { acquireClaudeAuthStatusLock } from "../claudeAuthStatusLock";
 import { readClaudeCliCredentialsSummary } from "../claudeProcessEnv";
+import { loadClaudeAgentSdk } from "../claudeAgentSdk.ts";
 import {
   detailFromResult,
   extractAuthBoolean,
@@ -110,6 +113,7 @@ import {
   resolveProviderMaintenanceCapabilitiesEffect,
   type PackageManagedProviderMaintenanceDefinition,
 } from "../providerMaintenance";
+import { isClaudeAutoModeCliVersionSupported } from "../claudeCliVersion.ts";
 import { collectUint8StreamText } from "../../stream/collectUint8StreamText";
 import { buildCodexProcessEnv } from "../../codexProcessEnv.ts";
 import { buildProviderProcessEnv, type ProviderProcessEnvDriver } from "../providerProcessEnv.ts";
@@ -556,6 +560,7 @@ const probeClaudeSubscription = (input: ClaudeSubscriptionProbeInput) => {
     input.isolationRootDir,
   );
   return Effect.tryPromise(async () => {
+    const { query: claudeQuery } = await loadClaudeAgentSdk();
     const q = claudeQuery({
       // oxlint-disable-next-line require-yield
       prompt: (async function* (): AsyncGenerator<SDKUserMessage> {
@@ -1107,10 +1112,10 @@ export const makeCheckCodexProviderStatus = (
   ServerProviderStatus,
   never,
   ChildProcessSpawner.ChildProcessSpawner | FileSystem.FileSystem | Path.Path
-> =>
-  Effect.gen(function* () {
+> => {
+  const executable = nonEmptyTrimmed(binaryPath) ?? "codex";
+  return Effect.gen(function* () {
     const checkedAt = new Date().toISOString();
-    const executable = nonEmptyTrimmed(binaryPath) ?? "codex";
     // Overlay materialization can reject misconfigured account homes (e.g. a
     // symlinked shadow auth.json); report that as this instance's status instead
     // of letting a defect take down the whole provider refresh.
@@ -1209,6 +1214,9 @@ export const makeCheckCodexProviderStatus = (
         message: formatCodexCliUpgradeMessage(parsedVersion),
       };
     }
+    const supportsAutoRuntimeMode =
+      parsedVersion !== null &&
+      compareCodexCliVersions(parsedVersion, MINIMUM_CODEX_AUTO_REVIEW_CLI_VERSION) >= 0;
 
     // Probe 2: `codex login status` — is the user authenticated?
     //
@@ -1225,6 +1233,7 @@ export const makeCheckCodexProviderStatus = (
         available: true,
         authStatus: "unknown" as const,
         version: parsedVersion,
+        supportsAutoRuntimeMode,
         checkedAt,
         message: "Using a custom Codex model provider; OpenAI login check skipped.",
       } satisfies ServerProviderStatus;
@@ -1245,6 +1254,7 @@ export const makeCheckCodexProviderStatus = (
         available: true,
         authStatus: "unknown" as const,
         version: parsedVersion,
+        supportsAutoRuntimeMode,
         checkedAt,
         message:
           error instanceof Error
@@ -1262,6 +1272,7 @@ export const makeCheckCodexProviderStatus = (
         available: true,
         authStatus: "unknown" as const,
         version: parsedVersion,
+        supportsAutoRuntimeMode,
         checkedAt,
         message: "Could not verify Codex authentication status. Timed out while running command.",
       };
@@ -1290,6 +1301,7 @@ export const makeCheckCodexProviderStatus = (
       available: true,
       authStatus: parsed.authStatus,
       version: parsedVersion,
+      supportsAutoRuntimeMode,
       ...(codexAuthType ? { authType: codexAuthType } : {}),
       ...(codexLabel ? { authLabel: codexLabel } : {}),
       ...(parsed.voiceTranscriptionAvailable !== undefined
@@ -1298,7 +1310,13 @@ export const makeCheckCodexProviderStatus = (
       checkedAt,
       ...(parsed.message ? { message: parsed.message } : {}),
     } satisfies ServerProviderStatus;
-  });
+  }).pipe(
+    Effect.map((status) => ({
+      ...status,
+      autoRuntimeModeBinaryPath: executable,
+    })),
+  );
+};
 
 export const checkCodexProviderStatus = makeCheckCodexProviderStatus();
 
@@ -1317,10 +1335,10 @@ export const makeCheckClaudeProviderStatus = (
     readonly providerInstanceId?: ProviderInstanceId;
     readonly isolationRootDir?: string;
   },
-): Effect.Effect<ServerProviderStatus, never, ChildProcessSpawner.ChildProcessSpawner> =>
-  Effect.gen(function* () {
+): Effect.Effect<ServerProviderStatus, never, ChildProcessSpawner.ChildProcessSpawner> => {
+  const executable = nonEmptyTrimmed(binaryPath) ?? "claude";
+  return Effect.gen(function* () {
     const checkedAt = new Date().toISOString();
-    const executable = nonEmptyTrimmed(binaryPath) ?? "claude";
     const probeEnv = buildClaudeProcessEnv({
       homePath,
       environment,
@@ -1384,6 +1402,7 @@ export const makeCheckClaudeProviderStatus = (
     }
     const version = versionProbe.result;
     const parsedVersion = parseGenericCliVersion(`${version.stdout}\n${version.stderr}`);
+    const supportsAutoRuntimeMode = isClaudeAutoModeCliVersionSupported(parsedVersion);
 
     // Probe 2: `claude auth status` — is the user authenticated? The command can
     // redeem a single-use rotating OAuth refresh token, so it is serialized with
@@ -1410,6 +1429,7 @@ export const makeCheckClaudeProviderStatus = (
         available: true,
         authStatus: "unknown" as const,
         version: parsedVersion,
+        supportsAutoRuntimeMode,
         checkedAt,
         message:
           error instanceof Error
@@ -1427,6 +1447,7 @@ export const makeCheckClaudeProviderStatus = (
         available: true,
         authStatus: "unknown" as const,
         version: parsedVersion,
+        supportsAutoRuntimeMode,
         checkedAt,
         message: "Could not verify Claude authentication status. Timed out while running command.",
       };
@@ -1503,11 +1524,18 @@ export const makeCheckClaudeProviderStatus = (
       available: true,
       authStatus: effectiveParsed.authStatus,
       version: parsedVersion,
+      supportsAutoRuntimeMode,
       ...(authMetadata ? { authType: authMetadata.type, authLabel: authMetadata.label } : {}),
       checkedAt,
       ...(effectiveParsed.message ? { message: effectiveParsed.message } : {}),
     } satisfies ServerProviderStatus;
-  });
+  }).pipe(
+    Effect.map((status) => ({
+      ...status,
+      autoRuntimeModeBinaryPath: executable,
+    })),
+  );
+};
 
 export const checkClaudeProviderStatus = makeCheckClaudeProviderStatus();
 
@@ -2504,6 +2532,8 @@ export function providerStatusesEqual(
       (status.authType ?? null) === (next.authType ?? null) &&
       (status.authLabel ?? null) === (next.authLabel ?? null) &&
       status.voiceTranscriptionAvailable === next.voiceTranscriptionAvailable &&
+      status.supportsAutoRuntimeMode === next.supportsAutoRuntimeMode &&
+      (status.autoRuntimeModeBinaryPath ?? null) === (next.autoRuntimeModeBinaryPath ?? null) &&
       (status.version ?? null) === (next.version ?? null) &&
       (status.message ?? null) === (next.message ?? null) &&
       JSON.stringify(comparableProviderVersionAdvisory(status.versionAdvisory)) ===

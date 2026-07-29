@@ -67,6 +67,7 @@ import {
   ProjectionSnapshotQuery,
   type ProjectionFullThreadDiffContext,
   type ProjectionGeneratedImageActivityRecord,
+  type ProjectionManagedWorktreeThread,
   type ProjectionSnapshotCounts,
   type ProjectionSnapshotSequence,
   type ProjectionThreadCheckpointContext,
@@ -80,7 +81,12 @@ const decodeThreadDetailSnapshot = Schema.decodeUnknownEffect(OrchestrationThrea
 const decodeModelSelection = Schema.decodeUnknownEffect(ModelSelection);
 const ModelSelectionJsonUnknown = Schema.fromJsonString(Schema.Unknown);
 const MAX_THREAD_MESSAGES = 2_000;
-const MAX_THREAD_ACTIVITIES = 500;
+// Bulk read-model snapshot: stays aligned with the in-memory projector window
+// (`orchestration/projector.ts`), which trims every live thread to the same cap.
+const MAX_SNAPSHOT_THREAD_ACTIVITIES = 500;
+// A single opened thread keeps a much deeper window: providers emit hundreds of
+// activity rows per turn, so a 500-row tail dropped the previous turns' work log.
+const MAX_THREAD_DETAIL_ACTIVITIES = 2_000;
 const MAX_THREAD_FILE_CHANGE_ACTIVITIES = 2_000;
 const MAX_TURN_GENERATED_IMAGE_ACTIVITY_RECORDS = 64;
 const ProjectionProjectDbRowSchema = ProjectionProject.mapFields(
@@ -117,6 +123,18 @@ const ProjectionThreadShellDbRowSchema = Schema.Struct(ProjectionThreadShellFiel
     modelSelection: ModelSelectionJsonUnknown,
   }),
 );
+/**
+ * Narrow projection row for managed-worktree retention. Deliberately keeps
+ * soft-deleted threads visible: retention-deleted threads still own on-disk
+ * worktrees that must be snapshotted and reclaimed. Fields are picked from
+ * `ProjectionThread` so decoding stays identical to the full thread reader.
+ */
+const ProjectionManagedWorktreeThreadRowSchema = Schema.Struct({
+  threadId: ProjectionThread.fields.threadId,
+  archivedAt: ProjectionThread.fields.archivedAt,
+  worktreePath: ProjectionThread.fields.worktreePath,
+  associatedWorktreePath: ProjectionThread.fields.associatedWorktreePath,
+});
 const ProjectionThreadActivityDbRowSchema = ProjectionThreadActivity.mapFields(
   Struct.assign({
     payload: Schema.fromJsonString(Schema.Unknown),
@@ -779,6 +797,18 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       Effect.flatMap((settings) => decodeProjectionThreadOption(option, operation, settings)),
     );
 
+  // Thread retention soft-deletes and never purges (see ThreadDeletionReactor), so the
+  // projection tables keep every row of every deleted thread forever. `getSnapshot` is the
+  // only reader that hydrates message/activity bodies for the whole database at once, and
+  // every consumer of its read model drops soft-deleted threads before use. Ranking those
+  // rows was therefore ~95% pure waste on a mature database.
+  //
+  // Filtering by thread removes whole `PARTITION BY thread_id` partitions, so the
+  // ROW_NUMBER() ranks of the threads that survive are bit-for-bit unchanged.
+  const liveThreadScope = sql`
+    thread_id IN (SELECT thread_id FROM projection_threads WHERE deleted_at IS NULL)
+  `;
+
   const listSpaceRows = SqlSchema.findAll({
     Request: Schema.Void,
     Result: ProjectionSpace,
@@ -918,6 +948,23 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       `,
   });
 
+  const listManagedWorktreeThreadRows = SqlSchema.findAll({
+    Request: Schema.Void,
+    Result: ProjectionManagedWorktreeThreadRowSchema,
+    execute: () =>
+      sql`
+        SELECT
+          thread_id AS "threadId",
+          archived_at AS "archivedAt",
+          worktree_path AS "worktreePath",
+          associated_worktree_path AS "associatedWorktreePath"
+        FROM projection_threads
+        WHERE worktree_path IS NOT NULL
+           OR associated_worktree_path IS NOT NULL
+        ORDER BY created_at ASC, thread_id ASC
+      `,
+  });
+
   const listStaleInFlightThreadIdRows = SqlSchema.findAll({
     Request: StaleInFlightThreadLookupInput,
     Result: ProjectionThreadIdLookupRowSchema,
@@ -925,7 +972,11 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       sql`
         SELECT threads.thread_id AS "threadId"
         FROM projection_threads AS threads
-        INNER JOIN provider_session_runtime AS runtime
+        -- LEFT, not INNER: a thread whose runtime binding row was already
+        -- removed is exactly the thread most likely to be stuck running with
+        -- nothing left to settle it. Archived threads are included for the same
+        -- reason - archiving does not stop a turn.
+        LEFT JOIN provider_session_runtime AS runtime
           ON runtime.thread_id = threads.thread_id
         LEFT JOIN projection_thread_sessions AS sessions
           ON sessions.thread_id = threads.thread_id
@@ -933,14 +984,13 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           ON latest_turn.thread_id = threads.thread_id
          AND latest_turn.turn_id = threads.latest_turn_id
         WHERE threads.deleted_at IS NULL
-          AND threads.archived_at IS NULL
           AND (
-            sessions.status IN ('starting', 'running')
-            OR (
+            (
               sessions.active_turn_id IS NOT NULL
               AND sessions.status <> 'error'
             )
-            OR latest_turn.state IN ('pending', 'running')
+            OR latest_turn.state = 'running'
+            OR json_extract(runtime.runtime_payload_json, '$.activeTurnId') IS NOT NULL
           )
           AND COALESCE(sessions.updated_at, threads.updated_at) <= ${updatedBefore}
         ORDER BY COALESCE(sessions.updated_at, threads.updated_at) ASC, threads.thread_id ASC
@@ -981,6 +1031,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                 message_id DESC
             ) AS message_rank
           FROM projection_thread_messages
+          WHERE ${liveThreadScope}
         )
         WHERE message_rank <= ${MAX_THREAD_MESSAGES}
         ORDER BY
@@ -1038,8 +1089,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                 activity_id DESC
             ) AS activity_rank
           FROM projection_thread_activities
+          WHERE ${liveThreadScope}
         ) AS ranked
-        WHERE activity_rank <= ${MAX_THREAD_ACTIVITIES}
+        WHERE activity_rank <= ${MAX_SNAPSHOT_THREAD_ACTIVITIES}
           OR (
             kind IN ('approval.requested', 'user-input.requested')
             AND json_extract(payload_json, '$.requestId') IS NOT NULL
@@ -1519,17 +1571,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     Result: ProjectionThreadActivityDbRowSchema,
     execute: ({ threadId }) =>
       sql`
-        SELECT
-          activity_id AS "activityId",
-          thread_id AS "threadId",
-          turn_id AS "turnId",
-          tone,
-          kind,
-          summary,
-          payload_json AS "payload",
-          sequence,
-          created_at AS "createdAt"
-        FROM (
+        WITH ranked AS (
           SELECT
             *,
             ROW_NUMBER() OVER (
@@ -1542,10 +1584,56 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             ) AS activity_rank
           FROM projection_thread_activities
           WHERE thread_id = ${threadId}
-        ) AS ranked
+        ),
+        cutoff_turn AS (
+          SELECT turn_id AS cutoff_turn_id
+          FROM ranked
+          WHERE activity_rank = ${MAX_THREAD_DETAIL_ACTIVITIES}
+        ),
+        cutoff_turn_state AS (
+          SELECT
+            cutoff_turn_id,
+            EXISTS (
+              SELECT 1
+              FROM ranked
+              WHERE activity_rank > ${MAX_THREAD_DETAIL_ACTIVITIES}
+                AND turn_id = cutoff_turn_id
+            ) AS is_split,
+            EXISTS (
+              SELECT 1
+              FROM ranked
+              WHERE activity_rank < ${MAX_THREAD_DETAIL_ACTIVITIES}
+                AND turn_id IS NOT cutoff_turn_id
+            ) AS has_newer_turn
+          FROM cutoff_turn
+        )
+        SELECT
+          activity_id AS "activityId",
+          thread_id AS "threadId",
+          turn_id AS "turnId",
+          tone,
+          kind,
+          summary,
+          payload_json AS "payload",
+          sequence,
+          created_at AS "createdAt"
+        FROM ranked
         WHERE thread_id = ${threadId}
           AND (
-            activity_rank <= ${MAX_THREAD_ACTIVITIES}
+            (
+              activity_rank <= ${MAX_THREAD_DETAIL_ACTIVITIES}
+              -- Drop a split oldest turn instead of extending the query beyond
+              -- its cap. If one turn fills the entire window, retain the raw
+              -- capped tail so an oversized turn does not hide all activity.
+              AND NOT (
+                EXISTS (SELECT 1 FROM cutoff_turn_state)
+                AND (SELECT cutoff_turn_id FROM cutoff_turn_state) IS NOT NULL
+                AND turn_id IS NOT NULL
+                AND turn_id = (SELECT cutoff_turn_id FROM cutoff_turn_state)
+                AND (SELECT is_split FROM cutoff_turn_state)
+                AND (SELECT has_newer_turn FROM cutoff_turn_state)
+              )
+            )
             OR (
               kind IN ('approval.requested', 'user-input.requested')
               AND json_extract(payload_json, '$.requestId') IS NOT NULL
@@ -2264,6 +2352,29 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       Effect.map((rows) => rows.map((row) => row.threadId)),
     );
 
+  const listManagedWorktreeThreads: ProjectionSnapshotQueryShape["listManagedWorktreeThreads"] =
+    () =>
+      listManagedWorktreeThreadRows(undefined).pipe(
+        Effect.mapError(
+          toPersistenceSqlOrDecodeError(
+            "ProjectionSnapshotQuery.listManagedWorktreeThreads:query",
+            "ProjectionSnapshotQuery.listManagedWorktreeThreads:decodeRows",
+          ),
+        ),
+        Effect.map((rows) =>
+          rows.map(
+            // Normalize absent columns to `null` so the published row shape stays
+            // strict (`string | null`) rather than leaking `undefined` outward.
+            (row): ProjectionManagedWorktreeThread => ({
+              id: row.threadId,
+              archivedAt: row.archivedAt ?? null,
+              worktreePath: row.worktreePath ?? null,
+              associatedWorktreePath: row.associatedWorktreePath ?? null,
+            }),
+          ),
+        ),
+      );
+
   const getCounts: ProjectionSnapshotQueryShape["getCounts"] = () =>
     readProjectionCounts(undefined).pipe(
       Effect.mapError(
@@ -2781,6 +2892,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     getCounts,
     getSnapshotSequence,
     listStaleInFlightThreadIds,
+    listManagedWorktreeThreads,
     getActiveProjectByWorkspaceRoot,
     getProjectShellById,
     getSpaceShellById,

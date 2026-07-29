@@ -1,0 +1,72 @@
+import type { ProviderKind, RuntimeMode } from "@synara/contracts";
+import { inferLegacyProviderKindFromInstanceId } from "./providerInstances.ts";
+
+const AUTO_RUNTIME_MODE_PROVIDERS = new Set<ProviderKind>(["codex", "claudeAgent"]);
+const RUNTIME_MODE_PRIVILEGE = {
+  "approval-required": 0,
+  auto: 1,
+  "full-access": 2,
+} as const satisfies Record<RuntimeMode, number>;
+
+export function providerSupportsAutoRuntimeMode(provider: ProviderKind): boolean {
+  return AUTO_RUNTIME_MODE_PROVIDERS.has(provider);
+}
+
+export function unsupportedAutoRuntimeModeMessage(provider: ProviderKind): string {
+  return `Provider "${provider}" does not support Auto runtime mode. Auto is available only for Codex and Claude Code.`;
+}
+
+/**
+ * Human-readable reason an Auto-mode model selection is invalid, or null when
+ * the selection may run in Auto. Shared by orchestration and automations so
+ * both enforce the identical policy.
+ */
+export function autoRuntimeModeSelectionIssue(input: {
+  readonly runtimeMode: RuntimeMode;
+  readonly modelSelection: {
+    readonly provider?: ProviderKind | undefined;
+    readonly instanceId?: string | undefined;
+    readonly model: string;
+    readonly supportsAutoMode?: boolean | undefined;
+  };
+}): string | null {
+  if (input.runtimeMode !== "auto") {
+    return null;
+  }
+  const provider =
+    input.modelSelection.provider ??
+    inferLegacyProviderKindFromInstanceId(input.modelSelection.instanceId);
+  if (!provider || !providerSupportsAutoRuntimeMode(provider)) {
+    return provider
+      ? unsupportedAutoRuntimeModeMessage(provider)
+      : "The selected provider account does not support Auto runtime mode.";
+  }
+  if (
+    provider === "claudeAgent" &&
+    input.modelSelection.supportsAutoMode !== true
+  ) {
+    // Fail closed on an unknown capability: the Claude adapter refuses to
+    // start Auto sessions without a confirmed flag, so persisting Auto here
+    // would only defer the failure to runtime.
+    return input.modelSelection.supportsAutoMode === false
+      ? `Claude model "${input.modelSelection.model}" does not support Auto mode.`
+      : `Claude model "${input.modelSelection.model}" has not been verified to support Auto mode.`;
+  }
+  return null;
+}
+
+export function runtimeModeEscalatesPrivilege(
+  callerRuntimeMode: RuntimeMode,
+  targetRuntimeMode: RuntimeMode,
+): boolean {
+  return RUNTIME_MODE_PRIVILEGE[targetRuntimeMode] > RUNTIME_MODE_PRIVILEGE[callerRuntimeMode];
+}
+
+export function normalizeRuntimeModeForProvider(
+  runtimeMode: RuntimeMode,
+  provider: ProviderKind,
+): RuntimeMode {
+  return runtimeMode === "auto" && !providerSupportsAutoRuntimeMode(provider)
+    ? "approval-required"
+    : runtimeMode;
+}
