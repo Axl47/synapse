@@ -9,7 +9,7 @@ export const DESKTOP_INSTANCE_DESCRIPTOR_TTL_MS = 15_000;
 export const DESKTOP_INSTANCE_DESCRIPTOR_REFRESH_MS = 5_000;
 
 export interface DesktopInstanceDescriptor {
-  readonly version: 1;
+  readonly version: 2;
   readonly instanceId: string;
   readonly pid: number;
   readonly mode: "desktop";
@@ -18,6 +18,9 @@ export interface DesktopInstanceDescriptor {
   readonly host: string;
   readonly port: number;
   readonly wsUrl: string;
+  readonly httpOrigin: string;
+  readonly externalActivationBaseUrl: string;
+  readonly capabilities: ReadonlyArray<string>;
   readonly startedAt: string;
   readonly updatedAt: string;
   readonly expiresAt: string;
@@ -30,6 +33,9 @@ export interface CreateDesktopInstanceDescriptorInput {
   readonly stateDir: string;
   readonly port: number;
   readonly wsUrl: string;
+  readonly httpOrigin: string;
+  readonly externalActivationBaseUrl: string;
+  readonly capabilities: ReadonlyArray<string>;
   readonly startedAt: string;
   readonly now?: Date;
   readonly ttlMs?: number;
@@ -49,7 +55,7 @@ export function createDesktopInstanceDescriptor(
   const now = input.now ?? new Date();
   const ttlMs = input.ttlMs ?? DESKTOP_INSTANCE_DESCRIPTOR_TTL_MS;
   return {
-    version: 1,
+    version: 2,
     instanceId: input.instanceId,
     pid: input.pid,
     mode: "desktop",
@@ -58,6 +64,9 @@ export function createDesktopInstanceDescriptor(
     host: "127.0.0.1",
     port: input.port,
     wsUrl: input.wsUrl,
+    httpOrigin: input.httpOrigin,
+    externalActivationBaseUrl: input.externalActivationBaseUrl,
+    capabilities: input.capabilities,
     startedAt: input.startedAt,
     updatedAt: now.toISOString(),
     expiresAt: new Date(now.getTime() + ttlMs).toISOString(),

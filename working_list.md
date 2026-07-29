@@ -4,7 +4,7 @@
 
 ## In Progress
 
-- [~] Milestone 7 — add reliable desktop activation and navigation
+- None.
 
 ## Pending
 
@@ -30,6 +30,12 @@
   - [x] Re-read local storage and blob bytes before durable completion acknowledgement
   - [x] Mounted a coordinator that navigates without dispatching a provider turn
   - [x] Passed 89 focused web tests, HTTP tests, and the production web build
+- [x] Milestone 7 — add reliable desktop activation and navigation
+  - [x] Published the loopback HTTP origin, flavor-specific activation base, and capability in descriptor v2
+  - [x] Added strict opaque activation parsing and a bounded FIFO for cold and warm activation
+  - [x] Wired macOS open-url, Windows/Linux second-instance arguments, cold argv, focus, and packaged protocol registration
+  - [x] Buffered the typed desktop-to-web intent until the root coordinator subscribes
+  - [x] Passed 16 desktop activation/descriptor tests, 33 server config tests, the hydration test, and desktop/server/web production builds
 
 ## Previous Task: Upstream Sync
 

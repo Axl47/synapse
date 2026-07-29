@@ -264,6 +264,7 @@ it.layer(testLayer)("server CLI command", (it) => {
         SYNARA_NO_BROWSER: "true",
         SYNARA_AUTH_TOKEN: "env-token",
         SYNARA_DESKTOP_SHUTDOWN_TOKEN: "shutdown-token",
+        SYNARA_EXTERNAL_ACTIVATION_BASE_URL: "synara://composer-draft/",
       });
 
       assert.equal(start.mock.calls.length, 1);
@@ -276,6 +277,10 @@ it.layer(testLayer)("server CLI command", (it) => {
       assert.equal(resolvedConfig?.noBrowser, true);
       assert.equal(resolvedConfig?.authToken, "env-token");
       assert.equal(resolvedConfig?.desktopShutdownToken, "shutdown-token");
+      assert.equal(
+        resolvedConfig?.externalActivationBaseUrl,
+        "synara://composer-draft/",
+      );
       assert.equal(resolvedConfig?.autoBootstrapProjectFromCwd, false);
       assert.equal(resolvedConfig?.logProviderEvents, false);
       assert.equal(resolvedConfig?.logWebSocketEvents, false);

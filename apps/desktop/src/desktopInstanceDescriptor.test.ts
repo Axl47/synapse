@@ -23,6 +23,9 @@ describe("desktopInstanceDescriptor", () => {
         stateDir: "/tmp/synapse-state",
         port: 57777,
         wsUrl: "ws://127.0.0.1:57777/ws?token=secret",
+        httpOrigin: "http://127.0.0.1:57777",
+        externalActivationBaseUrl: "synara://composer-draft/",
+        capabilities: ["composer-draft-import-v1"],
         startedAt: "2026-06-16T04:00:00.000Z",
         now: new Date("2026-06-16T04:00:05.000Z"),
         ttlMs: 10_000,
@@ -33,7 +36,7 @@ describe("desktopInstanceDescriptor", () => {
       const descriptorPath = desktopInstanceDescriptorPath(root, "run-1");
       const written = JSON.parse(FS.readFileSync(descriptorPath, "utf8"));
       expect(written).toMatchObject({
-        version: 1,
+        version: 2,
         instanceId: "run-1",
         mode: "desktop",
         cwd: "/repo/synapse",
@@ -41,6 +44,9 @@ describe("desktopInstanceDescriptor", () => {
         host: "127.0.0.1",
         port: 57777,
         wsUrl: "ws://127.0.0.1:57777/ws?token=secret",
+        httpOrigin: "http://127.0.0.1:57777",
+        externalActivationBaseUrl: "synara://composer-draft/",
+        capabilities: ["composer-draft-import-v1"],
         startedAt: "2026-06-16T04:00:00.000Z",
         updatedAt: "2026-06-16T04:00:05.000Z",
         expiresAt: "2026-06-16T04:00:15.000Z",

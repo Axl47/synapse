@@ -20,7 +20,10 @@ import {
   MAC_APPSNAP_HELPER_STAGE_PATH,
   validateDesktopNativeBuildHost,
 } from "./lib/desktop-platform-build-config.ts";
-import { SYNARA_PRODUCTION_BUNDLE_ID } from "@synara/shared/desktopIdentity";
+import {
+  SYNARA_DESKTOP_SCHEME,
+  SYNARA_PRODUCTION_BUNDLE_ID,
+} from "@synara/shared/desktopIdentity";
 import { parseBooleanEnvValue } from "./lib/env-bool.ts";
 import { finalizeSignedMacDmg } from "./lib/mac-dmg-finalize.ts";
 import { finalizeMacUpdateZip } from "./lib/mac-update-zip-finalize.ts";
@@ -727,6 +730,12 @@ const createBuildConfig = Effect.fn("createBuildConfig")(function* (
     appId: SYNARA_PRODUCTION_BUNDLE_ID,
     productName,
     artifactName: "Synara-${version}-${arch}.${ext}",
+    protocols: [
+      {
+        name: "Synara composer draft import",
+        schemes: [SYNARA_DESKTOP_SCHEME],
+      },
+    ],
     directories: {
       buildResources: "apps/desktop/resources",
     },

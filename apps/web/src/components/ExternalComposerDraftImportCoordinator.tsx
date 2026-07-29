@@ -14,12 +14,15 @@ import { toastManager } from "./ui/toast";
 export function ExternalComposerDraftImportCoordinator() {
   const navigate = useNavigate();
   const pending = useRef(Promise.resolve());
+  const queuedOrActiveImportIds = useRef(new Set<string>());
 
   useEffect(() => {
     const bridge = window.desktopBridge?.composerDraftImports;
     if (!bridge) return;
     return bridge.onIntent((rawImportId) => {
       if (!Schema.is(ComposerDraftImportId)(rawImportId)) return;
+      if (queuedOrActiveImportIds.current.has(rawImportId)) return;
+      queuedOrActiveImportIds.current.add(rawImportId);
       pending.current = pending.current.then(async () => {
         const loadingToast = toastManager.add({
           type: "loading",
@@ -60,6 +63,8 @@ export function ExternalComposerDraftImportCoordinator() {
                 : "The imported draft can be retried from Pragma.",
             data: { allowCrossThreadVisibility: true },
           });
+        } finally {
+          queuedOrActiveImportIds.current.delete(rawImportId);
         }
       });
     });

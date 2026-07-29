@@ -65,6 +65,12 @@ Reference usage: opening/closing a project and the sidebar sections in `apps/web
 - Check both server and web ports with `lsof -nP -iTCP:<port> -sTCP:LISTEN`. A desktop app can bind `127.0.0.1:<port>` while the dev server binds IPv6 `*:<port>`, and `localhost` may still hit the wrong process.
 - If the UI shows no threads, verify the server path before changing SQL: inspect the isolated `state.sqlite`, then probe `orchestration.getSnapshot` over WebSocket. A healthy snapshot with projects/threads means the issue is client connection/hydration, not empty history.
 
+## External Composer Draft Imports
+
+- `ComposerDraftImports` owns server-side staging, leases, cleanup, and completion. External apps receive only authenticated upload paths and an opaque activation URL; they must never write Synara browser storage directly.
+- Imported prompts register as standalone draft threads in the web composer. They must not replace a project's primary draft mapping or dispatch `thread.turn.start`; prompt, image, and file state is persisted locally before the server receives completion.
+- The desktop descriptor advertises `composer-draft-import-v1` only for its auto-local loopback backend. External activation accepts only the flavor-specific `<scheme>://composer-draft/<opaque-import-id>` shape and crosses into the renderer through the typed import-intent IPC event.
+
 ## Codex App Server (Important)
 
 Synara is currently Codex-first. The server starts `codex app-server` (JSON-RPC over stdio) per provider session, then streams structured events to the browser through WebSocket push messages.

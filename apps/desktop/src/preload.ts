@@ -1,9 +1,41 @@
 import { contextBridge, ipcRenderer, webUtils } from "electron";
-import type { DesktopBridge } from "@synara/contracts";
+import type { ComposerDraftImportId, DesktopBridge } from "@synara/contracts";
 import { normalizeDesktopWsUrl, resolveDesktopWsUrlFromEnv } from "./desktopWsBridge";
 import { DESKTOP_IPC_CHANNELS } from "./ipcChannels";
 
 const IPC = DESKTOP_IPC_CHANNELS;
+const MAX_BUFFERED_COMPOSER_DRAFT_IMPORT_INTENTS = 16;
+const composerDraftImportIntentListeners = new Set<
+  (importId: ComposerDraftImportId) => void
+>();
+const bufferedComposerDraftImportIntents: ComposerDraftImportId[] = [];
+const bufferedComposerDraftImportIntentSet = new Set<ComposerDraftImportId>();
+
+function isComposerDraftImportId(value: unknown): value is ComposerDraftImportId {
+  return (
+    typeof value === "string" &&
+    value.length <= 128 &&
+    /^cdi_[a-z0-9]+$/.test(value)
+  );
+}
+
+ipcRenderer.on(IPC.composerDraftImportIntent, (_event, value: unknown) => {
+  if (!isComposerDraftImportId(value)) return;
+  if (composerDraftImportIntentListeners.size > 0) {
+    for (const listener of composerDraftImportIntentListeners) {
+      listener(value);
+    }
+    return;
+  }
+  if (
+    bufferedComposerDraftImportIntents.length >= MAX_BUFFERED_COMPOSER_DRAFT_IMPORT_INTENTS ||
+    bufferedComposerDraftImportIntentSet.has(value)
+  ) {
+    return;
+  }
+  bufferedComposerDraftImportIntents.push(value);
+  bufferedComposerDraftImportIntentSet.add(value);
+});
 
 function getDesktopWsUrl(): string | null {
   try {
@@ -137,6 +169,18 @@ contextBridge.exposeInMainWorld("desktopBridge", {
   storageMigration: {
     readSnapshot: () => ipcRenderer.sendSync(IPC.storageMigration.read),
     acknowledgeSnapshot: () => ipcRenderer.invoke(IPC.storageMigration.acknowledge),
+  },
+  composerDraftImports: {
+    onIntent: (listener) => {
+      composerDraftImportIntentListeners.add(listener);
+      for (const importId of bufferedComposerDraftImportIntents.splice(0)) {
+        bufferedComposerDraftImportIntentSet.delete(importId);
+        listener(importId);
+      }
+      return () => {
+        composerDraftImportIntentListeners.delete(listener);
+      };
+    },
   },
   server: {
     transcribeVoice: (input) => ipcRenderer.invoke(IPC.transcribeVoice, input),

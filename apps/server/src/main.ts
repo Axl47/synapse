@@ -160,6 +160,10 @@ const CliEnvConfig = Config.all({
     Config.option,
     Config.map(Option.getOrUndefined),
   ),
+  externalActivationBaseUrl: Config.string("SYNARA_EXTERNAL_ACTIVATION_BASE_URL").pipe(
+    Config.option,
+    Config.map(Option.getOrUndefined),
+  ),
   autoBootstrapProjectFromCwd: optionalBooleanEnvironmentConfig(
     "SYNARA_AUTO_BOOTSTRAP_PROJECT_FROM_CWD",
   ),
@@ -283,6 +287,7 @@ const ServerConfigLive = (input: CliInput) =>
         noBrowser,
         authToken,
         desktopShutdownToken,
+        externalActivationBaseUrl: env.externalActivationBaseUrl,
         autoBootstrapProjectFromCwd,
         logProviderEvents,
         logWebSocketEvents,

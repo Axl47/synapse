@@ -198,6 +198,13 @@ import {
   writeDesktopInstanceDescriptor,
 } from "./desktopInstanceDescriptor";
 import {
+  COMPOSER_DRAFT_IMPORT_CAPABILITY,
+  ComposerDraftImportIntentQueue,
+  composerDraftImportActivationBaseUrl,
+  parseComposerDraftImportActivationUrl,
+  shouldRegisterComposerDraftImportProtocol,
+} from "./composerDraftImportActivation";
+import {
   repairBrowserProfileFromBridgeManifest,
   resolveDesktopAppDataBase,
   resolveDesktopUserDataPath,
@@ -255,6 +262,8 @@ const BASE_DIR =
 const STATE_DIR = Path.join(BASE_DIR, "userdata");
 const DESKTOP_WINDOW_STATE_PATH = Path.join(STATE_DIR, "desktop-window-state.json");
 const DESKTOP_SCHEME = desktopIdentity.scheme;
+const COMPOSER_DRAFT_IMPORT_ACTIVATION_BASE_URL =
+  composerDraftImportActivationBaseUrl(DESKTOP_SCHEME);
 const ROOT_DIR = Path.resolve(__dirname, "../../..");
 const APP_DISPLAY_NAME = desktopIdentity.displayName;
 const APP_USER_MODEL_ID = desktopIdentity.bundleId;
@@ -313,6 +322,7 @@ const browserPerfLoggingEnabled =
 type DesktopUpdateErrorContext = DesktopUpdateState["errorContext"];
 
 let mainWindow: BrowserWindow | null = null;
+const composerDraftImportIntentQueue = new ComposerDraftImportIntentQueue();
 let backendProcess: ChildProcess.ChildProcess | null = null;
 let backendPort = 0;
 let backendAuthToken = "";
@@ -661,6 +671,9 @@ function writeCurrentDesktopInstanceDescriptor(): void {
         stateDir: STATE_DIR,
         port: backendPort,
         wsUrl: backendWsUrl,
+        httpOrigin: backendHttpUrl,
+        externalActivationBaseUrl: COMPOSER_DRAFT_IMPORT_ACTIVATION_BASE_URL,
+        capabilities: [COMPOSER_DRAFT_IMPORT_CAPABILITY],
         startedAt: DESKTOP_INSTANCE_STARTED_AT,
       }),
     );
@@ -1859,6 +1872,74 @@ function focusMainWindow(options: { stealAppFocus?: boolean } = {}): void {
   mainWindow.focus();
 }
 
+function deliverPendingComposerDraftImportIntents(): number {
+  const window = mainWindow ?? BrowserWindow.getAllWindows()[0] ?? null;
+  if (
+    !window ||
+    window.isDestroyed() ||
+    window.webContents.isDestroyed() ||
+    window.webContents.isLoadingMainFrame()
+  ) {
+    return 0;
+  }
+  return composerDraftImportIntentQueue.drain((importId) =>
+    safeSendToWebContents(window.webContents, IPC.composerDraftImportIntent, importId),
+  );
+}
+
+function focusOrOpenComposerDraftImportWindow(): void {
+  const window = mainWindow ?? BrowserWindow.getAllWindows()[0] ?? null;
+  if (window && !window.isDestroyed()) {
+    if (!mainWindow) {
+      mainWindow = window;
+    }
+    focusMainWindow({ stealAppFocus: true });
+    deliverPendingComposerDraftImportIntents();
+    return;
+  }
+  if (!app.isReady() || !backendHttpUrl) {
+    return;
+  }
+  if (isDevelopment) {
+    mainWindow = createWindow();
+    return;
+  }
+  ensureInitialBackendWindowOpen(backendHttpUrl);
+}
+
+function handleComposerDraftImportActivationUrl(rawUrl: string): boolean {
+  const importId = parseComposerDraftImportActivationUrl(rawUrl, DESKTOP_SCHEME);
+  if (!importId) {
+    return false;
+  }
+
+  const result = composerDraftImportIntentQueue.enqueue(importId);
+  if (result === "full") {
+    const message =
+      "Synara already has too many pending Prompt imports. Finish one and retry from Pragma.";
+    writeDesktopLogHeader(`composer draft import activation rejected reason=queue-full`);
+    if (app.isReady()) {
+      dialog.showErrorBox("Could not open imported draft", message);
+    } else {
+      console.warn(`[desktop] ${message}`);
+    }
+    return true;
+  }
+  writeDesktopLogHeader(`composer draft import activation result=${result} importId=${importId}`);
+  focusOrOpenComposerDraftImportWindow();
+  return true;
+}
+
+function handleComposerDraftImportActivationArguments(args: ReadonlyArray<string>): number {
+  let accepted = 0;
+  for (const argument of args) {
+    if (handleComposerDraftImportActivationUrl(argument)) {
+      accepted += 1;
+    }
+  }
+  return accepted;
+}
+
 // Show a native OS notification and refocus the app window when the alert is clicked.
 function showDesktopNotification(input: {
   title: string;
@@ -1946,6 +2027,17 @@ function configureAppIdentity(): void {
 
   if (process.platform === "win32") {
     app.setAppUserModelId(APP_USER_MODEL_ID);
+  }
+}
+
+function registerComposerDraftImportProtocolHandler(): void {
+  if (!shouldRegisterComposerDraftImportProtocol(app.isPackaged)) {
+    return;
+  }
+  if (!app.setAsDefaultProtocolClient(DESKTOP_SCHEME)) {
+    console.warn(
+      `[desktop] Failed to register ${DESKTOP_SCHEME} as the external activation protocol.`,
+    );
   }
 }
 
@@ -3129,6 +3221,7 @@ function backendEnv(): NodeJS.ProcessEnv {
     SYNARA_HOME: BASE_DIR,
     SYNARA_AUTH_TOKEN: backendAuthToken,
     SYNARA_DESKTOP_SHUTDOWN_TOKEN: DESKTOP_BACKEND_SHUTDOWN_TOKEN,
+    SYNARA_EXTERNAL_ACTIVATION_BASE_URL: COMPOSER_DRAFT_IMPORT_ACTIVATION_BASE_URL,
   };
   // The backend runs the same login-shell probe at startup and does not begin listening
   // until it returns, so an unmarked child serializes a second ~1s hydration behind ours.
@@ -4052,6 +4145,7 @@ function createWindow(): BrowserWindow {
   window.webContents.on("did-finish-load", () => {
     window.setTitle(APP_DISPLAY_NAME);
     emitUpdateState();
+    deliverPendingComposerDraftImportIntents();
   });
   window.once("ready-to-show", () => {
     // Preserve the original first-launch behavior, then respect the state saved
@@ -4283,8 +4377,15 @@ configureAppIdentity();
 if (!hasSingleInstanceLock) {
   app.quit();
 } else {
-  app.on("second-instance", () => {
-    focusMainWindow();
+  handleComposerDraftImportActivationArguments(process.argv);
+  app.on("open-url", (event, url) => {
+    event.preventDefault();
+    handleComposerDraftImportActivationUrl(url);
+  });
+  app.on("second-instance", (_event, commandLine) => {
+    if (handleComposerDraftImportActivationArguments(commandLine) === 0) {
+      focusMainWindow();
+    }
   });
 }
 
@@ -4401,6 +4502,7 @@ if (hasSingleInstanceLock) {
     .then(() => {
       writeDesktopLogHeader("app ready");
       configureAppIdentity();
+      registerComposerDraftImportProtocolHandler();
       applyLegacyMacDockIcon();
       refreshMacIconCacheOnVersionChange();
       configureMediaPermissions();
