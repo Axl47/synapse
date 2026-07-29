@@ -19,6 +19,7 @@ import {
   PROMPT_HISTORY_ATTACHMENT_SLOT,
   composerFileDedupKey,
   deleteDraftComposerImageBlobs,
+  deletePersistedComposerFileBlobs,
   deletePersistedComposerImageBlobs,
   mergeComposerImages,
   revokeDraftComposerImagePreviewUrls,
@@ -34,7 +35,9 @@ import {
   type ComposerImageAttachment,
   type ComposerThreadDraftState,
   type DraftThreadState,
+  type PersistedComposerFileAttachment,
   type PersistedComposerImageAttachment,
+  COMPOSER_DRAFT_STORAGE_KEY,
   assistantSelectionDedupKey,
   buildDraftThreadState,
   buildTransferredComposerDraft,
@@ -1303,6 +1306,9 @@ export const createComposerDraftStoreState =
       if (threadId.length === 0) {
         return;
       }
+      const removedPersistedFile = get().draftsByThreadId[threadId]?.persistedFiles.find(
+        (file) => file.id === fileId,
+      );
       set((state) => {
         const current = state.draftsByThreadId[threadId];
         if (!current) {
@@ -1311,6 +1317,7 @@ export const createComposerDraftStoreState =
         const nextDraft: ComposerThreadDraftState = {
           ...current,
           files: current.files.filter((file) => file.id !== fileId),
+          persistedFiles: (current.persistedFiles ?? []).filter((file) => file.id !== fileId),
         };
         const nextDraftsByThreadId = { ...state.draftsByThreadId };
         if (shouldRemoveDraft(nextDraft)) {
@@ -1320,6 +1327,72 @@ export const createComposerDraftStoreState =
         }
         return { draftsByThreadId: nextDraftsByThreadId };
       });
+      if (removedPersistedFile) {
+        deletePersistedComposerFileBlobs([removedPersistedFile], () => get().draftsByThreadId);
+      }
+    },
+    clearPersistedFiles: (threadId) => {
+      if (threadId.length === 0) return;
+      const existing = get().draftsByThreadId[threadId]?.persistedFiles ?? [];
+      set((state) => {
+        const current = state.draftsByThreadId[threadId];
+        if (!current) return state;
+        return {
+          draftsByThreadId: {
+            ...state.draftsByThreadId,
+            [threadId]: { ...current, persistedFiles: [] },
+          },
+        };
+      });
+      deletePersistedComposerFileBlobs(existing, () => get().draftsByThreadId);
+    },
+    syncPersistedFiles: async (threadId, files) => {
+      if (threadId.length === 0) return "rejected";
+      const current = get().draftsByThreadId[threadId];
+      if (!current) return "rejected";
+      const currentFileIds = new Set(current.files.map((file) => file.id));
+      const retained = files.filter((file) => currentFileIds.has(file.id));
+      if (retained.length !== files.length) {
+        deletePersistedComposerFileBlobs(
+          files.filter((file) => !currentFileIds.has(file.id)),
+          () => get().draftsByThreadId,
+        );
+        return "rejected";
+      }
+      const previous = current.persistedFiles ?? [];
+      set((state) => {
+        const draft = state.draftsByThreadId[threadId];
+        if (!draft) return state;
+        return {
+          draftsByThreadId: {
+            ...state.draftsByThreadId,
+            [threadId]: { ...draft, persistedFiles: [...retained] },
+          },
+        };
+      });
+      deletePersistedComposerFileBlobs(
+        previous.filter(
+          (previousFile) => !retained.some((file) => file.blobKey === previousFile.blobKey),
+        ),
+        () => get().draftsByThreadId,
+      );
+      try {
+        flushPersistStorage();
+        const stored =
+          typeof localStorage === "undefined"
+            ? null
+            : JSON.parse(localStorage.getItem(COMPOSER_DRAFT_STORAGE_KEY) ?? "null");
+        const storedFiles = stored?.state?.draftsByThreadId?.[threadId]?.files;
+        if (!Array.isArray(storedFiles)) return "unverified";
+        const storedById = new Map(
+          storedFiles.map((file: PersistedComposerFileAttachment) => [file.id, file]),
+        );
+        return retained.every((file) => storedById.get(file.id)?.blobKey === file.blobKey)
+          ? "persisted"
+          : "unverified";
+      } catch {
+        return "unverified";
+      }
     },
     addAssistantSelection: (threadId, selection) => {
       if (threadId.length === 0) {
@@ -1750,6 +1823,10 @@ export const createComposerDraftStoreState =
       }
       const clearedDraft = get().draftsByThreadId[threadId];
       deleteDraftComposerImageBlobs(clearedDraft, () => get().draftsByThreadId);
+      deletePersistedComposerFileBlobs(
+        clearedDraft?.persistedFiles ?? [],
+        () => get().draftsByThreadId,
+      );
       if (options?.preservePreviewUrls !== true) {
         revokeDraftComposerImagePreviewUrls(clearedDraft);
       }
@@ -1764,6 +1841,7 @@ export const createComposerDraftStoreState =
           promptHistorySavedDraft: null,
           images: [],
           files: [],
+          persistedFiles: [],
           nonPersistedImageIds: [],
           persistedAttachments: [],
           assistantSelections: [],

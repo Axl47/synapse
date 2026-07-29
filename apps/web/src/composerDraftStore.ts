@@ -44,6 +44,7 @@ export {
 export {
   captureComposerPromptHistorySavedDraft,
   COMPOSER_DRAFT_STORAGE_KEY,
+  PersistedComposerFileAttachment,
   PersistedComposerImageAttachment,
 } from "./composerDraftDomain";
 export type {

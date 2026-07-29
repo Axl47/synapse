@@ -4,11 +4,10 @@
 
 ## In Progress
 
-- [~] Milestone 6 — hydrate an imported package into the ordinary standalone composer
+- [~] Milestone 7 — add reliable desktop activation and navigation
 
 ## Pending
 
-- [ ] Milestone 7 — add reliable desktop activation and navigation
 - [ ] Cross-repository integration — validate the packaged Pragma-to-Synara path
 - [ ] Final authorized validation — run focused suites plus `bun fmt`, `bun lint`, and `bun typecheck`
 
@@ -24,6 +23,13 @@
   - [x] Added migration 096 and repository/domain lifecycle
   - [x] Added authenticated bounded upload/download routes and cleanup/recovery
   - [x] Passed contract, migration, repository, HTTP, and server build checks
+- [x] Milestone 6 — hydrate an imported package into the ordinary standalone composer
+  - [x] Added exact preset validation and claimed attachment checksum verification
+  - [x] Registered imported drafts without replacing project draft mappings
+  - [x] Generalized IndexedDB persistence and reload hydration to ordinary files
+  - [x] Re-read local storage and blob bytes before durable completion acknowledgement
+  - [x] Mounted a coordinator that navigates without dispatching a provider turn
+  - [x] Passed 89 focused web tests, HTTP tests, and the production web build
 
 ## Previous Task: Upstream Sync
 

@@ -27,6 +27,7 @@ import { APP_DISPLAY_NAME, APP_VERSION } from "../branding";
 import { DesktopWindowControls } from "../components/DesktopWindowControls";
 import { usePublishDesktopContext } from "../desktopContext";
 import { AppSnapCoordinator } from "../components/AppSnapCoordinator";
+import { ExternalComposerDraftImportCoordinator } from "../components/ExternalComposerDraftImportCoordinator";
 import { AppSnapWelcomeDialog } from "../components/AppSnapWelcomeDialog";
 import { FeedbackDialog } from "../components/FeedbackDialog";
 import { SETTINGS_TARGETS } from "../settingsNavigation";
@@ -260,6 +261,7 @@ function RootRouteView() {
           <TaskCompletionNotifications />
           <AppSnapWelcomeDialog />
           <AppSnapCoordinator />
+          <ExternalComposerDraftImportCoordinator />
           <ProviderUpdateNotifications />
           <DesktopProjectBootstrap />
           <Outlet />

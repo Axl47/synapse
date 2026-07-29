@@ -833,10 +833,11 @@ function streamedFileResponse(input: {
   readonly path: string;
   readonly sizeBytes: number;
   readonly headers: Record<string, string>;
+  readonly contentType?: string;
 }): HttpServerResponse.HttpServerResponse {
   return HttpServerResponse.stream(input.fileSystem.stream(input.path), {
     status: 200,
-    contentType: Mime.getType(input.path) ?? "application/octet-stream",
+    contentType: input.contentType ?? Mime.getType(input.path) ?? "application/octet-stream",
     contentLength: input.sizeBytes,
     headers: input.headers,
   });
@@ -1182,7 +1183,9 @@ const composerDraftImportBinaryEffectHandler = Effect.gen(function* () {
   if (!parts) return HttpServerResponse.text("Not Found", { status: 404 });
 
   const config = yield* ServerConfig;
-  const localBootstrapAuthorized = isLocalBootstrapBearerAuthorized({ config, request });
+  const localBootstrapAuthorized =
+    isLocalBootstrapBearerAuthorized({ config, request }) ||
+    (parts.operation === "download" && isLegacyTokenAuthorized({ config, url }));
   let attachmentPrincipal = LOCAL_LOOPBACK_ATTACHMENT_PRINCIPAL;
   if (!localBootstrapAuthorized) {
     if (parts.operation === "upload") {
@@ -1272,6 +1275,7 @@ const composerDraftImportBinaryEffectHandler = Effect.gen(function* () {
     fileSystem,
     path: filePath,
     sizeBytes: download.sizeBytes,
+    contentType: download.mimeType,
     headers: {
       "Cache-Control": "private, no-store",
       "Content-Disposition": `attachment; filename="${download.name.replaceAll('"', "")}"`,

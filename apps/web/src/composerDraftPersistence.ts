@@ -34,6 +34,7 @@ import {
   normalizeTerminalContextsForThread,
   projectDraftThreadEntryPointFromKey,
   projectIdFromDraftThreadMappingKey,
+  PersistedComposerFileAttachment,
   PersistedComposerImageAttachment,
   type ComposerDraftStoreState,
   type ComposerPromptHistorySavedDraft,
@@ -202,6 +203,7 @@ const PersistedComposerThreadDraftState = Schema.Struct({
   // draft snapshot, kept safe while `prompt` temporarily holds a recalled history entry.
   promptHistorySavedDraft: Schema.optionalKey(PersistedComposerPromptHistorySavedDraft),
   attachments: Schema.Array(PersistedComposerImageAttachment),
+  files: Schema.optionalKey(Schema.Array(PersistedComposerFileAttachment)),
   assistantSelections: Schema.optionalKey(
     Schema.Array(
       Schema.Struct({
@@ -802,6 +804,14 @@ function normalizePersistedDraftsByThreadId(
           return normalized ? [normalized] : [];
         })
       : [];
+    const files = Array.isArray(draftCandidate.files)
+      ? draftCandidate.files.filter(
+          (entry) =>
+            Schema.is(PersistedComposerFileAttachment)(entry) &&
+            entry.id.length > 0 &&
+            entry.blobKey.length > 0,
+        )
+      : [];
     const terminalContexts = Array.isArray(draftCandidate.terminalContexts)
       ? draftCandidate.terminalContexts.flatMap((entry) => {
           const normalized = normalizePersistedTerminalContextDraft(entry);
@@ -904,6 +914,7 @@ function normalizePersistedDraftsByThreadId(
       promptCandidate.length === 0 &&
       promptHistorySavedDraft === null &&
       attachments.length === 0 &&
+      files.length === 0 &&
       terminalContexts.length === 0 &&
       assistantSelections.length === 0 &&
       fileComments.length === 0 &&
@@ -921,6 +932,7 @@ function normalizePersistedDraftsByThreadId(
       prompt,
       ...(promptHistorySavedDraft !== null ? { promptHistorySavedDraft } : {}),
       attachments,
+      ...(files.length > 0 ? { files } : {}),
       ...(assistantSelections.length > 0 ? { assistantSelections } : {}),
       ...(terminalContexts.length > 0 ? { terminalContexts } : {}),
       ...(fileComments.length > 0 ? { fileComments } : {}),
@@ -1055,6 +1067,7 @@ export function partializeComposerDraftStoreState(
       draft.prompt.length === 0 &&
       draft.promptHistorySavedDraft === null &&
       draft.persistedAttachments.length === 0 &&
+      (draft.persistedFiles?.length ?? 0) === 0 &&
       draft.assistantSelections.length === 0 &&
       draft.terminalContexts.length === 0 &&
       draft.fileComments.length === 0 &&
@@ -1133,6 +1146,9 @@ export function partializeComposerDraftStoreState(
           }
         : {}),
       attachments: draft.persistedAttachments.map(toStorageSafePersistedAttachment),
+      ...((draft.persistedFiles?.length ?? 0) > 0
+        ? { files: [...draft.persistedFiles] }
+        : {}),
       ...(draft.assistantSelections.length > 0
         ? {
             assistantSelections: draft.assistantSelections.map((selection) => ({
@@ -1346,6 +1362,7 @@ export function toHydratedThreadDraft(
     promptHistorySavedDraft: hydratePromptHistorySavedDraft(persistedDraft.promptHistorySavedDraft),
     images: hydrateImagesFromPersisted(persistedDraft.attachments),
     files: [],
+    persistedFiles: [...(persistedDraft.files ?? [])],
     nonPersistedImageIds: [],
     persistedAttachments: [...persistedDraft.attachments],
     assistantSelections: normalizeAssistantSelections(persistedDraft.assistantSelections ?? []),

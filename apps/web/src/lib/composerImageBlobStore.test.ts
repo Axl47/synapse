@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  composerFileBlobKey,
   composerImageBlobKey,
   selectOrphanedComposerImageBlobKeys,
 } from "./composerImageBlobStore";
@@ -10,6 +11,17 @@ describe("composerImageBlobKey", () => {
     expect(composerImageBlobKey("thread-1", "image-1")).toBe("thread-1:image-1");
     expect(composerImageBlobKey("thread-2", "image-1")).not.toBe(
       composerImageBlobKey("thread-1", "image-1"),
+    );
+  });
+});
+
+describe("composerFileBlobKey", () => {
+  it("keeps file keys distinct from image keys with the same attachment id", () => {
+    expect(composerFileBlobKey("thread-1", "attachment-1")).toBe(
+      "thread-1:file:attachment-1",
+    );
+    expect(composerFileBlobKey("thread-1", "attachment-1")).not.toBe(
+      composerImageBlobKey("thread-1", "attachment-1"),
     );
   });
 });

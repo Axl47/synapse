@@ -10,7 +10,7 @@ const DATABASE_VERSION = 1;
 const IMAGE_STORE_NAME = "images";
 const ORPHANED_BLOB_MIN_AGE_MS = 60 * 60 * 1000;
 
-interface StoredComposerImageBlob {
+interface StoredComposerBlob {
   key: string;
   blob: Blob;
   name: string;
@@ -38,31 +38,55 @@ export function composerImageBlobKey(threadId: string, imageId: string): string 
   return `${threadId}:${imageId}`;
 }
 
-export async function persistComposerImageBlob(input: {
-  threadId: string;
-  imageId: string;
+export function composerFileBlobKey(threadId: string, fileId: string): string {
+  return `${threadId}:file:${fileId}`;
+}
+
+async function persistComposerBlob(input: {
+  key: string;
   file: File;
 }): Promise<string> {
-  const key = composerImageBlobKey(input.threadId, input.imageId);
   const database = await openComposerImageDatabase();
   try {
     const transaction = database.transaction(IMAGE_STORE_NAME, "readwrite");
     transaction.objectStore(IMAGE_STORE_NAME).put({
-      key,
+      key: input.key,
       blob: input.file,
       name: input.file.name,
       mimeType: input.file.type,
       lastModified: input.file.lastModified,
       updatedAt: Date.now(),
-    } satisfies StoredComposerImageBlob);
+    } satisfies StoredComposerBlob);
     await waitForTransaction(transaction);
-    return key;
+    return input.key;
   } finally {
     database.close();
   }
 }
 
-export async function readComposerImageBlob(key: string): Promise<File | null> {
+export async function persistComposerImageBlob(input: {
+  threadId: string;
+  imageId: string;
+  file: File;
+}): Promise<string> {
+  return persistComposerBlob({
+    key: composerImageBlobKey(input.threadId, input.imageId),
+    file: input.file,
+  });
+}
+
+export async function persistComposerFileBlob(input: {
+  threadId: string;
+  fileId: string;
+  file: File;
+}): Promise<string> {
+  return persistComposerBlob({
+    key: composerFileBlobKey(input.threadId, input.fileId),
+    file: input.file,
+  });
+}
+
+async function readComposerBlob(key: string): Promise<File | null> {
   if (key.length === 0) return null;
   const database = await openComposerImageDatabase();
   try {
@@ -71,7 +95,7 @@ export async function readComposerImageBlob(key: string): Promise<File | null> {
     const stored = (await awaitIdbRequest(
       transaction.objectStore(IMAGE_STORE_NAME).get(key),
       "Could not read the composer image.",
-    )) as StoredComposerImageBlob | undefined;
+    )) as StoredComposerBlob | undefined;
     await completion;
     if (!stored?.blob) return null;
     return new File([stored.blob], stored.name, {
@@ -82,6 +106,9 @@ export async function readComposerImageBlob(key: string): Promise<File | null> {
     database.close();
   }
 }
+
+export const readComposerImageBlob = readComposerBlob;
+export const readComposerFileBlob = readComposerBlob;
 
 export interface OrphanedComposerImageBlobInput {
   isReferenced: (key: string) => boolean;
@@ -134,7 +161,7 @@ export async function deleteOrphanedComposerImageBlobs(input: {
     for (const key of candidateKeys) {
       const request = store.get(key);
       request.addEventListener("success", () => {
-        const record = request.result as StoredComposerImageBlob | undefined;
+        const record = request.result as StoredComposerBlob | undefined;
         if (!record) return;
         if (selectOrphanedComposerImageBlobKeys([record], selectionInput).length === 0) return;
         store.delete(key);
@@ -159,3 +186,5 @@ export async function deleteComposerImageBlob(key: string): Promise<void> {
     database.close();
   }
 }
+
+export const deleteComposerFileBlob = deleteComposerImageBlob;

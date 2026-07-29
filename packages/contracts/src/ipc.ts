@@ -40,6 +40,15 @@ import type {
   AutomationUpdateInput,
 } from "./automation";
 import type {
+  ComposerDraftImportCancelResult,
+  ComposerDraftImportClaimResult,
+  ComposerDraftImportCompleteInput,
+  ComposerDraftImportCreateInput,
+  ComposerDraftImportCreateResult,
+  ComposerDraftImportIdInput,
+  ComposerDraftImportStatusResult,
+} from "./composerDraftImports";
+import type {
   GitCheckoutInput,
   GitActionProgressEvent,
   GitCreateBranchInput,
@@ -528,6 +537,9 @@ export interface DesktopBridge {
     readSnapshot: () => SynaraStorageSnapshot | null;
     acknowledgeSnapshot: () => Promise<void>;
   };
+  composerDraftImports?: {
+    onIntent: (listener: (importId: ComposerDraftImportId) => void) => () => void;
+  };
   server?: {
     transcribeVoice: (
       input: ServerVoiceTranscriptionInput,
@@ -767,6 +779,20 @@ export interface NativeApi {
       input: AutomationResolveProposalInput,
     ) => Promise<AutomationResolveProposalResult>;
     onEvent: (callback: (event: AutomationStreamEvent) => void) => () => void;
+  };
+  composerDraftImports: {
+    create: (input: ComposerDraftImportCreateInput) => Promise<ComposerDraftImportCreateResult>;
+    commit: (input: ComposerDraftImportIdInput) => Promise<{
+      importId: ComposerDraftImportCreateResult["importId"];
+      draftThreadId: ComposerDraftImportCreateResult["draftThreadId"];
+      status: "ready";
+      activationUrl: string;
+      expiresAt: string;
+    }>;
+    getStatus: (input: ComposerDraftImportIdInput) => Promise<ComposerDraftImportStatusResult>;
+    claim: (input: ComposerDraftImportIdInput) => Promise<ComposerDraftImportClaimResult>;
+    complete: (input: ComposerDraftImportCompleteInput) => Promise<ComposerDraftImportStatusResult>;
+    cancel: (input: ComposerDraftImportIdInput) => Promise<ComposerDraftImportCancelResult>;
   };
   browser: BrowserControlMethods & {
     onCopyLink: (callback: (event: BrowserCopyLinkEvent) => void) => () => void;

@@ -82,6 +82,16 @@ export const PersistedComposerImageAttachment = Schema.Struct({
 
 export type PersistedComposerImageAttachment = typeof PersistedComposerImageAttachment.Type;
 
+export const PersistedComposerFileAttachment = Schema.Struct({
+  id: Schema.String,
+  name: Schema.String,
+  mimeType: Schema.String,
+  sizeBytes: Schema.Number,
+  blobKey: Schema.String,
+});
+
+export type PersistedComposerFileAttachment = typeof PersistedComposerFileAttachment.Type;
+
 export type ComposerAttachmentPersistenceResult = "persisted" | "rejected" | "unverified";
 
 export interface ComposerImageAttachment extends Omit<ChatImageAttachment, "previewUrl"> {
@@ -171,6 +181,7 @@ export interface ComposerThreadDraftState {
   promptHistorySavedDraft: ComposerPromptHistorySavedDraft | null;
   images: ComposerImageAttachment[];
   files: ComposerFileAttachment[];
+  persistedFiles: PersistedComposerFileAttachment[];
   nonPersistedImageIds: string[];
   persistedAttachments: PersistedComposerImageAttachment[];
   assistantSelections: ComposerAssistantSelectionAttachment[];
@@ -330,6 +341,11 @@ export interface ComposerDraftStoreState {
   removeAppSnapCapture: (captureId: string) => void;
   addFiles: (threadId: ThreadId, files: ComposerFileAttachment[]) => void;
   removeFile: (threadId: ThreadId, fileId: string) => void;
+  clearPersistedFiles: (threadId: ThreadId) => void;
+  syncPersistedFiles: (
+    threadId: ThreadId,
+    files: PersistedComposerFileAttachment[],
+  ) => Promise<ComposerAttachmentPersistenceResult>;
   addAssistantSelection: (
     threadId: ThreadId,
     selection: ComposerAssistantSelectionAttachment,
@@ -502,6 +518,7 @@ export function createEmptyThreadDraft(): ComposerThreadDraftState {
     promptHistorySavedDraft: null,
     images: [],
     files: [],
+    persistedFiles: [],
     nonPersistedImageIds: [],
     persistedAttachments: [],
     assistantSelections: [],
@@ -735,6 +752,7 @@ export function buildTransferredComposerDraft(input: {
     ),
     images: sourceDraft.images.map(cloneComposerImageAttachment),
     files: [...sourceDraft.files],
+    persistedFiles: [...(sourceDraft.persistedFiles ?? [])],
     nonPersistedImageIds: [...sourceDraft.nonPersistedImageIds],
     persistedAttachments: [...sourceDraft.persistedAttachments],
     assistantSelections: normalizeAssistantSelections(sourceDraft.assistantSelections),
@@ -797,6 +815,7 @@ export function shouldRemoveDraft(draft: ComposerThreadDraftState): boolean {
     draft.promptHistorySavedDraft === null &&
     draft.images.length === 0 &&
     draft.files.length === 0 &&
+    (draft.persistedFiles?.length ?? 0) === 0 &&
     draft.persistedAttachments.length === 0 &&
     draft.assistantSelections.length === 0 &&
     draft.terminalContexts.length === 0 &&
@@ -822,6 +841,7 @@ export function normalizeDraftThreadEntryPoint(
 
 const EMPTY_IMAGES: ComposerImageAttachment[] = [];
 const EMPTY_FILES: ComposerFileAttachment[] = [];
+const EMPTY_PERSISTED_FILES: PersistedComposerFileAttachment[] = [];
 const EMPTY_IDS: string[] = [];
 const EMPTY_PERSISTED_ATTACHMENTS: PersistedComposerImageAttachment[] = [];
 const EMPTY_TERMINAL_CONTEXTS: TerminalContextDraft[] = [];
@@ -831,6 +851,7 @@ const EMPTY_MENTIONS: ProviderMentionReference[] = [];
 const EMPTY_QUEUED_TURNS: QueuedComposerTurn[] = [];
 Object.freeze(EMPTY_IMAGES);
 Object.freeze(EMPTY_FILES);
+Object.freeze(EMPTY_PERSISTED_FILES);
 Object.freeze(EMPTY_IDS);
 Object.freeze(EMPTY_PERSISTED_ATTACHMENTS);
 Object.freeze(EMPTY_TERMINAL_CONTEXTS);
@@ -845,6 +866,7 @@ const EMPTY_THREAD_DRAFT = Object.freeze<ComposerThreadDraftState>({
   promptHistorySavedDraft: null,
   images: EMPTY_IMAGES,
   files: EMPTY_FILES,
+  persistedFiles: EMPTY_PERSISTED_FILES,
   nonPersistedImageIds: EMPTY_IDS,
   persistedAttachments: EMPTY_PERSISTED_ATTACHMENTS,
   assistantSelections: [],

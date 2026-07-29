@@ -744,6 +744,15 @@ export function createWsNativeApi(): NativeApi {
       resolveProposal: (input) => transport.request(WS_METHODS.automationResolveProposal, input),
       onEvent: automationEventListeners.subscribe,
     },
+    composerDraftImports: {
+      create: (input) => transport.request(WS_METHODS.composerDraftImportsCreate, input),
+      commit: (input) => transport.request(WS_METHODS.composerDraftImportsCommit, input),
+      getStatus: (input) =>
+        transport.request(WS_METHODS.composerDraftImportsGetStatus, input),
+      claim: (input) => transport.request(WS_METHODS.composerDraftImportsClaim, input),
+      complete: (input) => transport.request(WS_METHODS.composerDraftImportsComplete, input),
+      cancel: (input) => transport.request(WS_METHODS.composerDraftImportsCancel, input),
+    },
     browser: {
       open: async (input) => {
         if (window.desktopBridge) {

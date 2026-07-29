@@ -153,7 +153,12 @@ import {
   hydratePendingBlobComposerAttachments,
   readFileAsDataUrl,
 } from "../lib/composerSend";
-import { composerImageBlobKey, persistComposerImageBlob } from "../lib/composerImageBlobStore";
+import {
+  composerImageBlobKey,
+  persistComposerFileBlob,
+  persistComposerImageBlob,
+  readComposerFileBlob,
+} from "../lib/composerImageBlobStore";
 import { reconcileDeletedThreadFromClient } from "../lib/deletedThreadClientReconciliation";
 import { extractChatAutomationInvocation } from "../lib/automationIntent";
 import {
@@ -1294,6 +1299,7 @@ export default function ChatView({
   const composerPromptHistorySavedDraftImages = composerPromptHistorySavedDraft?.images ?? null;
   const composerImages = composerDraft.images;
   const composerFiles = composerDraft.files;
+  const persistedComposerFiles = composerDraft.persistedFiles ?? [];
   const composerAssistantSelections = composerDraft.assistantSelections;
   const composerFileComments = composerDraft.fileComments;
   const composerTerminalContexts = composerDraft.terminalContexts;
@@ -1426,6 +1432,12 @@ export default function ChatView({
   const removeComposerDraftImage = useComposerDraftStore((store) => store.removeImage);
   const addComposerDraftFiles = useComposerDraftStore((store) => store.addFiles);
   const removeComposerDraftFile = useComposerDraftStore((store) => store.removeFile);
+  const clearComposerDraftPersistedFiles = useComposerDraftStore(
+    (store) => store.clearPersistedFiles,
+  );
+  const syncComposerDraftPersistedFiles = useComposerDraftStore(
+    (store) => store.syncPersistedFiles,
+  );
   const addComposerDraftAssistantSelection = useComposerDraftStore(
     (store) => store.addAssistantSelection,
   );
@@ -5913,6 +5925,80 @@ export default function ChatView({
     clearComposerDraftPersistedAttachments,
     composerImages,
     syncComposerDraftPersistedAttachments,
+    threadId,
+  ]);
+
+  useEffect(() => {
+    if (composerFiles.length > 0 || persistedComposerFiles.length === 0) {
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      const restored = await Promise.all(
+        persistedComposerFiles.map(async (persistedFile) => {
+          const file = await readComposerFileBlob(persistedFile.blobKey);
+          if (
+            !file ||
+            file.size !== persistedFile.sizeBytes ||
+            file.name !== persistedFile.name
+          ) {
+            return null;
+          }
+          return {
+            type: "file" as const,
+            id: persistedFile.id,
+            name: persistedFile.name,
+            mimeType: persistedFile.mimeType,
+            sizeBytes: persistedFile.sizeBytes,
+            file,
+          };
+        }),
+      );
+      if (!cancelled) {
+        addComposerDraftFiles(
+          restored.filter((file): file is NonNullable<typeof file> => file !== null),
+        );
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [addComposerDraftFiles, composerFiles.length, persistedComposerFiles]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      if (composerFiles.length === 0) {
+        if (persistedComposerFiles.length === 0) {
+          clearComposerDraftPersistedFiles(threadId);
+        }
+        return;
+      }
+      const staged = await Promise.all(
+        composerFiles.map(async (file) => ({
+          id: file.id,
+          name: file.name,
+          mimeType: file.mimeType,
+          sizeBytes: file.sizeBytes,
+          blobKey: await persistComposerFileBlob({
+            threadId,
+            fileId: file.id,
+            file: file.file,
+          }),
+        })),
+      );
+      if (!cancelled) {
+        void syncComposerDraftPersistedFiles(threadId, staged);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    clearComposerDraftPersistedFiles,
+    composerFiles,
+    persistedComposerFiles.length,
+    syncComposerDraftPersistedFiles,
     threadId,
   ]);
 

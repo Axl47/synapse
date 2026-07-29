@@ -16,10 +16,14 @@ import {
   type ComposerImageAttachment,
   type ComposerPromptHistorySavedDraft,
   type ComposerThreadDraftState,
+  type PersistedComposerFileAttachment,
   type QueuedComposerTurn,
 } from "./composerDraftDomain";
 import { getLocalStorageItem } from "./hooks/useLocalStorage";
-import { deleteComposerImageBlob } from "./lib/composerImageBlobStore";
+import {
+  deleteComposerFileBlob,
+  deleteComposerImageBlob,
+} from "./lib/composerImageBlobStore";
 import {
   normalizeComposerImageSource,
   toPersistedComposerImageSource,
@@ -171,6 +175,32 @@ export function isComposerImageBlobReferenced(
     }
   }
   return false;
+}
+
+function isComposerFileBlobReferenced(
+  draftsByThreadId: Readonly<Record<string, ComposerThreadDraftState | undefined>>,
+  blobKey: string,
+): boolean {
+  return Object.values(draftsByThreadId).some((draft) =>
+    draft?.persistedFiles?.some((file) => file.blobKey === blobKey),
+  );
+}
+
+export function deletePersistedComposerFileBlobs(
+  files: ReadonlyArray<PersistedComposerFileAttachment>,
+  getDraftsByThreadId: () => ComposerDraftStoreState["draftsByThreadId"],
+): void {
+  const blobKeys = new Set(files.map((file) => file.blobKey).filter(Boolean));
+  if (blobKeys.size === 0) return;
+  Promise.resolve().then(() => {
+    const draftsByThreadId = getDraftsByThreadId();
+    for (const blobKey of blobKeys) {
+      if (isComposerFileBlobReferenced(draftsByThreadId, blobKey)) continue;
+      void deleteComposerFileBlob(blobKey).catch((error) => {
+        console.warn("[composer-files] Could not delete persisted file blob", error);
+      });
+    }
+  });
 }
 
 export function findSupersededComposerImageBlobAttachments(
