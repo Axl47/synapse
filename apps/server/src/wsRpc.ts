@@ -43,6 +43,10 @@ import {
 } from "./auth/Services/ServerAuth";
 import { SessionCredentialService } from "./auth/Services/SessionCredentialService";
 import { CheckpointDiffQuery } from "./checkpointing/Services/CheckpointDiffQuery";
+import {
+  ComposerDraftImportError,
+  ComposerDraftImports,
+} from "./composerDraftImports";
 import { resolveThreadWorkspaceCwd } from "./checkpointing/Utils";
 import { ServerConfig, type ServerConfigShape } from "./config";
 import { DesktopContext } from "./desktopContext";
@@ -241,6 +245,14 @@ function readDescendantProcesses(rootPid: number): Promise<ProcessTableRow[]> {
 }
 
 function toWsRpcError(cause: unknown, fallbackMessage: string) {
+  if (cause instanceof ComposerDraftImportError) {
+    return new WsRpcError({
+      message: cause.message,
+      code: cause.code,
+      retryable: cause.retryable,
+      cause,
+    });
+  }
   return Schema.is(WsRpcError)(cause)
     ? cause
     : new WsRpcError({
@@ -344,6 +356,7 @@ const makeWsRpcHandlersLayer = () =>
     Effect.gen(function* () {
       const checkpointDiffQuery = yield* CheckpointDiffQuery;
       const automationService = yield* AutomationService;
+      const composerDraftImports = yield* ComposerDraftImports;
       const config = yield* ServerConfig;
       const desktopContext = yield* DesktopContext;
       const devServerManager = yield* DevServerManager;
@@ -1797,6 +1810,49 @@ const makeWsRpcHandlersLayer = () =>
             ).pipe(
               Stream.mapError((cause) => toWsRpcError(cause, "Automation event stream failed")),
             ),
+          ),
+        [WS_METHODS.composerDraftImportsCreate]: (input) =>
+          rpcEffect(
+            Effect.gen(function* () {
+              const principal = yield* CurrentManagedAttachmentPrincipal;
+              return yield* composerDraftImports.create(input, principal);
+            }),
+            "Failed to create composer draft import",
+          ),
+        [WS_METHODS.composerDraftImportsCommit]: ({ importId }) =>
+          rpcEffect(
+            composerDraftImports.commit(importId),
+            "Failed to commit composer draft import",
+          ),
+        [WS_METHODS.composerDraftImportsGetStatus]: ({ importId }) =>
+          rpcEffect(
+            composerDraftImports.getStatus(importId),
+            "Failed to load composer draft import status",
+          ),
+        [WS_METHODS.composerDraftImportsSubscribeStatus]: ({ importId }, { clientId }) =>
+          streamAdmission.guard(
+            clientId,
+            { key: `composer-draft-import:${importId}` },
+            Stream.unwrap(composerDraftImports.subscribeStatus(importId)).pipe(
+              Stream.mapError((cause) =>
+                toWsRpcError(cause, "Composer draft import status stream failed"),
+              ),
+            ),
+          ),
+        [WS_METHODS.composerDraftImportsClaim]: ({ importId }) =>
+          rpcEffect(
+            composerDraftImports.claim(importId),
+            "Failed to claim composer draft import",
+          ),
+        [WS_METHODS.composerDraftImportsComplete]: (input) =>
+          rpcEffect(
+            composerDraftImports.complete(input),
+            "Failed to complete composer draft import",
+          ),
+        [WS_METHODS.composerDraftImportsCancel]: ({ importId }) =>
+          rpcEffect(
+            composerDraftImports.cancel(importId),
+            "Failed to cancel composer draft import",
           ),
       });
     }),

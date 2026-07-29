@@ -629,10 +629,11 @@ managedAttachmentsLegacyLayer("managed attachment migration after private migrat
         [93, "ClearAutomationRunProviderOptions"],
         [94, "ScrubOrchestrationEventProviderOptions"],
         [95, "ReconcileProjectionSchemaDrift"],
+        [96, "ComposerDraftImports"],
       ]);
 
       const tracker = yield* trackerRows(sql);
-      assert.deepStrictEqual(tracker.slice(-42), [
+      assert.deepStrictEqual(tracker.slice(-43), [
         { migration_id: 54, name: "DurableProviderCommandDelivery" },
         { migration_id: 55, name: "ManagedAttachments" },
         { migration_id: 56, name: "CommandReceiptFingerprints" },
@@ -675,6 +676,7 @@ managedAttachmentsLegacyLayer("managed attachment migration after private migrat
         { migration_id: 93, name: "ClearAutomationRunProviderOptions" },
         { migration_id: 94, name: "ScrubOrchestrationEventProviderOptions" },
         { migration_id: 95, name: "ReconcileProjectionSchemaDrift" },
+        { migration_id: 96, name: "ComposerDraftImports" },
       ]);
       const preserved = yield* sql<{ readonly count: number }>`
         SELECT COUNT(*) AS count FROM orchestration_consumer_state
@@ -762,6 +764,7 @@ agentGatewayRetentionLegacyLayer(
           [93, "ClearAutomationRunProviderOptions"],
           [94, "ScrubOrchestrationEventProviderOptions"],
           [95, "ReconcileProjectionSchemaDrift"],
+          [96, "ComposerDraftImports"],
         ]);
 
         const columns = yield* sql<{ readonly name: string }>`
@@ -852,11 +855,12 @@ spacesMigrationCollisionLayer("Spaces migration after the private migration 70 c
         [93, "ClearAutomationRunProviderOptions"],
         [94, "ScrubOrchestrationEventProviderOptions"],
         [95, "ReconcileProjectionSchemaDrift"],
+        [96, "ComposerDraftImports"],
       ]);
 
       const tracker = yield* trackerRows(sql);
       assert.deepStrictEqual(
-        tracker.slice(-26).map((row) => [row.migration_id, row.name]),
+        tracker.slice(-27).map((row) => [row.migration_id, row.name]),
         [
           [70, "AgentGatewayOperations"],
           [71, "ProjectionThreadsGatewayProvenance"],
@@ -884,6 +888,7 @@ spacesMigrationCollisionLayer("Spaces migration after the private migration 70 c
           [93, "ClearAutomationRunProviderOptions"],
           [94, "ScrubOrchestrationEventProviderOptions"],
           [95, "ReconcileProjectionSchemaDrift"],
+          [96, "ComposerDraftImports"],
         ],
       );
 
@@ -969,11 +974,12 @@ spacesMigrationCollisionLayer("Spaces migration after the private migration 70 c
         [93, "ClearAutomationRunProviderOptions"],
         [94, "ScrubOrchestrationEventProviderOptions"],
         [95, "ReconcileProjectionSchemaDrift"],
+        [96, "ComposerDraftImports"],
       ]);
 
       const tracker = yield* trackerRows(sql);
       assert.deepStrictEqual(
-        tracker.slice(-22).map((row) => [row.migration_id, row.name]),
+        tracker.slice(-23).map((row) => [row.migration_id, row.name]),
         [
           [74, "ExternalMcpIntegrations"],
           [75, "ExternalMcpActiveCapacity"],
@@ -997,6 +1003,7 @@ spacesMigrationCollisionLayer("Spaces migration after the private migration 70 c
           [93, "ClearAutomationRunProviderOptions"],
           [94, "ScrubOrchestrationEventProviderOptions"],
           [95, "ReconcileProjectionSchemaDrift"],
+          [96, "ComposerDraftImports"],
         ],
       );
       const preservedSpaces = yield* sql<{ readonly spaceId: string }>`

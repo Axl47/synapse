@@ -30,6 +30,10 @@ import {
 import { resolveAttachmentPathById } from "./attachmentStore.ts";
 import { authErrorResponse, makeEffectAuthRequest } from "./auth/effectHttp";
 import { AuthError, ServerAuth } from "./auth/Services/ServerAuth";
+import {
+  ComposerDraftImportError,
+  ComposerDraftImports,
+} from "./composerDraftImports";
 import { SessionCredentialService } from "./auth/Services/SessionCredentialService";
 import { deriveAuthClientMetadata } from "./auth/utils";
 import {
@@ -53,6 +57,7 @@ import {
   LOCAL_LOOPBACK_ATTACHMENT_PRINCIPAL,
 } from "./managedAttachmentPrincipal";
 import {
+  ManagedAttachmentStoreError,
   persistReservedManagedAttachment,
   reserveManagedAttachmentUpload,
 } from "./managedAttachmentStore";
@@ -70,6 +75,7 @@ import {
 } from "./trustedOrigins";
 
 const PROJECT_FAVICON_CACHE_CONTROL = "public, max-age=3600";
+const COMPOSER_DRAFT_IMPORT_ROUTE_PREFIX = "/composer-draft-imports";
 const SITE_FAVICON_CACHE_CONTROL_SUCCESS = "public, max-age=86400"; // 24 h
 const SITE_FAVICON_CACHE_CONTROL_FALLBACK = "public, max-age=3600"; // 1 h (negative result)
 const EDITOR_ICON_CACHE_CONTROL_SUCCESS = "public, max-age=86400"; // 24 h
@@ -250,6 +256,7 @@ export function makeEffectHttpRouteLayer(
     editorIconEffectRouteLayer,
     localImageEffectRouteLayer,
     binaryUploadEffectRouteLayer,
+    composerDraftImportBinaryEffectRouteLayer,
     attachmentsEffectRouteLayer,
     staticAndDevEffectRouteLayer,
   );
@@ -365,6 +372,17 @@ export function isLegacyTokenAuthorized(input: {
   }
   const legacyToken = input.url.searchParams.get("token");
   return !input.config.authToken || legacyToken === input.config.authToken;
+}
+
+function isLocalBootstrapBearerAuthorized(input: {
+  readonly config: ServerConfigShape;
+  readonly request: HttpServerRequest.HttpServerRequest;
+}): boolean {
+  if (!isLoopbackHost(input.config.host) || input.config.publicUrl) return false;
+  if (!input.config.authToken) return true;
+  const authorization = input.request.headers.authorization;
+  if (typeof authorization !== "string" || !authorization.startsWith("Bearer ")) return false;
+  return authorization.slice("Bearer ".length).trim() === input.config.authToken;
 }
 
 function encodeCookie(input: {
@@ -1118,6 +1136,178 @@ export const binaryUploadEffectRouteLayer = Layer.merge(
     HttpRouter.add("*", ATTACHMENT_CANCEL_ROUTE_PATH, binaryUploadEffectHandler),
     HttpRouter.add("*", VOICE_TRANSCRIPTION_UPLOAD_ROUTE_PATH, binaryUploadEffectHandler),
   ),
+);
+
+function composerDraftImportRouteParts(pathname: string):
+  | {
+      readonly importId: string;
+      readonly attachmentId: string;
+      readonly operation: "upload" | "download";
+    }
+  | null {
+  const segments = pathname.split("/").filter(Boolean);
+  if (
+    segments.length !== 4 &&
+    !(segments.length === 5 && segments[4] === "content")
+  ) {
+    return null;
+  }
+  if (segments[0] !== "composer-draft-imports" || segments[2] !== "attachments") {
+    return null;
+  }
+  try {
+    const importId = decodeURIComponent(segments[1] ?? "");
+    const attachmentId = decodeURIComponent(segments[3] ?? "");
+    if (
+      !/^cdi_[a-z0-9]+$/u.test(importId) ||
+      !/^[a-z0-9_-]+$/iu.test(attachmentId)
+    ) {
+      return null;
+    }
+    return {
+      importId,
+      attachmentId,
+      operation: segments.length === 5 ? "download" : "upload",
+    };
+  } catch {
+    return null;
+  }
+}
+
+const composerDraftImportBinaryEffectHandler = Effect.gen(function* () {
+  const request = yield* HttpServerRequest.HttpServerRequest;
+  const url = HttpServerRequest.toURL(request);
+  if (!url) return HttpServerResponse.text("Bad Request", { status: 400 });
+  const parts = composerDraftImportRouteParts(url.pathname);
+  if (!parts) return HttpServerResponse.text("Not Found", { status: 404 });
+
+  const config = yield* ServerConfig;
+  const localBootstrapAuthorized = isLocalBootstrapBearerAuthorized({ config, request });
+  let attachmentPrincipal = LOCAL_LOOPBACK_ATTACHMENT_PRINCIPAL;
+  if (!localBootstrapAuthorized) {
+    if (parts.operation === "upload") {
+      attachmentPrincipal = attachmentPrincipalForSession(
+        (yield* requireAuthenticatedMutationRequest).sessionId,
+      );
+    } else {
+      const serverAuth = yield* ServerAuth;
+      const session = yield* serverAuth.authenticateHttpRequest(makeEffectAuthRequest(request));
+      attachmentPrincipal = attachmentPrincipalForSession(session.sessionId);
+    }
+  }
+
+  const imports = yield* ComposerDraftImports;
+  if (parts.operation === "upload") {
+    if (request.method !== "PUT") {
+      return HttpServerResponse.text("Method Not Allowed", { status: 405 });
+    }
+    const expected = yield* imports.inspectUpload(parts.importId, parts.attachmentId);
+    const declaredLength = Number(request.headers["content-length"] ?? "");
+    if (!Number.isSafeInteger(declaredLength) || declaredLength !== expected.expectedBytes) {
+      return HttpServerResponse.jsonUnsafe(
+        { error: "Attachment content length does not match its declaration." },
+        { status: 400 },
+      );
+    }
+    const contentType = request.headers["content-type"]?.split(";", 1)[0]?.trim().toLowerCase();
+    if (contentType !== expected.mimeType.trim().toLowerCase()) {
+      return HttpServerResponse.jsonUnsafe(
+        { error: "Attachment content type does not match its declaration." },
+        { status: 400 },
+      );
+    }
+    const bytes = yield* readEffectBinary(request, expected.expectedBytes);
+    if (bytes.byteLength !== expected.expectedBytes) {
+      return HttpServerResponse.jsonUnsafe(
+        { error: "Attachment body size does not match its declaration." },
+        { status: 400 },
+      );
+    }
+    const repository = yield* ManagedAttachmentRepository;
+    const upload = yield* imports.reserveUpload({
+      importId: parts.importId,
+      attachmentId: parts.attachmentId,
+      principal: attachmentPrincipal,
+    });
+    if (upload.reservation.state === "staged") {
+      return HttpServerResponse.jsonUnsafe(
+        {
+          attachmentId: upload.reservation.attachmentId,
+          sizeBytes: upload.reservation.sizeBytes,
+          sha256: upload.reservation.sha256,
+        },
+        { status: 200 },
+      );
+    }
+    const attachment = yield* persistReservedManagedAttachment({
+      reservation: upload.reservation,
+      bytes,
+      attachmentsDir: config.attachmentsDir,
+      now: new Date().toISOString(),
+      principal: attachmentPrincipal,
+      repository,
+    });
+    return HttpServerResponse.jsonUnsafe(attachment, { status: 201 });
+  }
+
+  if (request.method !== "GET") {
+    return HttpServerResponse.text("Method Not Allowed", { status: 405 });
+  }
+  const download = yield* imports.resolveDownload(parts.importId, parts.attachmentId);
+  const filePath = resolveAttachmentRelativePath({
+    attachmentsDir: config.attachmentsDir,
+    relativePath: download.relativePath,
+  });
+  if (!filePath) return HttpServerResponse.text("Not Found", { status: 404 });
+  const fileSystem = yield* FileSystem.FileSystem;
+  const fileInfo = yield* fileSystem.stat(filePath).pipe(Effect.catch(() => Effect.succeed(null)));
+  if (
+    !fileInfo ||
+    fileInfo.type !== "File" ||
+    Number(fileInfo.size) !== download.sizeBytes
+  ) {
+    return HttpServerResponse.text("Not Found", { status: 404 });
+  }
+  return streamedFileResponse({
+    fileSystem,
+    path: filePath,
+    sizeBytes: download.sizeBytes,
+    headers: {
+      "Cache-Control": "private, no-store",
+      "Content-Disposition": `attachment; filename="${download.name.replaceAll('"', "")}"`,
+      "X-Content-Type-Options": "nosniff",
+    },
+  });
+}).pipe(
+  Effect.catch((error) =>
+    Effect.succeed(
+      error instanceof AuthError
+        ? authErrorResponse(error)
+        : HttpServerResponse.jsonUnsafe(
+            {
+              error:
+                error instanceof Error
+                  ? error.message
+                  : String((error as { readonly message?: unknown }).message ?? error),
+            },
+            {
+              status:
+                error instanceof ComposerDraftImportError ||
+                error instanceof ManagedAttachmentStoreError
+                  ? error.status
+                  : typeof (error as { readonly status?: unknown }).status === "number"
+                    ? (error as { readonly status: number }).status
+                    : 500,
+            },
+          ),
+    ),
+  ),
+);
+
+export const composerDraftImportBinaryEffectRouteLayer = HttpRouter.add(
+  "*",
+  `${COMPOSER_DRAFT_IMPORT_ROUTE_PREFIX}/*`,
+  composerDraftImportBinaryEffectHandler,
 );
 
 export const attachmentsEffectRouteLayer = HttpRouter.add(

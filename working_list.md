@@ -1,14 +1,41 @@
 # Working List
 
+## Current Task: Pragma Prompt Workspace — Synara Draft Handoff
+
 ## In Progress
 
-- None.
+- [~] Milestone 6 — hydrate an imported package into the ordinary standalone composer
 
 ## Pending
+
+- [ ] Milestone 7 — add reliable desktop activation and navigation
+- [ ] Cross-repository integration — validate the packaged Pragma-to-Synara path
+- [ ] Final authorized validation — run focused suites plus `bun fmt`, `bun lint`, and `bun typecheck`
+
+## Blocked
 
 - None.
 
 ## Done
+
+- [x] Milestone 5 — define and persist external composer-draft imports
+  - [x] Reconciled current contract, persistence, HTTP, migration, and test seams
+  - [x] Added versioned contracts and Effect RPC methods
+  - [x] Added migration 096 and repository/domain lifecycle
+  - [x] Added authenticated bounded upload/download routes and cleanup/recovery
+  - [x] Passed contract, migration, repository, HTTP, and server build checks
+
+## Previous Task: Upstream Sync
+
+### In Progress
+
+- None.
+
+### Pending
+
+- None.
+
+### Done
 
 - [x] Confirmed a clean `main` at `origin/main` (`19ab2b5f`)
 - [x] Fetched `origin` and `upstream` separately

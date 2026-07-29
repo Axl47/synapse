@@ -114,6 +114,7 @@ import Migration0092 from "./Migrations/056_ClearAutomationDefinitionProviderOpt
 import Migration0093 from "./Migrations/057_ClearAutomationRunProviderOptions.ts";
 import Migration0094 from "./Migrations/059_ScrubOrchestrationEventProviderOptions.ts";
 import Migration0095 from "./Migrations/060_ReconcileProjectionSchemaDrift.ts";
+import Migration0096 from "./Migrations/096_ComposerDraftImports.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -224,6 +225,7 @@ export const migrationEntries = [
   [93, "ClearAutomationRunProviderOptions", Migration0093],
   [94, "ScrubOrchestrationEventProviderOptions", Migration0094],
   [95, "ReconcileProjectionSchemaDrift", Migration0095],
+  [96, "ComposerDraftImports", Migration0096],
 ] as const;
 
 export const makeMigrationLoader = (throughId?: number) =>

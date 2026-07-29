@@ -200,6 +200,17 @@ import {
   WsBootstrapNegotiateResult,
   WsCompatibilityError,
 } from "./wsCompatibility";
+import {
+  ComposerDraftImportCancelResult,
+  ComposerDraftImportClaimResult,
+  ComposerDraftImportCommitResult,
+  ComposerDraftImportCompleteInput,
+  ComposerDraftImportCreateInput,
+  ComposerDraftImportCreateResult,
+  ComposerDraftImportIdInput,
+  ComposerDraftImportStatusEvent,
+  ComposerDraftImportStatusResult,
+} from "./composerDraftImports";
 
 export class WsRpcError extends Schema.TaggedErrorClass<WsRpcError>()("WsRpcError", {
   message: Schema.String,
@@ -1023,6 +1034,70 @@ export const WsSubscribeAutomationEventsRpc = Rpc.make(WS_METHODS.subscribeAutom
   stream: true,
 });
 
+export const WsComposerDraftImportsCreateRpc = Rpc.make(
+  WS_METHODS.composerDraftImportsCreate,
+  {
+    payload: ComposerDraftImportCreateInput,
+    success: ComposerDraftImportCreateResult,
+    error: WsRpcError,
+  },
+);
+
+export const WsComposerDraftImportsCommitRpc = Rpc.make(
+  WS_METHODS.composerDraftImportsCommit,
+  {
+    payload: ComposerDraftImportIdInput,
+    success: ComposerDraftImportCommitResult,
+    error: WsRpcError,
+  },
+);
+
+export const WsComposerDraftImportsGetStatusRpc = Rpc.make(
+  WS_METHODS.composerDraftImportsGetStatus,
+  {
+    payload: ComposerDraftImportIdInput,
+    success: ComposerDraftImportStatusResult,
+    error: WsRpcError,
+  },
+);
+
+export const WsComposerDraftImportsSubscribeStatusRpc = Rpc.make(
+  WS_METHODS.composerDraftImportsSubscribeStatus,
+  {
+    payload: ComposerDraftImportIdInput,
+    success: ComposerDraftImportStatusEvent,
+    error: WsRpcError,
+    stream: true,
+  },
+);
+
+export const WsComposerDraftImportsClaimRpc = Rpc.make(
+  WS_METHODS.composerDraftImportsClaim,
+  {
+    payload: ComposerDraftImportIdInput,
+    success: ComposerDraftImportClaimResult,
+    error: WsRpcError,
+  },
+);
+
+export const WsComposerDraftImportsCompleteRpc = Rpc.make(
+  WS_METHODS.composerDraftImportsComplete,
+  {
+    payload: ComposerDraftImportCompleteInput,
+    success: ComposerDraftImportStatusResult,
+    error: WsRpcError,
+  },
+);
+
+export const WsComposerDraftImportsCancelRpc = Rpc.make(
+  WS_METHODS.composerDraftImportsCancel,
+  {
+    payload: ComposerDraftImportIdInput,
+    success: ComposerDraftImportCancelResult,
+    error: WsRpcError,
+  },
+);
+
 export const WsBootstrapRpcGroup = RpcGroup.make(WsBootstrapNegotiateRpc);
 
 export const WsFeatureRpcGroup = RpcGroup.make(
@@ -1146,6 +1221,13 @@ export const WsFeatureRpcGroup = RpcGroup.make(
   WsAutomationArchiveRunRpc,
   WsAutomationResolveProposalRpc,
   WsSubscribeAutomationEventsRpc,
+  WsComposerDraftImportsCreateRpc,
+  WsComposerDraftImportsCommitRpc,
+  WsComposerDraftImportsGetStatusRpc,
+  WsComposerDraftImportsSubscribeStatusRpc,
+  WsComposerDraftImportsClaimRpc,
+  WsComposerDraftImportsCompleteRpc,
+  WsComposerDraftImportsCancelRpc,
 );
 
 /** @deprecated Use WsFeatureRpcGroup. Bootstrap is intentionally a separate endpoint/group. */

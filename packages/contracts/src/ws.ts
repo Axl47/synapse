@@ -128,6 +128,11 @@ import {
   ExternalMcpRefreshPairingInput,
   ExternalMcpRevokeIntegrationInput,
 } from "./externalMcp";
+import {
+  ComposerDraftImportCompleteInput,
+  ComposerDraftImportCreateInput,
+  ComposerDraftImportIdInput,
+} from "./composerDraftImports";
 
 // ── WebSocket RPC Method Names ───────────────────────────────────────
 
@@ -256,6 +261,15 @@ export const WS_METHODS = {
   automationArchiveRun: "automation.archiveRun",
   automationResolveProposal: "automation.resolveProposal",
   subscribeAutomationEvents: "automation.subscribe",
+
+  // External unsent composer-draft imports
+  composerDraftImportsCreate: "composerDraftImports.create",
+  composerDraftImportsCommit: "composerDraftImports.commit",
+  composerDraftImportsGetStatus: "composerDraftImports.getStatus",
+  composerDraftImportsSubscribeStatus: "composerDraftImports.subscribeStatus",
+  composerDraftImportsClaim: "composerDraftImports.claim",
+  composerDraftImportsComplete: "composerDraftImports.complete",
+  composerDraftImportsCancel: "composerDraftImports.cancel",
 } as const;
 
 // ── Push Event Channels ──────────────────────────────────────────────
@@ -433,6 +447,15 @@ const WebSocketRequestBody = Schema.Union([
   tagRequestBody(WS_METHODS.automationArchiveRun, AutomationArchiveRunInput),
   tagRequestBody(WS_METHODS.automationResolveProposal, AutomationResolveProposalInput),
   tagRequestBody(WS_METHODS.subscribeAutomationEvents, Schema.Struct({})),
+
+  // External unsent composer-draft imports
+  tagRequestBody(WS_METHODS.composerDraftImportsCreate, ComposerDraftImportCreateInput),
+  tagRequestBody(WS_METHODS.composerDraftImportsCommit, ComposerDraftImportIdInput),
+  tagRequestBody(WS_METHODS.composerDraftImportsGetStatus, ComposerDraftImportIdInput),
+  tagRequestBody(WS_METHODS.composerDraftImportsSubscribeStatus, ComposerDraftImportIdInput),
+  tagRequestBody(WS_METHODS.composerDraftImportsClaim, ComposerDraftImportIdInput),
+  tagRequestBody(WS_METHODS.composerDraftImportsComplete, ComposerDraftImportCompleteInput),
+  tagRequestBody(WS_METHODS.composerDraftImportsCancel, ComposerDraftImportIdInput),
 ]);
 
 export const WebSocketRequest = Schema.Struct({

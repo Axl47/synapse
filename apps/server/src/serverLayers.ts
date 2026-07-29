@@ -49,6 +49,8 @@ import { OrchestrationEventDeliveryRepositoryLive } from "./persistence/Layers/O
 import { ProviderRuntimeEventRepositoryLive } from "./persistence/Layers/ProviderRuntimeEvents";
 import { ThreadDiagnosticsQueryLive } from "./diagnostics/Layers/ThreadDiagnosticsQuery";
 import { ManagedAttachmentCleanupLive } from "./managedAttachmentCleanup";
+import { ComposerDraftImportsLive } from "./composerDraftImports";
+import { ComposerDraftImportRepositoryLive } from "./persistence/Layers/ComposerDraftImports";
 import { PullRequestServiceLive } from "./pullRequests/Layers/PullRequestService";
 import { ProviderHealthLive } from "./provider/Layers/ProviderHealth";
 import { makeServerProviderLayer } from "./provider/runtimeLayer";
@@ -79,6 +81,10 @@ export function makeServerRuntimeServicesLayer(
     TurnCheckpointCoordinatorLive,
   );
   const managedAttachmentCleanupLayer = ManagedAttachmentCleanupLive.pipe(
+    Layer.provideMerge(runtimeServicesLayer),
+  );
+  const composerDraftImportsLayer = ComposerDraftImportsLive.pipe(
+    Layer.provideMerge(ComposerDraftImportRepositoryLive),
     Layer.provideMerge(runtimeServicesLayer),
   );
   const runtimeIngestionLayer = ProviderRuntimeIngestionLive.pipe(
@@ -190,6 +196,7 @@ export function makeServerRuntimeServicesLayer(
     automationSchedulerLayer,
     automationRunReactorLayer,
     managedAttachmentCleanupLayer,
+    composerDraftImportsLayer,
     AutomationRepositoryLive,
     AgentGatewayOperationRepositoryLive,
     ExternalMcpRepositoryLive,
