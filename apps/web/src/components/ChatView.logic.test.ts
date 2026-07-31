@@ -1,6 +1,7 @@
 import {
   CheckpointRef,
   EventId,
+  MessageId,
   ThreadId,
   TurnId,
   type ModelSlug,
@@ -267,26 +268,31 @@ describe("prompt history navigation", () => {
   it("derives newest-first native user prompts and skips imported or internal-only entries", () => {
     const messages = [
       {
+        id: MessageId.makeUnsafe("message-imported"),
         role: "user",
         text: "Imported prompt",
         source: "fork-import",
       },
       {
+        id: MessageId.makeUnsafe("message-assistant"),
         role: "assistant",
         text: "Assistant response",
         source: "native",
       },
       {
+        id: MessageId.makeUnsafe("message-first"),
         role: "user",
         text: "First prompt\n\n<terminal_context>\n# Terminal\noutput\n</terminal_context>",
         source: "native",
       },
       {
+        id: MessageId.makeUnsafe("message-images"),
         role: "user",
         text: "[User attached one or more images without additional text. Respond using the conversation context and the attached image(s).]",
         source: "native",
       },
       {
+        id: MessageId.makeUnsafe("message-second"),
         role: "user",
         text: "Second prompt",
         source: "native",
@@ -298,9 +304,24 @@ describe("prompt history navigation", () => {
 
   it("limits prompt history without deduping repeated prompts", () => {
     const messages = [
-      { role: "user", text: "one", source: "native" },
-      { role: "user", text: "repeat", source: "native" },
-      { role: "user", text: "repeat", source: "native" },
+      {
+        id: MessageId.makeUnsafe("message-one"),
+        role: "user",
+        text: "one",
+        source: "native",
+      },
+      {
+        id: MessageId.makeUnsafe("message-repeat-one"),
+        role: "user",
+        text: "repeat",
+        source: "native",
+      },
+      {
+        id: MessageId.makeUnsafe("message-repeat-two"),
+        role: "user",
+        text: "repeat",
+        source: "native",
+      },
     ] as const;
 
     expect(derivePromptHistoryFromMessages(messages, 2)).toEqual(["repeat", "repeat"]);
@@ -1335,6 +1356,7 @@ describe("deriveComposerSendState", () => {
       imageCount: 0,
       fileCount: 0,
       assistantSelectionCount: 0,
+      browserAnnotationCount: 0,
       fileCommentCount: 0,
       terminalContexts: [
         {
@@ -1363,6 +1385,7 @@ describe("deriveComposerSendState", () => {
       imageCount: 0,
       fileCount: 0,
       assistantSelectionCount: 0,
+      browserAnnotationCount: 0,
       fileCommentCount: 0,
       terminalContexts: [
         {
@@ -1390,6 +1413,7 @@ describe("deriveComposerSendState", () => {
       imageCount: 0,
       fileCount: 0,
       assistantSelectionCount: 1,
+      browserAnnotationCount: 0,
       fileCommentCount: 0,
       terminalContexts: [],
       pastedTexts: [],
@@ -1404,6 +1428,7 @@ describe("deriveComposerSendState", () => {
       imageCount: 0,
       fileCount: 0,
       assistantSelectionCount: 0,
+      browserAnnotationCount: 0,
       fileCommentCount: 1,
       terminalContexts: [],
       pastedTexts: [],
@@ -1418,6 +1443,22 @@ describe("deriveComposerSendState", () => {
       imageCount: 0,
       fileCount: 1,
       assistantSelectionCount: 0,
+      browserAnnotationCount: 0,
+      fileCommentCount: 0,
+      terminalContexts: [],
+      pastedTexts: [],
+    });
+
+    expect(state.hasSendableContent).toBe(true);
+  });
+
+  it("treats browser annotations as sendable content", () => {
+    const state = deriveComposerSendState({
+      prompt: "",
+      imageCount: 0,
+      fileCount: 0,
+      assistantSelectionCount: 0,
+      browserAnnotationCount: 1,
       fileCommentCount: 0,
       terminalContexts: [],
       pastedTexts: [],
@@ -1679,6 +1720,7 @@ describe("worktree setup snapshots", () => {
     const current: LocalDispatchSnapshot = {
       startedAt: "2026-04-13T00:00:00.000Z",
       worktreeSetup: failWorktreeSetupSnapshot(createWorktreeSetupSnapshot("create-worktree")),
+      expectedUserMessageId: null,
       latestTurnTurnId: null,
       latestTurnRequestedAt: null,
       latestTurnStartedAt: null,
@@ -1700,6 +1742,7 @@ describe("worktree setup snapshots", () => {
     const current: LocalDispatchSnapshot = {
       startedAt: "2026-04-13T00:00:00.000Z",
       worktreeSetup: failWorktreeSetupSnapshot(createWorktreeSetupSnapshot("create-worktree")),
+      expectedUserMessageId: null,
       latestTurnTurnId: null,
       latestTurnRequestedAt: null,
       latestTurnStartedAt: null,
@@ -1727,6 +1770,7 @@ describe("hasServerAcknowledgedLocalDispatch", () => {
   const localDispatch: LocalDispatchSnapshot = {
     startedAt: "2026-04-13T00:00:00.000Z",
     worktreeSetup: null,
+    expectedUserMessageId: "message-for-dispatch" as never,
     latestTurnTurnId: null,
     latestTurnRequestedAt: null,
     latestTurnStartedAt: null,
@@ -1737,6 +1781,7 @@ describe("hasServerAcknowledgedLocalDispatch", () => {
   const firstTurnLocalDispatch: LocalDispatchSnapshot = {
     startedAt: "2026-04-13T00:00:00.000Z",
     worktreeSetup: null,
+    expectedUserMessageId: "message-first-send" as never,
     latestTurnTurnId: null,
     latestTurnRequestedAt: null,
     latestTurnStartedAt: null,
@@ -1751,6 +1796,15 @@ describe("hasServerAcknowledgedLocalDispatch", () => {
         localDispatch,
         phase: "ready",
         latestTurn: null,
+        messages: [
+          {
+            id: "message-before-dispatch" as never,
+            role: "user",
+            text: "an unrelated message",
+            createdAt: "2026-04-13T00:00:00.000Z",
+            streaming: false,
+          },
+        ],
         session: {
           provider: "codex",
           status: "ready",
@@ -1779,6 +1833,7 @@ describe("hasServerAcknowledgedLocalDispatch", () => {
           assistantMessageId: null,
           sourceProposedPlan: undefined,
         },
+        messages: [],
         session: {
           provider: "codex",
           status: "ready",
@@ -1799,6 +1854,7 @@ describe("hasServerAcknowledgedLocalDispatch", () => {
         localDispatch: firstTurnLocalDispatch,
         phase: "ready",
         latestTurn: null,
+        messages: [],
         session: {
           provider: "claudeAgent",
           status: "ready",
@@ -1813,12 +1869,42 @@ describe("hasServerAcknowledgedLocalDispatch", () => {
     ).toBe(false);
   });
 
+  it("acknowledges a first send when its user message becomes durable", () => {
+    expect(
+      hasServerAcknowledgedLocalDispatch({
+        localDispatch: firstTurnLocalDispatch,
+        phase: "ready",
+        latestTurn: null,
+        messages: [
+          {
+            id: "message-first-send" as never,
+            role: "user",
+            text: "the submitted message",
+            createdAt: "2026-04-13T00:00:01.000Z",
+            streaming: false,
+          },
+        ],
+        session: {
+          provider: "claudeAgent",
+          status: "ready",
+          orchestrationStatus: "ready",
+          createdAt: "2026-04-13T00:00:00.000Z",
+          updatedAt: "2026-04-13T00:00:01.000Z",
+        },
+        hasPendingApproval: false,
+        hasPendingUserInput: false,
+        threadError: null,
+      }),
+    ).toBe(true);
+  });
+
   it("still acknowledges non-ready session transitions without a latest turn snapshot", () => {
     expect(
       hasServerAcknowledgedLocalDispatch({
         localDispatch: firstTurnLocalDispatch,
         phase: "disconnected",
         latestTurn: null,
+        messages: [],
         session: null,
         hasPendingApproval: false,
         hasPendingUserInput: false,

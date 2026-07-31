@@ -84,7 +84,9 @@ export function makeServerProviderLayer(
       ...(nativeEventLogger ? { nativeEventLogger } : {}),
       resolveServerPassword: resolveProviderServerPassword,
     }).pipe(Layer.provide(agentGatewayCredentialsLayer));
-    const antigravityAdapterLayer = makeAntigravityAdapterLive();
+    const antigravityAdapterLayer = makeAntigravityAdapterLive().pipe(
+      Layer.provide(agentGatewayCredentialsLayer),
+    );
     const grokAdapterLayer = makeGrokAdapterLive(
       {},
       nativeEventLogger ? { nativeEventLogger } : undefined,

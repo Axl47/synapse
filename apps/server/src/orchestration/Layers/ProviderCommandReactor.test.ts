@@ -231,6 +231,9 @@ describe("ProviderCommandReactor", () => {
     const runtimeEventPubSub = Effect.runSync(PubSub.unbounded<ProviderRuntimeEvent>());
     let nextSessionIndex = 1;
     const runtimeSessions: Array<ProviderSession> = [];
+    const listSessions = vi.fn<ProviderServiceShape["listSessions"]>(() =>
+      Effect.succeed(runtimeSessions),
+    );
     const modelSelection = input?.threadModelSelection ?? {
       instanceId: "codex",
       model: "gpt-5-codex",
@@ -508,7 +511,7 @@ describe("ProviderCommandReactor", () => {
             >,
           }
         : {}),
-      listSessions: () => Effect.succeed(runtimeSessions),
+      listSessions,
       getCapabilities: (_provider) =>
         Effect.succeed({
           sessionModelSwitch: input?.sessionModelSwitch ?? "in-session",
@@ -636,6 +639,7 @@ describe("ProviderCommandReactor", () => {
       engine,
       reactor,
       startSession,
+      listSessions,
       sendTurn,
       steerTurn,
       startReview,
@@ -3322,6 +3326,7 @@ describe("ProviderCommandReactor", () => {
   it("reacts to thread.turn.start by ensuring session and sending provider turn", async () => {
     const harness = await createHarness();
     const now = new Date().toISOString();
+    harness.listSessions.mockClear();
 
     await Effect.runPromise(
       harness.engine.dispatch({
@@ -3355,6 +3360,9 @@ describe("ProviderCommandReactor", () => {
     const thread = await readHarnessThread(harness);
     expect(thread?.session?.threadId).toBe("thread-1");
     expect(thread?.session?.runtimeMode).toBe("approval-required");
+    // One scan rechecks the provider's live-turn race before dispatch; the
+    // session ensure then performs the only full lookup needed for startup.
+    expect(harness.listSessions).toHaveBeenCalledTimes(2);
   });
 
   it("routes subagent-thread turn starts to the parent session as steers", async () => {
@@ -4067,6 +4075,45 @@ describe("ProviderCommandReactor", () => {
       state: "uncertain",
       attemptCount: 1,
     });
+  });
+
+  it("surfaces a timed-out fresh turn start instead of leaving the thread starting", async () => {
+    const harness = await createHarness({
+      commandEventTimeout: Duration.millis(25),
+    });
+    const now = new Date().toISOString();
+    harness.startSession.mockImplementationOnce(() => Effect.never);
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.makeUnsafe("cmd-turn-start-times-out"),
+        threadId: ThreadId.makeUnsafe("thread-1"),
+        message: {
+          messageId: asMessageId("user-message-start-times-out"),
+          role: "user",
+          text: "hello stalled provider",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      }),
+    );
+
+    await waitFor(async () => (await readHarnessThread(harness))?.session?.status === "error");
+    const thread = await readHarnessThread(harness);
+    expect(thread?.session?.activeTurnId).toBeNull();
+    expect(thread?.session?.lastError).toContain("did not respond within 25ms");
+    await waitFor(async () =>
+      Boolean(
+        (await readHarnessThread(harness))?.activities.some(
+          (activity) =>
+            activity.kind === "provider.turn.start.failed" &&
+            (activity.payload as Record<string, unknown> | null)?.settlementStatus === "uncertain",
+        ),
+      ),
+    );
   });
 
   it("uses the runtime mode requested by thread.turn.start when starting the provider session", async () => {
@@ -9306,5 +9353,84 @@ describe("ProviderCommandReactor", () => {
     );
     expect(thread?.session?.status).toBe("interrupted");
     expect(thread?.session?.activeTurnId).toBe("turn-child-stop");
+  });
+
+  it("defers a runtime-mode change while a turn is active instead of restarting the session", async () => {
+    const harness = await createHarness();
+    const now = new Date().toISOString();
+    const threadId = ThreadId.makeUnsafe("thread-1");
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.makeUnsafe("cmd-mode-session-running"),
+        threadId,
+        session: {
+          threadId,
+          status: "running",
+          providerName: "codex",
+          runtimeMode: "approval-required",
+          activeTurnId: asTurnId("turn-mode-active"),
+          lastError: null,
+          updatedAt: now,
+        },
+        createdAt: now,
+      }),
+    );
+
+    const midTurn = await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.runtime-mode.set",
+        commandId: CommandId.makeUnsafe("cmd-mode-set-mid-turn"),
+        threadId,
+        runtimeMode: "full-access",
+        createdAt: now,
+      }),
+    );
+    await waitFor(async () => {
+      const state = await Effect.runPromise(
+        harness.deliveryRepository.getConsumerState(PROVIDER_COMMAND_REACTOR_CONSUMER),
+      );
+      return state.pipe(Option.getOrThrow).lastAckedSequence >= midTurn.sequence;
+    });
+    // The in-flight turn must survive the mode change: ensuring the session
+    // now would restart the provider and kill the running turn.
+    expect(harness.startSession.mock.calls.length).toBe(0);
+    expect(harness.stopSession.mock.calls.length).toBe(0);
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.makeUnsafe("cmd-mode-session-settled"),
+        threadId,
+        session: {
+          threadId,
+          status: "ready",
+          providerName: "codex",
+          runtimeMode: "full-access",
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: now,
+        },
+        createdAt: now,
+      }),
+    );
+    const settled = await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.runtime-mode.set",
+        commandId: CommandId.makeUnsafe("cmd-mode-set-settled"),
+        threadId,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      }),
+    );
+    await waitFor(async () => {
+      const state = await Effect.runPromise(
+        harness.deliveryRepository.getConsumerState(PROVIDER_COMMAND_REACTOR_CONSUMER),
+      );
+      return state.pipe(Option.getOrThrow).lastAckedSequence >= settled.sequence;
+    });
+    // With no active turn the same event applies by ensuring the session.
+    expect(harness.startSession.mock.calls.length).toBe(1);
   });
 });

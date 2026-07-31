@@ -5,6 +5,7 @@ import { pendingComposerAttachmentSyncGenerationCount } from "./composerDraftAtt
 import {
   captureComposerPromptHistorySavedDraft,
   COMPOSER_DRAFT_STORAGE_KEY,
+  COMPOSER_DRAFT_STORAGE_VERSION,
   findSupersededComposerImageBlobAttachments,
   isComposerImageBlobReferenced,
   partializeComposerDraftStoreState,
@@ -385,7 +386,7 @@ describe("composerDraftStore prompt history saved draft", () => {
     setLocalStorageItem(
       COMPOSER_DRAFT_STORAGE_KEY,
       {
-        version: 5,
+        version: COMPOSER_DRAFT_STORAGE_VERSION,
         state: {
           draftsByThreadId: {
             [threadId]: {
@@ -960,7 +961,7 @@ describe("composerDraftStore syncPersistedAttachments", () => {
     setLocalStorageItem(
       COMPOSER_DRAFT_STORAGE_KEY,
       {
-        version: 5,
+        version: COMPOSER_DRAFT_STORAGE_VERSION,
         state: {
           draftsByThreadId: {
             [threadId]: {
@@ -1039,7 +1040,7 @@ describe("composerDraftStore syncPersistedAttachments", () => {
     setLocalStorageItem(
       COMPOSER_DRAFT_STORAGE_KEY,
       {
-        version: 5,
+        version: COMPOSER_DRAFT_STORAGE_VERSION,
         state: {
           draftsByThreadId: {
             [threadId]: {

@@ -92,6 +92,7 @@ async function mountClaudePicker(props?: {
       nonPersistedImageIds: [],
       persistedAttachments: [],
       assistantSelections: [],
+      browserAnnotations: [],
       terminalContexts: [],
       fileComments: [],
       pastedTexts: [],
@@ -333,6 +334,7 @@ async function mountCodexPicker(props: { model?: string; options?: CodexModelOpt
       nonPersistedImageIds: [],
       persistedAttachments: [],
       assistantSelections: [],
+      browserAnnotations: [],
       terminalContexts: [],
       fileComments: [],
       pastedTexts: [],
@@ -679,6 +681,7 @@ async function mountOpenCodePicker(props?: {
       mentions: [],
       queuedTurns: [],
       assistantSelections: [],
+      browserAnnotations: [],
       modelSelectionByProvider: {
         opencode: buildModelSelection("opencode", model, props?.options),
       },

@@ -54,7 +54,8 @@ type KanbanComposerDraftSource = Pick<
   | "assistantSelections"
   | "fileComments"
   | "activeProvider"
->;
+> &
+  Partial<Pick<ComposerThreadDraftState, "browserAnnotations">>;
 
 /** Shared projection so the board build and the drop-time dispatch re-check agree. */
 export function buildKanbanComposerDraftSnapshot(
@@ -71,6 +72,7 @@ export function buildKanbanComposerDraftSnapshot(
       draft.persistedAttachments.length > 0 ||
       draft.terminalContexts.some((context) => context.text.trim().length > 0) ||
       draft.assistantSelections.length > 0 ||
+      (draft.browserAnnotations?.length ?? 0) > 0 ||
       draft.fileComments.length > 0,
     provider: inferLegacyProviderKindFromInstanceId(draft.activeProvider) ?? null,
     providerInstanceId: draft.activeProvider,

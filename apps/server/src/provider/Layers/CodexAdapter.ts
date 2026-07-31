@@ -1533,9 +1533,9 @@ function mapToRuntimeEvents(
         type: "config.warning",
         ...runtimeEventBase(event, canonicalThreadId),
         payload: {
-          summary: asTrimmedString(payload?.summary) ?? "Configuration warning",
-          ...(details ? { details } : {}),
-          ...(warningPath ? { path: warningPath } : {}),
+            summary: asTrimmedString(payload?.summary) ?? "Configuration warning",
+            ...(details ? { details } : {}),
+            ...(warningPath ? { path: warningPath } : {}),
           ...(payload?.range !== undefined ? { range: payload.range } : {}),
         },
       },

@@ -82,6 +82,7 @@ import {
   CHAT_MAIN_CONTENT_SURFACE_CLASS_NAME,
   CHAT_MAIN_VIEWPORT_SHELL_CLASS_NAME,
 } from "./composerPickerStyles";
+import { routeSplitBrowserPanelOpenRequest } from "./browserPanelOpenRequest";
 import { cn } from "~/lib/utils";
 import { resolveThreadDisplayProvider } from "~/lib/threadDisplayProvider";
 
@@ -732,7 +733,31 @@ export function SplitChatSurface(props: { splitViewId: SplitViewId; routeThreadI
       ? () => togglePanePanel(activeSplitView.focusedPaneId, "browser")
       : null,
     onOpen: activeSplitView
-      ? () => updatePanePanelState(activeSplitView.focusedPaneId, { panel: "browser" })
+      ? (requestedThreadId) => {
+          routeSplitBrowserPanelOpenRequest({
+            splitView: activeSplitView,
+            requestedThreadId,
+            focusPane: (paneId) => setFocusedPane(activeSplitView.id, paneId),
+            replacePaneThread: (paneId, threadId) =>
+              replacePaneThread(activeSplitView.id, paneId, threadId),
+            openBrowserPanel: (paneId) =>
+              setPanePanelState(activeSplitView.id, paneId, {
+                panel: "browser",
+                diffTurnId: null,
+                diffFilePath: null,
+                hasOpenedPanel: true,
+                lastOpenPanel: "browser",
+              }),
+            navigateToThread: (threadId) => {
+              void navigate({
+                to: "/$threadId",
+                params: { threadId },
+                replace: true,
+                search: () => ({ splitViewId: activeSplitView.id }),
+              });
+            },
+          });
+        }
       : null,
   });
 

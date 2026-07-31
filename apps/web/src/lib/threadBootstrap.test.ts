@@ -50,6 +50,7 @@ function makeComposerDraftState(
     nonPersistedImageIds: [],
     persistedAttachments: [],
     assistantSelections: [],
+    browserAnnotations: [],
     terminalContexts: [],
     fileComments: [],
     pastedTexts: [],

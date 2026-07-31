@@ -335,6 +335,7 @@ import {
   DISCLOSURE_INNER_CLASS,
 } from "~/lib/disclosureMotion";
 import { createClientPointMenuAnchor } from "~/lib/clientPointMenuAnchor";
+import { resolveThreadModelSummary } from "~/lib/threadModelSummary";
 import {
   canCreateThreadHandoff,
   resolveAvailableHandoffTargets,
@@ -372,6 +373,7 @@ import { useSidebarThreadActions } from "../hooks/useSidebarThreadActions";
 import { usePinnedProjectsStore } from "../pinnedProjectsStore";
 import { reconcileOptimisticPinState } from "../pinning.logic";
 import { useThreadDetailPrewarm } from "../threadDetailPrewarm";
+import { hasThreadDetailResumeCursor } from "../threadDetailResumeCursors";
 import { retainThreadDetailSubscription } from "../threadDetailSubscriptionRetention";
 import { useWorkspacePathsStore } from "../workspacePathsStore";
 import type {
@@ -2910,8 +2912,18 @@ export default function Sidebar() {
             : []),
           { id: "copy-thread-id", label: "Copy Thread ID" },
           ...(options?.extraItems ?? []),
-          { id: "archive", label: "Archive", separatorBefore: true },
-          { id: "delete", label: "Delete", destructive: true },
+          // Subagent threads are archived and restored through their parent
+          // (thread.archive cascades); archiving one alone would strand it with
+          // no sidebar or Archived-panel row to restore it from.
+          ...(thread.parentThreadId
+            ? []
+            : [{ id: "archive", label: "Archive", separatorBefore: true }]),
+          {
+            id: "delete",
+            label: "Delete",
+            destructive: true,
+            ...(thread.parentThreadId ? { separatorBefore: true } : {}),
+          },
         ],
         position,
       );
@@ -3099,17 +3111,27 @@ export default function Sidebar() {
       }
 
       if (clicked === "archive") {
+        // Subagent threads follow their parent's archive cascade. Archiving one
+        // directly would strand it, and archiving it after its parent in this
+        // loop would fail the not-archived invariant.
+        const archiveIds = ids.filter(
+          (id) => (getThreadFromState(useStore.getState(), id)?.parentThreadId ?? null) === null,
+        );
+        if (archiveIds.length === 0) {
+          removeFromSelection(ids);
+          return;
+        }
         if (appSettings.confirmThreadArchive) {
           const confirmed = await api.dialogs.confirm(
             [
-              `Archive ${count} ${pluralize(count, "thread")}?`,
+              `Archive ${archiveIds.length} ${pluralize(archiveIds.length, "thread")}?`,
               "Archived threads are hidden from the sidebar but can be restored later.",
             ].join("\n"),
           );
           if (!confirmed) return;
         }
 
-        for (const id of ids) {
+        for (const id of archiveIds) {
           await archiveThread(id);
         }
         removeFromSelection(ids);
@@ -4108,9 +4130,12 @@ export default function Sidebar() {
       visibleThreadIds: visibleSidebarThreadIds,
       activeThreadId: activeSidebarThreadId,
     });
-    const releaseCallbacks = threadIdsToPrewarm.map((threadId) =>
-      retainThreadDetailSubscription(threadId),
-    );
+    // Retaining a thread without cached detail would open a full-history
+    // snapshot stream speculatively; only cursor-resumable threads are cheap
+    // enough to keep warm from scroll position alone.
+    const releaseCallbacks = threadIdsToPrewarm
+      .filter((threadId) => hasThreadDetailResumeCursor(threadId))
+      .map((threadId) => retainThreadDetailSubscription(threadId));
 
     return () => {
       for (const release of releaseCallbacks) {
@@ -4297,6 +4322,7 @@ export default function Sidebar() {
           sourceProjectName={hoverMetadata.sourceProjectName}
           branch={hoverMetadata.branch}
           worktreeName={hoverMetadata.worktreeName}
+          model={resolveThreadModelSummary(thread.modelSelection)}
         />
       </TooltipPopup>
     );

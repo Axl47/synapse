@@ -19,6 +19,7 @@ import type { ProviderInstanceOption } from "../appSettings";
 import { type Thread } from "../types";
 import { DEFAULT_PROVIDER_ORDER } from "../providerOrdering";
 import { stripEmbeddedAssistantSelections } from "./assistantSelections";
+import { extractTrailingBrowserAnnotations } from "./browserAnnotations";
 import { randomUUID } from "./utils";
 
 const IMPORTABLE_THREAD_ACTIVITY_KINDS = new Set([
@@ -102,10 +103,24 @@ export function buildThreadHandoffImportedMessages(
   thread: Pick<Thread, "messages">,
 ): ReadonlyArray<ThreadHandoffImportedMessage> {
   return thread.messages.filter(isImportableThreadMessage).map((message) => {
-    const importedText =
-      message.role === "user" ? stripEmbeddedAssistantSelections(message.text) : message.text;
+    const importedMessageId = MessageId.makeUnsafe(randomUUID());
+    let importedText = message.text;
+    if (message.role === "user") {
+      const extractedBrowserAnnotations = extractTrailingBrowserAnnotations(
+        message.text,
+        message.id,
+      );
+      const visibleAndContextText = stripEmbeddedAssistantSelections(
+        extractedBrowserAnnotations.promptText,
+      );
+      // Browser annotation ids and tab ids are scoped to the source thread's
+      // live browser session. Carrying them into a handoff would advertise an
+      // exact-page navigation target that the destination thread cannot
+      // resolve, so import only the visible user/context text.
+      importedText = visibleAndContextText;
+    }
     const importedMessage: ThreadHandoffImportedMessage = {
-      messageId: MessageId.makeUnsafe(randomUUID()),
+      messageId: importedMessageId,
       role: message.role,
       text: importedText,
       createdAt: message.createdAt,

@@ -21,6 +21,7 @@ import * as Equal from "effect/Equal";
 import * as Schema from "effect/Schema";
 
 import { normalizeAssistantSelectionAttachment } from "./lib/assistantSelections";
+import { type BrowserAnnotationDraft, normalizeBrowserAnnotations } from "./lib/browserAnnotations";
 import type { ComposerImageSource } from "./lib/composerImageSource";
 import {
   type PastedTextDraft,
@@ -44,7 +45,7 @@ import {
 } from "./types";
 
 export const COMPOSER_DRAFT_STORAGE_KEY = "synara:composer-drafts:v1";
-export const COMPOSER_DRAFT_STORAGE_VERSION = 5;
+export const COMPOSER_DRAFT_STORAGE_VERSION = 6;
 export type DraftThreadEnvMode = "local" | "worktree";
 const TERMINAL_DRAFT_THREAD_MAPPING_SUFFIX = "::terminal";
 
@@ -111,6 +112,7 @@ export interface ComposerPromptHistorySavedDraft {
   nonPersistedImageIds: string[];
   persistedAttachments: PersistedComposerImageAttachment[];
   assistantSelections: ComposerAssistantSelectionAttachment[];
+  browserAnnotations: BrowserAnnotationDraft[];
   terminalContexts: TerminalContextDraft[];
   fileComments: FileCommentDraft[];
   pastedTexts: PastedTextDraft[];
@@ -129,6 +131,7 @@ export interface QueuedComposerChatTurn {
   images: ComposerImageAttachment[];
   files: ComposerFileAttachment[];
   assistantSelections: ComposerAssistantSelectionAttachment[];
+  browserAnnotations: BrowserAnnotationDraft[];
   terminalContexts: TerminalContextDraft[];
   fileComments: FileCommentDraft[];
   pastedTexts: PastedTextDraft[];
@@ -185,6 +188,7 @@ export interface ComposerThreadDraftState {
   nonPersistedImageIds: string[];
   persistedAttachments: PersistedComposerImageAttachment[];
   assistantSelections: ComposerAssistantSelectionAttachment[];
+  browserAnnotations: BrowserAnnotationDraft[];
   terminalContexts: TerminalContextDraft[];
   fileComments: FileCommentDraft[];
   pastedTexts: PastedTextDraft[];
@@ -352,6 +356,16 @@ export interface ComposerDraftStoreState {
   ) => boolean;
   removeAssistantSelection: (threadId: ThreadId, selectionId: string) => void;
   clearAssistantSelections: (threadId: ThreadId) => void;
+  addBrowserAnnotation: (
+    threadId: ThreadId,
+    annotation: Omit<BrowserAnnotationDraft, "ordinal"> & { ordinal?: number },
+  ) => boolean;
+  addBrowserAnnotations: (
+    threadId: ThreadId,
+    annotations: ReadonlyArray<Omit<BrowserAnnotationDraft, "ordinal"> & { ordinal?: number }>,
+  ) => number;
+  removeBrowserAnnotation: (threadId: ThreadId, annotationId: string) => void;
+  clearBrowserAnnotations: (threadId: ThreadId) => void;
   addFileComment: (threadId: ThreadId, comment: FileCommentDraft) => boolean;
   removeFileComment: (threadId: ThreadId, commentId: string) => void;
   clearFileComments: (threadId: ThreadId) => void;
@@ -522,6 +536,7 @@ export function createEmptyThreadDraft(): ComposerThreadDraftState {
     nonPersistedImageIds: [],
     persistedAttachments: [],
     assistantSelections: [],
+    browserAnnotations: [],
     terminalContexts: [],
     fileComments: [],
     pastedTexts: [],
@@ -728,6 +743,7 @@ export function captureComposerPromptHistorySavedDraft(input: {
     nonPersistedImageIds: [...draft.nonPersistedImageIds],
     persistedAttachments: [...draft.persistedAttachments],
     assistantSelections: normalizeAssistantSelections(draft.assistantSelections),
+    browserAnnotations: normalizeBrowserAnnotations(draft.browserAnnotations),
     terminalContexts: normalizeTerminalContextsForThread(threadId, draft.terminalContexts),
     fileComments: normalizeFileComments(draft.fileComments),
     pastedTexts: normalizePastedTexts(draft.pastedTexts),
@@ -756,6 +772,7 @@ export function buildTransferredComposerDraft(input: {
     nonPersistedImageIds: [...sourceDraft.nonPersistedImageIds],
     persistedAttachments: [...sourceDraft.persistedAttachments],
     assistantSelections: normalizeAssistantSelections(sourceDraft.assistantSelections),
+    browserAnnotations: normalizeBrowserAnnotations(sourceDraft.browserAnnotations),
     terminalContexts: normalizeTerminalContextsForThread(
       targetThreadId,
       sourceDraft.terminalContexts,
@@ -798,6 +815,7 @@ function clonePromptHistorySavedDraft(
     nonPersistedImageIds: [...savedDraft.nonPersistedImageIds],
     persistedAttachments: [...savedDraft.persistedAttachments],
     assistantSelections: normalizeAssistantSelections(savedDraft.assistantSelections),
+    browserAnnotations: normalizeBrowserAnnotations(savedDraft.browserAnnotations),
     terminalContexts: normalizeTerminalContextsForThread(
       targetThreadId,
       savedDraft.terminalContexts,
@@ -818,6 +836,7 @@ export function shouldRemoveDraft(draft: ComposerThreadDraftState): boolean {
     (draft.persistedFiles?.length ?? 0) === 0 &&
     draft.persistedAttachments.length === 0 &&
     draft.assistantSelections.length === 0 &&
+    draft.browserAnnotations.length === 0 &&
     draft.terminalContexts.length === 0 &&
     draft.fileComments.length === 0 &&
     draft.pastedTexts.length === 0 &&
@@ -845,6 +864,7 @@ const EMPTY_PERSISTED_FILES: PersistedComposerFileAttachment[] = [];
 const EMPTY_IDS: string[] = [];
 const EMPTY_PERSISTED_ATTACHMENTS: PersistedComposerImageAttachment[] = [];
 const EMPTY_TERMINAL_CONTEXTS: TerminalContextDraft[] = [];
+const EMPTY_BROWSER_ANNOTATIONS: BrowserAnnotationDraft[] = [];
 const EMPTY_PASTED_TEXTS: PastedTextDraft[] = [];
 const EMPTY_SKILLS: ProviderSkillReference[] = [];
 const EMPTY_MENTIONS: ProviderMentionReference[] = [];
@@ -855,6 +875,7 @@ Object.freeze(EMPTY_PERSISTED_FILES);
 Object.freeze(EMPTY_IDS);
 Object.freeze(EMPTY_PERSISTED_ATTACHMENTS);
 Object.freeze(EMPTY_TERMINAL_CONTEXTS);
+Object.freeze(EMPTY_BROWSER_ANNOTATIONS);
 Object.freeze(EMPTY_PASTED_TEXTS);
 Object.freeze(EMPTY_SKILLS);
 Object.freeze(EMPTY_MENTIONS);
@@ -870,6 +891,7 @@ const EMPTY_THREAD_DRAFT = Object.freeze<ComposerThreadDraftState>({
   nonPersistedImageIds: EMPTY_IDS,
   persistedAttachments: EMPTY_PERSISTED_ATTACHMENTS,
   assistantSelections: [],
+  browserAnnotations: EMPTY_BROWSER_ANNOTATIONS,
   terminalContexts: EMPTY_TERMINAL_CONTEXTS,
   fileComments: [],
   pastedTexts: EMPTY_PASTED_TEXTS,

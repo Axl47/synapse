@@ -9,14 +9,17 @@ import {
   WS_BOOTSTRAP_METHOD,
   WS_BOOTSTRAP_PATH,
   WS_CHANNELS,
+  WS_CLIENT_REQUIRED_CAPABILITIES,
   WS_COMPATIBILITY_QUERY,
   WS_FEATURE_PATH,
+  WS_NEGOTIATE_HTTP_PATH,
+  WS_NEGOTIATE_QUERY,
   WS_PROTOCOL_EPOCH,
   WS_PROTOCOL_MAX_REVISION,
   WS_PROTOCOL_MIN_REVISION,
-  WS_SERVER_CAPABILITIES,
-  WS_METHODS,
+  WsBootstrapNegotiateResult,
   WsBootstrapRpcGroup,
+  WS_METHODS,
   WsCompatibilityError,
   WsFeatureRpcGroup,
   type AutomationStreamEvent,
@@ -34,13 +37,28 @@ import {
   type WsPush,
   type WsPushChannel,
   type WsPushMessage,
-  type WsBootstrapNegotiateResult,
+  ThreadId,
 } from "@synara/contracts";
-import { Cause, Data, Effect, Exit, Layer, ManagedRuntime, Schema, Scope, Stream } from "effect";
+import {
+  Cause,
+  Data,
+  Effect,
+  Exit,
+  Layer,
+  ManagedRuntime,
+  Option,
+  Schema,
+  Scope,
+  Stream,
+} from "effect";
 import { RpcClient, RpcSerialization } from "effect/unstable/rpc";
 import * as Socket from "effect/unstable/socket/Socket";
 
 import { APP_VERSION } from "./branding";
+import {
+  buildThreadSubscribeInput,
+  resetThreadDetailResumeCursors,
+} from "./threadDetailResumeCursors";
 import type { WsTransportState } from "./wsTransportEvents";
 
 type PushListener<C extends WsPushChannel> = (message: WsPushMessage<C>) => void;
@@ -142,6 +160,7 @@ function awaitWithAbort<A>(promise: Promise<A>, signal: AbortSignal | undefined)
 const makeRpcClient = RpcClient.make(WsFeatureRpcGroup);
 const makeBootstrapRpcClient = RpcClient.make(WsBootstrapRpcGroup);
 const REQUEST_TIMEOUT_MS = 60_000;
+const FEATURE_CONNECTION_PROBE_TIMEOUT_MS = 10_000;
 
 function resolveRpcUrl(rawUrl: string, path: string): string {
   const url = new URL(rawUrl);
@@ -177,6 +196,58 @@ export function makeFeatureSocketUrl(
   );
   url.searchParams.set(WS_COMPATIBILITY_QUERY.serverInstanceId, compatibility.serverInstanceId);
   return url.toString();
+}
+
+export function makeNegotiateHttpUrl(explicitUrl: string | null): string {
+  const url = new URL(makeSocketUrl(explicitUrl, WS_NEGOTIATE_HTTP_PATH));
+  url.protocol = url.protocol === "wss:" ? "https:" : "http:";
+  url.searchParams.set(WS_NEGOTIATE_QUERY.clientBuild, APP_VERSION);
+  url.searchParams.set(WS_NEGOTIATE_QUERY.protocolEpoch, String(WS_PROTOCOL_EPOCH));
+  url.searchParams.set(WS_NEGOTIATE_QUERY.minRevision, String(WS_PROTOCOL_MIN_REVISION));
+  url.searchParams.set(WS_NEGOTIATE_QUERY.maxRevision, String(WS_PROTOCOL_MAX_REVISION));
+  for (const capability of WS_CLIENT_REQUIRED_CAPABILITIES) {
+    url.searchParams.append(WS_NEGOTIATE_QUERY.requiredCapability, capability);
+  }
+  return url.toString();
+}
+
+/** Bounded so a stalled negotiate falls back to bootstrap instead of hanging. */
+const NEGOTIATE_HTTP_TIMEOUT_MS = 5_000;
+
+/**
+ * Negotiates compatibility over plain HTTP so a connect costs exactly one
+ * WebSocket handshake. Returns null when the server does not expose the
+ * endpoint yet (older server) or the request failed transiently, letting the
+ * caller fall back to the legacy `/ws/bootstrap` socket. A 426 is a terminal
+ * compatibility verdict and is thrown as a typed WsCompatibilityError.
+ */
+export async function negotiateOverHttp(
+  explicitUrl: string | null,
+  lifetimeSignal?: AbortSignal,
+): Promise<WsBootstrapNegotiateResult | null> {
+  // Browsers apply no default fetch timeout. Without the deadline, a
+  // connection that accepts and then stalls (the WAN/tunnel case this
+  // endpoint exists to improve) never settles, so the bootstrap fallback
+  // never runs and the transport wedges; the legacy socket path got that
+  // backstop for free from the browser's WS handshake timeout. The caller's
+  // lifetime signal is composed in so disposal aborts the request too.
+  const deadline = AbortSignal.timeout(NEGOTIATE_HTTP_TIMEOUT_MS);
+  const signal = lifetimeSignal ? AbortSignal.any([lifetimeSignal, deadline]) : deadline;
+  let response: Response;
+  try {
+    response = await fetch(makeNegotiateHttpUrl(explicitUrl), { cache: "no-store", signal });
+  } catch {
+    return null;
+  }
+  const body: unknown = await response.json().catch(() => null);
+  if (response.status === 426) {
+    const issue = Schema.decodeUnknownOption(WsCompatibilityError)(body);
+    if (Option.isSome(issue)) throw issue.value;
+    throw new Error("WebSocket negotiation was refused with an unreadable 426 response.");
+  }
+  if (!response.ok) return null;
+  const result = Schema.decodeUnknownOption(WsBootstrapNegotiateResult)(body);
+  return Option.isSome(result) ? result.value : null;
 }
 
 function makeProtocolLayer(url: string) {
@@ -222,6 +293,23 @@ export function isTerminalCompatibilityFailure(error: unknown): boolean {
   );
 }
 
+/**
+ * True when the server just reached is a different instance than the last one
+ * reached — the signal that cached resume cursors may belong to another event
+ * journal. Compared against the last *successful* identity rather than the
+ * current negotiation, which a failed reconnect clears: an outage longer than
+ * the first retry would otherwise erase the evidence of the change, which is
+ * exactly the restore-with-downtime case this guards against.
+ */
+export function serverIdentityChanged(
+  lastKnownServerInstanceId: string | null,
+  negotiatedServerInstanceId: string,
+): boolean {
+  return (
+    lastKnownServerInstanceId !== null && lastKnownServerInstanceId !== negotiatedServerInstanceId
+  );
+}
+
 export function getTerminalCompatibilityError(error: unknown): WsCompatibilityError | null {
   return Schema.is(WsCompatibilityError)(error) && error.retryable === false ? error : null;
 }
@@ -242,6 +330,22 @@ const RETRYABLE_STREAM_CAPACITY_ERROR_CODES = new Set([
 ]);
 const DEFAULT_STREAM_CAPACITY_RETRY_MS = 1_000;
 const MAX_STREAM_CAPACITY_RETRY_MS = 10_000;
+const INITIAL_UNEXPECTED_STREAM_COMPLETION_RETRY_MS = 100;
+const MAX_UNEXPECTED_STREAM_COMPLETION_RETRY_MS = 5_000;
+const STABLE_STREAM_LIFETIME_MS = 10_000;
+
+/**
+ * Infinite subscription streams should not complete successfully. A short,
+ * exponential delay heals a dropped server subscription without allowing an
+ * immediately-completing stream to spin the renderer's event loop.
+ */
+export function getUnexpectedStreamCompletionRetryDelayMs(attempt: number): number {
+  const exponent = Math.max(0, Math.min(Math.trunc(attempt) - 1, 16));
+  return Math.min(
+    INITIAL_UNEXPECTED_STREAM_COMPLETION_RETRY_MS * 2 ** exponent,
+    MAX_UNEXPECTED_STREAM_COMPLETION_RETRY_MS,
+  );
+}
 
 /**
  * Capacity rejections are admission failures the server marks retryable: the
@@ -447,8 +551,11 @@ export class WsTransport {
     RpcClientInstance,
     ManagedRuntime.ManagedRuntime<RpcClient.Protocol, never>
   >();
-  private runtime: ManagedRuntime.ManagedRuntime<RpcClient.Protocol, never>;
-  private clientScope: Scope.Closeable;
+  private runtime: ManagedRuntime.ManagedRuntime<RpcClient.Protocol, never> | null = null;
+  private clientScope: Scope.Closeable | null = null;
+  // Aborted by dispose() so an in-flight HTTP negotiation cannot outlive the
+  // transport and resurrect a runtime after teardown returned.
+  private readonly lifetime = new AbortController();
   private clientPromise: Promise<RpcClientInstance>;
   private reconnectPromise: Promise<RpcClientInstance> | null = null;
   private reconnectFailures = 0;
@@ -458,18 +565,21 @@ export class WsTransport {
   private readonly streamDuplicateRetries = new Map<string, number>();
   private readonly streamThreadBootstrapRetries = new Map<string, number>();
   private readonly streamCapacityRetryTimers = new Map<string, number>();
+  private readonly streamCompletionRetries = new Map<string, number>();
+  private readonly streamCompletionRetryTimers = new Map<string, number>();
   private readonly activeThreadStreamInputs = new Map<string, unknown>();
   private shellSubscribed = false;
   private readonly threadSubscriptions = new Map<string, unknown>();
   private compatibility: WsBootstrapNegotiateResult | null = null;
   private compatibilityIssue: WsCompatibilityError | null = null;
+  // Tracks the last server generation this transport observed so cross-restart
+  // reconnects still reset replayed push state even after the negotiation
+  // cache was cleared by an intervening failure.
+  private lastServerInstanceId: string | null = null;
 
   constructor(url?: string) {
     this.explicitUrl = url ?? null;
-    const session = this.createSession();
-    this.runtime = session.runtime;
-    this.clientScope = session.clientScope;
-    this.clientPromise = session.clientPromise;
+    this.clientPromise = this.createSession().clientPromise;
   }
 
   async request<T = unknown>(
@@ -506,12 +616,14 @@ export class WsTransport {
       if (method === ORCHESTRATION_WS_METHODS.subscribeShell) {
         this.shellSubscribed = true;
         this.resetStreamCapacityRetry("orchestration.shell");
+        this.resetStreamCompletionRetry("orchestration.shell");
         this.startShellStream(client);
         return undefined as T;
       }
       if (method === ORCHESTRATION_WS_METHODS.subscribeThread) {
         const threadId = (params as { threadId: string }).threadId;
         this.resetStreamCapacityRetry(`orchestration.thread:${threadId}`);
+        this.resetStreamCompletionRetry(`orchestration.thread:${threadId}`);
         // Preserve the stored input identity across explicit refreshes so stale
         // restart callbacks cannot supersede the newly requested stream.
         const existingInput = this.threadSubscriptions.get(threadId);
@@ -652,8 +764,12 @@ export class WsTransport {
   async dispose(): Promise<void> {
     if (this.disposed) return;
     this.disposed = true;
+    // Abort before anything else: a pending negotiate must fail now rather
+    // than resolve later and build a runtime this teardown will not see.
+    this.lifetime.abort();
     this.setState("disposed");
     this.resetAllStreamCapacityRetries();
+    this.resetAllStreamCompletionRetries();
     for (const cleanup of this.streamCleanups.values()) cleanup();
     this.streamCleanups.clear();
     this.activeThreadStreamInputs.clear();
@@ -664,35 +780,107 @@ export class WsTransport {
     void this.reconnectPromise?.catch(() => undefined);
     const runtime = this.runtime;
     const clientScope = this.clientScope;
-    await runtime.runPromise(Scope.close(clientScope, Exit.void)).catch(() => undefined);
+    if (!runtime) return;
+    if (clientScope) {
+      await runtime.runPromise(Scope.close(clientScope, Exit.void)).catch(() => undefined);
+    }
     await runtime.dispose().catch(() => undefined);
   }
 
-  private createSession() {
-    const sessionVersion = ++this.sessionVersion;
+  /**
+   * Resolves negotiation without burning a WebSocket handshake: the HTTP
+   * endpoint answers directly on current servers, and only servers predating
+   * it fall back to the legacy `/ws/bootstrap` socket round trip.
+   */
+  private async negotiateCompatibility(): Promise<WsBootstrapNegotiateResult> {
+    const httpResult = await negotiateOverHttp(this.explicitUrl, this.lifetime.signal);
+    if (httpResult) return httpResult;
+    // dispose() may have run while the request was in flight; it captured a
+    // null runtime and returned, so building one here would strand it.
+    if (this.disposed) {
+      throw new Error("WebSocket transport was disposed during negotiation.");
+    }
     const runtime = ManagedRuntime.make(
       makeProtocolLayer(makeSocketUrl(this.explicitUrl, WS_BOOTSTRAP_PATH)),
     );
     const clientScope = runtime.runSync(Scope.make());
-    const clientPromise = (async () => {
-      let compatibility: WsBootstrapNegotiateResult;
-      try {
-        const bootstrapClient = await runtime.runPromise(
-          Scope.provide(clientScope)(makeBootstrapRpcClient),
-        );
-        compatibility = await runtime.runPromise(
-          bootstrapClient[WS_BOOTSTRAP_METHOD]({
-            protocolEpoch: WS_PROTOCOL_EPOCH,
-            minRevision: WS_PROTOCOL_MIN_REVISION,
-            maxRevision: WS_PROTOCOL_MAX_REVISION,
-            clientBuild: APP_VERSION,
-            requiredCapabilities: [...WS_SERVER_CAPABILITIES],
-          }),
-        );
-      } finally {
-        await runtime.runPromise(Scope.close(clientScope, Exit.void)).catch(() => undefined);
-        await runtime.dispose().catch(() => undefined);
+    // Track the bootstrap runtime so dispose() during negotiation aborts it.
+    this.runtime = runtime;
+    this.clientScope = clientScope;
+    try {
+      const bootstrapClient = await runtime.runPromise(
+        Scope.provide(clientScope)(makeBootstrapRpcClient),
+      );
+      return await runtime.runPromise(
+        bootstrapClient[WS_BOOTSTRAP_METHOD]({
+          protocolEpoch: WS_PROTOCOL_EPOCH,
+          minRevision: WS_PROTOCOL_MIN_REVISION,
+          maxRevision: WS_PROTOCOL_MAX_REVISION,
+          clientBuild: APP_VERSION,
+          requiredCapabilities: [...WS_CLIENT_REQUIRED_CAPABILITIES],
+        }),
+      );
+    } finally {
+      await runtime.runPromise(Scope.close(clientScope, Exit.void)).catch(() => undefined);
+      await runtime.dispose().catch(() => undefined);
+      if (this.runtime === runtime) {
+        this.runtime = null;
+        this.clientScope = null;
       }
+    }
+  }
+
+  private adoptNegotiation(compatibility: WsBootstrapNegotiateResult): void {
+    if (serverIdentityChanged(this.lastServerInstanceId, compatibility.serverInstanceId)) {
+      this.latestPushByChannel.clear();
+      this.sequence = 0;
+      // A resume cursor is only valid against the journal that issued its
+      // sequences. A new server instance may serve a different journal (fresh
+      // install, restored backup), so every cursor must reset to force full
+      // snapshots. `lastServerInstanceId` survives failed reconnects, unlike
+      // `compatibility`, so an outage longer than the first retry still
+      // detects the change. Interim tradeoff: this also drops resume across
+      // plain restarts of the same journal, acceptable until the protocol
+      // carries a durable journal epoch.
+      resetThreadDetailResumeCursors();
+    }
+    this.lastServerInstanceId = compatibility.serverInstanceId;
+    this.compatibility = compatibility;
+    this.setCompatibilityIssue(null);
+  }
+
+  /**
+   * A cached-negotiation session skips the negotiation round trip, so nothing
+   * has yet proven the server is alive on the cached generation. Probe with a
+   * no-op RPC: a restarted server refuses the stale `/ws` upgrade (426) and
+   * the probe fails, clearing the cache so the next attempt renegotiates.
+   */
+  private async probeFeatureConnection(
+    client: RpcClientInstance,
+    runtime: ManagedRuntime.ManagedRuntime<RpcClient.Protocol, never>,
+  ): Promise<void> {
+    const probe = (
+      client as unknown as Record<
+        string,
+        (input: unknown) => Effect.Effect<unknown, WsTransportRpcError>
+      >
+    )[ORCHESTRATION_WS_METHODS.unsubscribeShell];
+    if (!probe) return;
+    try {
+      await runtime.runPromise(probe({}).pipe(Effect.timeout(FEATURE_CONNECTION_PROBE_TIMEOUT_MS)));
+    } catch (error) {
+      this.compatibility = null;
+      throw error;
+    }
+  }
+
+  private createSession() {
+    const sessionVersion = ++this.sessionVersion;
+    // Reconnects reuse the cached negotiation while the server generation is
+    // unchanged, so a reconnect costs exactly one WebSocket handshake.
+    const cachedCompatibility = this.compatibility;
+    const clientPromise = (async () => {
+      const compatibility = cachedCompatibility ?? (await this.negotiateCompatibility());
       if (this.disposed || this.sessionVersion !== sessionVersion) {
         throw new Error("WebSocket session superseded during compatibility negotiation.");
       }
@@ -705,16 +893,11 @@ export class WsTransport {
       this.clientScope = featureScope;
       const client = await featureRuntime.runPromise(Scope.provide(featureScope)(makeRpcClient));
       this.runtimeByClient.set(client, featureRuntime);
+      if (cachedCompatibility) {
+        await this.probeFeatureConnection(client, featureRuntime);
+      }
       if (!this.disposed && this.sessionVersion === sessionVersion) {
-        if (
-          this.compatibility &&
-          this.compatibility.serverInstanceId !== compatibility.serverInstanceId
-        ) {
-          this.latestPushByChannel.clear();
-          this.sequence = 0;
-        }
-        this.compatibility = compatibility;
-        this.setCompatibilityIssue(null);
+        this.adoptNegotiation(compatibility);
         this.setState("open");
       }
       return client;
@@ -731,7 +914,7 @@ export class WsTransport {
       }
       throw error;
     });
-    return { runtime, clientScope, clientPromise };
+    return { clientPromise };
   }
 
   private async getClient(): Promise<RpcClientInstance> {
@@ -762,19 +945,25 @@ export class WsTransport {
 
     const oldRuntime = this.runtime;
     const oldClientScope = this.clientScope;
+    this.runtime = null;
+    this.clientScope = null;
     this.resetAllStreamCapacityRetries();
+    this.resetAllStreamCompletionRetries();
     for (const cleanup of this.streamCleanups.values()) cleanup();
     this.streamCleanups.clear();
     this.activeThreadStreamInputs.clear();
 
     this.setState("connecting");
 
-    void oldRuntime
-      .runPromise(Scope.close(oldClientScope, Exit.void))
-      .catch(() => undefined)
-      .finally(() => {
+    if (oldRuntime) {
+      void (
+        oldClientScope
+          ? oldRuntime.runPromise(Scope.close(oldClientScope, Exit.void)).catch(() => undefined)
+          : Promise.resolve()
+      ).finally(() => {
         void oldRuntime.dispose().catch(() => undefined);
       });
+    }
 
     this.reconnectPromise = this.openReconnectSession().finally(() => {
       this.reconnectPromise = null;
@@ -818,6 +1007,73 @@ export class WsTransport {
     this.streamThreadBootstrapRetries.clear();
   }
 
+  private clearStreamCompletionRetryTimer(key: string): void {
+    const timeoutId = this.streamCompletionRetryTimers.get(key);
+    if (timeoutId === undefined) return;
+    window.clearTimeout(timeoutId);
+    this.streamCompletionRetryTimers.delete(key);
+  }
+
+  private resetStreamCompletionRetry(key: string): void {
+    this.clearStreamCompletionRetryTimer(key);
+    this.streamCompletionRetries.delete(key);
+  }
+
+  private resetAllStreamCompletionRetries(): void {
+    for (const timeoutId of this.streamCompletionRetryTimers.values()) {
+      window.clearTimeout(timeoutId);
+    }
+    this.streamCompletionRetryTimers.clear();
+    this.streamCompletionRetries.clear();
+  }
+
+  private scheduleUnexpectedStreamCompletionReconnect(
+    key: string,
+    streamSessionVersion: number,
+    streamStartedAt: number,
+    restart: () => void,
+  ): void {
+    if (this.sessionVersion !== streamSessionVersion) return;
+
+    // Subscription streams send an initial snapshot, so receiving an event
+    // does not prove the stream is healthy. Only a stream that remained alive
+    // for a meaningful interval resets the backoff.
+    const streamLifetimeMs = performance.now() - streamStartedAt;
+    const previousAttempt =
+      streamLifetimeMs >= STABLE_STREAM_LIFETIME_MS
+        ? 0
+        : (this.streamCompletionRetries.get(key) ?? 0);
+    const attempt = previousAttempt + 1;
+    this.streamCompletionRetries.set(key, attempt);
+    this.clearStreamCompletionRetryTimer(key);
+
+    const timeoutId = window.setTimeout(() => {
+      if (this.streamCompletionRetryTimers.get(key) !== timeoutId) return;
+      this.streamCompletionRetryTimers.delete(key);
+      if (
+        this.disposed ||
+        this.sessionVersion !== streamSessionVersion ||
+        this.streamCleanups.has(key)
+      ) {
+        return;
+      }
+
+      // An infinite subscription completing successfully usually means the
+      // RPC feature socket became a zombie. Reopening the stream on that same
+      // client can complete immediately forever. A full reconnect restores all
+      // registered subscriptions and lets the server replay the persisted tail.
+      void this.reconnect().catch((error) => {
+        if (!this.disposed && !this.streamCleanups.has(key)) {
+          console.warn("WebSocket RPC stream reconnect failed", error);
+          // getClient() inside the registered restart applies the normal
+          // reconnect backoff after a failed reconnect.
+          restart();
+        }
+      });
+    }, getUnexpectedStreamCompletionRetryDelayMs(attempt));
+    this.streamCompletionRetryTimers.set(key, timeoutId);
+  }
+
   private setCompatibilityIssue(issue: WsCompatibilityError | null): void {
     if (this.compatibilityIssue === issue) return;
     this.compatibilityIssue = issue;
@@ -839,8 +1095,6 @@ export class WsTransport {
     }
 
     const session = this.createSession();
-    this.runtime = session.runtime;
-    this.clientScope = session.clientScope;
     this.clientPromise = session.clientPromise;
 
     const client = await session.clientPromise;
@@ -851,7 +1105,11 @@ export class WsTransport {
     if (this.shellSubscribed) {
       this.startShellStream(client);
     }
-    for (const [threadId, input] of this.threadSubscriptions) {
+    // Refreshing only overwrites existing keys, so iterating the live key set
+    // is safe here.
+    for (const threadId of this.threadSubscriptions.keys()) {
+      const input = this.refreshThreadSubscriptionInput(threadId);
+      if (input === undefined) continue;
       await this.startThreadStream(client, threadId, input);
     }
     return client;
@@ -877,8 +1135,16 @@ export class WsTransport {
   }
 
   private startChannelStream(channel: WsPushChannel): void {
+    const requestedSessionVersion = this.sessionVersion;
     void this.getClient()
       .then((client) => {
+        if (
+          this.disposed ||
+          this.sessionVersion !== requestedSessionVersion ||
+          !this.listeners.has(channel)
+        ) {
+          return;
+        }
         const restartChannel = () => {
           if (this.listeners.has(channel)) {
             this.startChannelStream(channel);
@@ -959,6 +1225,7 @@ export class WsTransport {
       .catch((error) => {
         if (
           !this.disposed &&
+          this.sessionVersion === requestedSessionVersion &&
           this.listeners.has(channel) &&
           !isTerminalCompatibilityFailure(error)
         ) {
@@ -987,6 +1254,7 @@ export class WsTransport {
   }
 
   private startLifecycleStream(client: RpcClientInstance): void {
+    if (this.disposed || !this.shouldKeepLifecycleStream()) return;
     const restartLifecycle = () => {
       if (!this.shouldKeepLifecycleStream()) return;
       void this.getClient()
@@ -1009,6 +1277,7 @@ export class WsTransport {
   }
 
   private startShellStream(client: RpcClientInstance): void {
+    if (this.disposed || !this.shellSubscribed) return;
     const restartShell = () => {
       if (!this.shellSubscribed) return;
       void this.getClient()
@@ -1023,6 +1292,25 @@ export class WsTransport {
         this.emit(ORCHESTRATION_WS_CHANNELS.shellEvent, event),
       restartShell,
     );
+  }
+
+  /**
+   * Rebuilds a subscribed thread's stream input from the current resume-cursor
+   * state and stores it as the desired input. Transport-managed restarts
+   * (reconnects, stream retries) must not replay the input captured at
+   * subscribe time: a thread first subscribed without a cursor would keep
+   * requesting full snapshots forever, and a cursor cleared since then would
+   * be resent stale. Returns undefined when the thread is no longer subscribed.
+   */
+  private refreshThreadSubscriptionInput(threadId: string): unknown {
+    if (!this.threadSubscriptions.has(threadId)) return undefined;
+    const existingInput = this.threadSubscriptions.get(threadId);
+    const rebuiltInput: unknown = buildThreadSubscribeInput(ThreadId.makeUnsafe(threadId));
+    const input = threadStreamInputsEqual(existingInput, rebuiltInput)
+      ? existingInput
+      : rebuiltInput;
+    this.threadSubscriptions.set(threadId, input);
+    return input;
   }
 
   private async startThreadStream(
@@ -1052,7 +1340,7 @@ export class WsTransport {
       return;
     }
     const restartThread = () => {
-      const desiredInput = this.threadSubscriptions.get(threadId);
+      const desiredInput = this.refreshThreadSubscriptionInput(threadId);
       if (desiredInput === undefined) return;
       void this.getClient()
         .then((nextClient) => this.startThreadStream(nextClient, threadId, desiredInput))
@@ -1078,6 +1366,9 @@ export class WsTransport {
   ): void {
     if (this.streamCleanups.has(key)) return;
     this.clearStreamCapacityRetryTimer(key);
+    this.clearStreamCompletionRetryTimer(key);
+    const streamSessionVersion = this.sessionVersion;
+    const streamStartedAt = performance.now();
     const runnableStream = stream as Stream.Stream<T, WsTransportRpcError, never>;
     let resolveSettled: () => void = () => undefined;
     const settled = new Promise<void>((resolve) => {
@@ -1111,6 +1402,18 @@ export class WsTransport {
           }
           if (wasReplacedOrStopped || this.disposed) {
             return;
+          }
+          if (Exit.isSuccess(exit) && restart) {
+            this.scheduleUnexpectedStreamCompletionReconnect(
+              key,
+              streamSessionVersion,
+              streamStartedAt,
+              restart,
+            );
+            return;
+          }
+          if (Exit.isFailure(exit)) {
+            this.streamCompletionRetries.delete(key);
           }
           if (restart && Exit.isFailure(exit)) {
             const admissionRetry = resolveStreamAdmissionRetry(
@@ -1186,11 +1489,13 @@ export class WsTransport {
     options?: { readonly resetCapacityRetry?: boolean },
   ): Promise<void> {
     this.clearStreamCapacityRetryTimer(key);
+    this.clearStreamCompletionRetryTimer(key);
     if (options?.resetCapacityRetry !== false) {
       this.streamCapacityRetries.delete(key);
       this.streamDuplicateRetries.delete(key);
       this.streamThreadBootstrapRetries.delete(key);
     }
+    this.streamCompletionRetries.delete(key);
     this.activeThreadStreamInputs.delete(key);
     const cleanup = this.streamCleanups.get(key);
     const settled = this.streamSettled.get(key) ?? Promise.resolve();
